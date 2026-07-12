@@ -2,25 +2,20 @@
 
 ## Required secrets
 
-- `PASS`: production password for admin account `karmar78`.
-- `ADMIN_TOTP_SECRET`: TOTP shared secret for the same account.
-- `DATABASE_URL`
-- `ACCESS_TOKEN_HMAC_KEY_BASE64`
-- `SESSION_SECRET_BASE64`
-- `CSRF_SECRET_BASE64`
-- `MFA_ENCRYPTION_KEY_BASE64`
-- `PROD_HOST`, `PROD_USER`, `PROD_SSH_KEY`
+- GitHub secret `PASS`: production password for admin account `karmar78`.
+- Server-side `/etc/kcml/kcml.env`: `DATABASE_URL`, internal HMAC/session/CSRF/MFA keys, host names, and other non-GitHub deployment configuration.
 
 `PASS` is never echoed. If `PASS` is missing or empty, deployment may continue
-but password login is disabled. If `ADMIN_TOTP_SECRET` is missing, login remains
-inactive even when `PASS` is present.
+but password login is disabled. Operational secrets are generated and retained
+on the production server, not stored in GitHub Secrets.
 
 ## Order
 
 1. Build and test in CI.
-2. Upload release archive.
-3. Run `deploy/scripts/preflight.sh`.
-4. Run `deploy/scripts/backup.sh`.
+2. Deploy job runs on the production self-hosted runner.
+3. Load `/etc/kcml/kcml.env`.
+4. Run `deploy/scripts/preflight.sh`.
+5. Run `deploy/scripts/backup.sh`.
 5. Run migrations.
 6. Synchronize admin password from `PASS`.
 7. Restart service.

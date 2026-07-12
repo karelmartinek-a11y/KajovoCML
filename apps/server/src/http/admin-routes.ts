@@ -50,7 +50,7 @@ export function registerAdminRoutes(app: FastifyInstance, db: Db, config: AppCon
     }
     const account = result.rows[0];
     const passwordOk = await argon2.verify(String(account.password_hash), body.password ?? "");
-    const mfaOk = account.mfa_enabled ? authenticator.check(body.totp ?? "", String(account.mfa_secret)) : false;
+    const mfaOk = account.mfa_enabled ? authenticator.check(body.totp ?? "", String(account.mfa_secret)) : true;
     if (!passwordOk || !mfaOk) {
       await appendAudit(db, { eventType: "admin.login.failed", actorType: "admin", actorId: body.username ?? null, correlationId });
       return sendError(reply, 401, "invalid_login", "Invalid credentials", correlationId);
