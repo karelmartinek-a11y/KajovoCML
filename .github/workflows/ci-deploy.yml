@@ -44,7 +44,10 @@ jobs:
           set -a
           . /etc/kcml/kcml.env
           set +a
-          test -n "${PASS:-}"
+          if [ -z "${PASS:-}" ]; then
+            echo "::error::Required GitHub secret PASS is missing. It is the only GitHub secret required for production deploy."
+            exit 1
+          fi
           chmod +x deploy/scripts/*.sh
           deploy/scripts/preflight.sh
           deploy/scripts/backup.sh
