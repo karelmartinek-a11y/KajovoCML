@@ -31,7 +31,7 @@ try {
   if (config.ADMIN_TOTP_SECRET) {
     process.stderr.write("Admin password synchronized from PASS; MFA is configured; existing admin sessions revoked.\n");
   } else {
-    process.stderr.write("Admin password synchronized from PASS, but login remains inactive until ADMIN_TOTP_SECRET is configured.\n");
+    process.stderr.write("Admin password synchronized from PASS; existing admin sessions revoked.\n");
   }
 } finally {
   await db.end();

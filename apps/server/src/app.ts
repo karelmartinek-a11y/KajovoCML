@@ -45,6 +45,10 @@ export async function buildApp(config: AppConfig, db: Db) {
   registerMcpRoutes(app, db, config);
 
   const adminDist = path.resolve(process.cwd(), "apps/admin-ui/dist");
+  app.addHook("onRequest", async (request, reply) => {
+    const host = hostOf(request.headers.host);
+    if (host !== config.ADMIN_HOST) return sendError(reply, 404, "not_found");
+  });
   await app.register(fastifyStatic, { root: adminDist, wildcard: false });
   app.setNotFoundHandler(async (request, reply) => {
     const host = hostOf(request.headers.host);

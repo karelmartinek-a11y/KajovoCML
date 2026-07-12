@@ -59,4 +59,11 @@ jobs:
           PASS="$PASS" pnpm admin:sync-password
           rsync -a --delete --exclude '.git' --exclude 'node_modules' "$GITHUB_WORKSPACE"/ /opt/kcml/current/
           systemctl restart kcml
-          curl -fsS -H 'Host: admin.hcasc.cz' "http://127.0.0.1:${PORT}/health" >/dev/null
+          for attempt in $(seq 1 30); do
+            if curl -fsS -H 'Host: admin.hcasc.cz' "http://127.0.0.1:${PORT}/health" >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          systemctl status kcml --no-pager -l
+          exit 1
