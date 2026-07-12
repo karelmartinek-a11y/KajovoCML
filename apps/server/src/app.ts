@@ -47,7 +47,10 @@ export async function buildApp(config: AppConfig, db: Db) {
   const adminDist = path.resolve(process.cwd(), "apps/admin-ui/dist");
   app.addHook("onRequest", async (request, reply) => {
     const host = hostOf(request.headers.host);
-    if (host !== config.ADMIN_HOST) return sendError(reply, 404, "not_found");
+    if (host === config.ADMIN_HOST) return;
+    if (host === config.AUTH_HOST && (request.url === "/oauth/token" || request.url === "/.well-known/oauth-authorization-server")) return;
+    if (host.endsWith(`.${config.PUBLIC_BASE_DOMAIN}`) && (request.url === "/mcp" || request.url.startsWith("/.well-known/oauth-protected-resource"))) return;
+    return sendError(reply, 404, "not_found");
   });
   await app.register(fastifyStatic, { root: adminDist, wildcard: false });
   app.setNotFoundHandler(async (request, reply) => {
