@@ -1,0 +1,18 @@
+[Unit]
+Description=KCML MCP Server Manager
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/kcml/current
+EnvironmentFile=/etc/kcml/kcml.env
+ExecStart=/usr/bin/node apps/server/dist/index.js
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/kcml /var/log/kcml
+
+[Install]
+WantedBy=multi-user.target

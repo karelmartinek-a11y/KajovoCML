@@ -1,0 +1,69 @@
+name: CI and production deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run ci
+
+  deploy:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: ci
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Mask deployment secrets
+        run: |
+          echo "::add-mask::${{ secrets.PASS }}"
+          echo "::add-mask::${{ secrets.ADMIN_TOTP_SECRET }}"
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          PASS: ${{ secrets.PASS }}
+          ADMIN_TOTP_SECRET: ${{ secrets.ADMIN_TOTP_SECRET }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          ACCESS_TOKEN_HMAC_KEY_BASE64: ${{ secrets.ACCESS_TOKEN_HMAC_KEY_BASE64 }}
+          SESSION_SECRET_BASE64: ${{ secrets.SESSION_SECRET_BASE64 }}
+          CSRF_SECRET_BASE64: ${{ secrets.CSRF_SECRET_BASE64 }}
+          MFA_ENCRYPTION_KEY_BASE64: ${{ secrets.MFA_ENCRYPTION_KEY_BASE64 }}
+        with:
+          host: ${{ secrets.PROD_HOST }}
+          username: ${{ secrets.PROD_USER }}
+          key: ${{ secrets.PROD_SSH_KEY }}
+          envs: PASS,ADMIN_TOTP_SECRET,DATABASE_URL,ACCESS_TOKEN_HMAC_KEY_BASE64,SESSION_SECRET_BASE64,CSRF_SECRET_BASE64,MFA_ENCRYPTION_KEY_BASE64
+          script_stop: true
+          script: |
+            set -euo pipefail
+            cd /opt/kcml/current
+            git fetch --all --prune
+            git checkout "${{ github.sha }}"
+            corepack enable
+            pnpm install --frozen-lockfile
+            pnpm --filter @kcml/admin-ui build
+            pnpm --filter @kcml/server build
+            deploy/scripts/preflight.sh
+            deploy/scripts/backup.sh
+            pnpm db:migrate
+            PASS="$PASS" ADMIN_TOTP_SECRET="$ADMIN_TOTP_SECRET" pnpm admin:sync-password
+            systemctl restart kcml
+            curl -fsS https://admin.hcasc.cz/health >/dev/null
