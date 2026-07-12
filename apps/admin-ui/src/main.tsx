@@ -83,7 +83,7 @@ const accessLabels: Record<AccessLevel, string> = {
 };
 
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, { credentials: "include", headers: { "content-type": "application/json", ...(init?.headers ?? {}) }, ...init });
+  const res = await fetch(path, { ...init, credentials: "include", headers: { "content-type": "application/json", ...(init?.headers ?? {}) } });
   if (!res.ok) {
     const body = await res.json().catch((): { error?: string } => ({ error: res.statusText })) as { error?: string };
     throw new Error(body.error ?? res.statusText);
