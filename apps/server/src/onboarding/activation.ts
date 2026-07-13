@@ -81,8 +81,6 @@ export async function registerDisabledServer(db: Db, job: ActivationJob, socketP
       [job.id]
     );
     if (!authorization.rowCount) throw new Error("integration_token_inactive");
-    const existing = await client.query("select id from mcp_server where code=$1", [job.code]);
-    if (existing.rowCount) return String(existing.rows[0].id);
     const server = await client.query(
       `insert into mcp_server
         (kcml_number,code,hostname,tool_name,display_name,description,enabled,registration_state,operational_state,
@@ -91,6 +89,37 @@ export async function registerDisabledServer(db: Db, job: ActivationJob, socketP
          rate_window_seconds,rate_max_requests)
        select kcml_number,code,hostname,tool_name,$2,$3,false,'REGISTERED_DISABLED','DISABLED',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21
          from onboarding_job where id=$1
+       on conflict (code) do update set
+         kcml_number=excluded.kcml_number,
+         hostname=excluded.hostname,
+         tool_name=excluded.tool_name,
+         display_name=excluded.display_name,
+         description=excluded.description,
+         enabled=false,
+         registration_state='REGISTERED_DISABLED',
+         operational_state='DISABLED',
+         input_schema=excluded.input_schema,
+         output_schema=excluded.output_schema,
+         handler_key=excluded.handler_key,
+         handler_version=excluded.handler_version,
+         contract_version=excluded.contract_version,
+         artifact_digest=excluded.artifact_digest,
+         manifest_digest=excluded.manifest_digest,
+         image_reference=excluded.image_reference,
+         image_digest=excluded.image_digest,
+         sbom_digest=excluded.sbom_digest,
+         provenance_digest=excluded.provenance_digest,
+         runtime_socket=excluded.runtime_socket,
+         timeout_ms=excluded.timeout_ms,
+         max_concurrency=excluded.max_concurrency,
+         request_max_bytes=excluded.request_max_bytes,
+         response_max_bytes=excluded.response_max_bytes,
+         rate_window_seconds=excluded.rate_window_seconds,
+         rate_max_requests=excluded.rate_max_requests,
+         retired_at=null,
+         revocation_epoch=gen_random_uuid(),
+         lock_version=mcp_server.lock_version+1,
+         updated_at=now()
        returning id`,
       [job.id, job.manifest.displayName, job.manifest.businessPurpose, job.manifest.tool.inputSchema, job.manifest.tool.outputSchema,
         job.manifest.handlerKey, job.manifest.handlerVersion, job.manifest.registrationRevision, job.imageDigest, job.manifestDigest,

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { loadConfig, type AppConfig } from "../config.js";
 import { createDb, type Db } from "../db.js";
+import { registerDisabledServer, type ActivationJob } from "../onboarding/activation.js";
 import {
   authenticateIntegrationToken,
   createIntegrationToken,
@@ -87,5 +88,66 @@ describe.skipIf(!enabled)("onboarding PostgreSQL transactions", () => {
     const created = await createIntegrationToken(db, config, adminId, randomUUID(), "Revocation test");
     await revokeIntegrationToken(db, created.id, adminId, randomUUID());
     await expect(authenticateIntegrationToken(db, created.token, config)).rejects.toThrow("invalid_integration_token");
+  });
+
+  it("updates the registered server and preserves revision history on a repaired upload", async () => {
+    const created = await createIntegrationToken(db, config, adminId, randomUUID(), "Revision update test");
+    const principal = await authenticateIntegrationToken(db, created.token, config);
+    const { manifest, digest: manifestDigest } = validateOnboardingManifest(manifestInput);
+    const sourceDigest = `sha256:${"b".repeat(64)}`;
+    const job = await createOnboardingJob(db, config, principal, "db-test-revision-update", manifest, {
+      archivePath: "/tmp/source.zip",
+      sourceDigest,
+      manifestDigest,
+      requestDigest: requestDigest(manifestDigest, sourceDigest),
+      validation: { fileCount: 5 }
+    }, randomUUID());
+    await db.query("update onboarding_job set state='DEPLOYING' where id=$1", [job.id]);
+    const first: ActivationJob = {
+      id: job.id,
+      code: String(job.code),
+      hostname: String(job.hostname),
+      toolName: String(job.toolName),
+      manifestDigest,
+      sourceDigest,
+      imageReference: "ghcr.io/example/handler:first",
+      imageDigest: `sha256:${"1".repeat(64)}`,
+      sbomDigest: `sha256:${"2".repeat(64)}`,
+      provenanceDigest: `sha256:${"3".repeat(64)}`,
+      sourceCommit: "first-commit",
+      buildId: "first-build",
+      manifest
+    };
+    const serverId = await registerDisabledServer(db, first, "/run/kcml/first.sock", randomUUID());
+    const revisedManifest = {
+      ...manifest,
+      registrationRevision: "db-test-2",
+      handlerVersion: "2.0.0"
+    };
+    const second: ActivationJob = {
+      ...first,
+      manifest: revisedManifest,
+      imageReference: "ghcr.io/example/handler:second",
+      imageDigest: `sha256:${"4".repeat(64)}`,
+      sourceCommit: "second-commit",
+      buildId: "second-build"
+    };
+    const sameServerId = await registerDisabledServer(db, second, "/run/kcml/second.sock", randomUUID());
+    expect(sameServerId).toBe(serverId);
+    const registered = await db.query(
+      "select handler_version,image_reference,image_digest,artifact_digest,runtime_socket,registration_state,enabled from mcp_server where id=$1",
+      [serverId]
+    );
+    expect(registered.rows[0]).toMatchObject({
+      handler_version: "2.0.0",
+      image_reference: "ghcr.io/example/handler:second",
+      image_digest: second.imageDigest,
+      artifact_digest: second.imageDigest,
+      runtime_socket: "/run/kcml/second.sock",
+      registration_state: "REGISTERED_DISABLED",
+      enabled: false
+    });
+    const revisions = await db.query("select revision from registration_revision where server_id=$1 order by created_at", [serverId]);
+    expect(revisions.rows.map((row) => String((row as { revision: unknown }).revision))).toEqual(["db-test-1", "db-test-2"]);
   });
 });
