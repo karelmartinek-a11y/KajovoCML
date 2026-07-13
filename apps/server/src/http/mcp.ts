@@ -178,11 +178,19 @@ export function registerMcpRoutes(app: FastifyInstance, db: Db, config: AppConfi
       const table = output && typeof output === "object" && "markdown_table" in output
         ? (output as { markdown_table?: unknown }).markdown_table
         : undefined;
+      const catalogSummary = output && typeof output === "object" && (output as { schema?: unknown }).schema === "ha_device_catalog.v3"
+        ? (output as { summary?: { device_count?: unknown; entity_count?: unknown; current_value_count?: unknown } }).summary
+        : undefined;
+      const contentText = typeof table === "string"
+        ? table
+        : catalogSummary
+          ? `Aktuální katalog Home Assistant: ${Number(catalogSummary.device_count ?? 0)} zařízení, ${Number(catalogSummary.entity_count ?? 0)} entit a ${Number(catalogSummary.current_value_count ?? 0)} aktuálních stavů nebo naměřených hodnot. Úplná data jsou ve structuredContent.`
+          : JSON.stringify(output);
       return {
         jsonrpc: "2.0",
         id: body.id ?? null,
         result: {
-          content: [{ type: "text", text: typeof table === "string" ? table : JSON.stringify(output) }],
+          content: [{ type: "text", text: contentText }],
           structuredContent: output
         }
       };
