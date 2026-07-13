@@ -47,6 +47,8 @@ jobs:
           encoded_auth="$(printf '%s:%s' "$GHCR_ACTOR" "$GHCR_TOKEN" | base64 -w0)"
           printf '{"auths":{"ghcr.io":{"auth":"%s"}}}\n' "$encoded_auth" > "$auth_file"
           unset encoded_auth
+          chown kcml:kcml "$auth_file"
+          chmod 0600 "$auth_file"
           install -m 0600 -o kcml -g kcml "$auth_file" "$docker_config"
 
           # The worker polls pending artifact jobs on its own. Restarting it
