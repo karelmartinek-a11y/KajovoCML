@@ -29,6 +29,7 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$GHCR_TOKEN"
+          [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
           test -f /etc/kcml/kcml.env
           set -a
           . /etc/kcml/kcml.env
@@ -68,8 +69,8 @@ jobs:
 
           systemctl restart kcml-onboarding-worker
           for _attempt in $(seq 1 120); do
-            state="$(psql "$DATABASE_URL" -Atq -v commit="$SOURCE_COMMIT" \
-              -c "select state from onboarding_job where source_commit=:'commit' order by created_at desc limit 1")"
+            state="$(psql "$DATABASE_URL" -Atq \
+              -c "select state from onboarding_job where source_commit='$SOURCE_COMMIT' order by created_at desc limit 1")"
             case "$state" in
               DEPLOYING|REGISTERED_DISABLED|TRIAL_TESTING|ACTIVE)
                 exit 0
