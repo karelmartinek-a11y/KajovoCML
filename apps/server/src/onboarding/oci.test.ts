@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { sanitizeCommandFailure, verifyAttestationEvidence, verifyLocalRuntimeEvidence } from "./oci.js";
+import { rootlessContainerUserArgs, sanitizeCommandFailure, verifyAttestationEvidence, verifyLocalRuntimeEvidence } from "./oci.js";
 
 function envelope(statement: unknown): string {
   return JSON.stringify({ payload: Buffer.from(JSON.stringify(statement)).toString("base64") });
@@ -69,5 +69,15 @@ describe("OCI command error redaction", () => {
   it("removes capabilities and tokens from subprocess output", () => {
     const value = sanitizeCommandFailure("failed kce_secret-value kci_another-secret Kaja0002:client-secret ghp_github-secret");
     expect(value).toBe("failed [REDACTED] [REDACTED] [REDACTED] [REDACTED]");
+  });
+});
+
+describe("rootless container user mapping", () => {
+  it("keeps Podman rootless while mapping container root to the service account", () => {
+    expect(rootlessContainerUserArgs(993, 985)).toEqual(["--userns", "host", "--user", "0:0"]);
+  });
+
+  it("rejects a rootful Podman worker", () => {
+    expect(() => rootlessContainerUserArgs(0, 0)).toThrow("rootless_runtime_user_required");
   });
 });

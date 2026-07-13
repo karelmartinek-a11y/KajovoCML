@@ -65,6 +65,17 @@ export function verifyLocalRuntimeEvidence(input: {
   if (input.actualImageName !== input.expectedImageName) throw new Error("artifact_reference_drift");
 }
 
+export function rootlessContainerUserArgs(runtimeUid: number | undefined, runtimeGid: number | undefined): string[] {
+  if (runtimeUid === undefined || runtimeGid === undefined || runtimeUid === 0) {
+    throw new Error("rootless_runtime_user_required");
+  }
+  // Podman itself runs as the unprivileged kcml account, so container UID 0
+  // maps to that account rather than host root. Using the caller namespace
+  // avoids a second keep-id layer remap while cap-drop/no-new-privileges and
+  // the remaining runtime restrictions still apply.
+  return ["--userns", "host", "--user", "0:0"];
+}
+
 function decodedAttestationPayloads(value: string): string[] {
   const results: string[] = [];
   for (const line of value.split("\n").filter(Boolean)) {
@@ -198,7 +209,7 @@ export class OciRuntime {
   }): Promise<{ socketPath: string; containerName: string }> {
     const runtimeUid = process.getuid?.();
     const runtimeGid = process.getgid?.();
-    if (runtimeUid === undefined || runtimeGid === undefined || runtimeUid === 0) throw new Error("rootless_runtime_user_required");
+    const containerUserArgs = rootlessContainerUserArgs(runtimeUid, runtimeGid);
     const immutable = `${withoutTag(input.imageReference)}@${input.imageDigest}`;
     const socketDirectory = path.join(this.config.RUNTIME_SOCKET_ROOT, input.code.toLowerCase());
     const socketPath = path.join(socketDirectory, "worker.sock");
@@ -216,7 +227,7 @@ export class OciRuntime {
       "--pids-limit", String(input.manifest.runtime.pidsLimit),
       "--memory", `${input.manifest.runtime.memoryMb}m`,
       "--cpus", String(input.manifest.runtime.cpuCores),
-      "--userns", "keep-id", "--user", `${runtimeUid}:${runtimeGid}`,
+      ...containerUserArgs,
       "--network", "none",
       "--tmpfs", "/tmp:rw,noexec,nosuid,nodev,size=16m",
       "--volume", `${socketDirectory}:/run/kcml:rw,z`,

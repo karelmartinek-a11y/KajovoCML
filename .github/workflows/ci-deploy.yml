@@ -3,6 +3,11 @@ name: CI and production deploy
 on:
   push:
     branches: [main]
+    # Handler-only merges are built, signed and deployed by the dedicated OCI
+    # workflows. Restarting the KCML control plane here can interrupt their
+    # activation without changing any control-plane code.
+    paths-ignore:
+      - "handlers/**"
   pull_request:
 
 permissions:
