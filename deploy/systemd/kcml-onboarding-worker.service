@@ -18,7 +18,9 @@ RuntimeDirectoryMode=0700
 ExecStart=/usr/bin/node apps/server/dist/cli/onboarding-worker.js
 Restart=on-failure
 RestartSec=5
-NoNewPrivileges=true
+# Rootless Podman needs the setuid newuidmap/newgidmap helpers. The handler
+# container itself is still started with --security-opt=no-new-privileges.
+NoNewPrivileges=false
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
