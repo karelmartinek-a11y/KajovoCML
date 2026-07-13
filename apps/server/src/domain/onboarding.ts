@@ -144,7 +144,9 @@ function mapToken(row: Record<string, unknown>) {
     active: !row.revoked_at && !row.deleted_at && new Date(String(row.expires_at)).getTime() > Date.now(),
     jobState: optionalText(row.job_state),
     code: optionalText(row.code),
-    hostname: optionalText(row.hostname)
+    hostname: optionalText(row.hostname),
+    heartbeatAt: asIso(row.heartbeat_at),
+    tokenExtendedAt: asIso(row.token_extended_at)
   };
 }
 
@@ -224,7 +226,7 @@ export async function createIntegrationToken(
 
 export async function listIntegrationTokens(db: Db) {
   const result = await db.query(`
-    select it.*, oj.state as job_state, oj.code, oj.hostname
+    select it.*, oj.state as job_state, oj.code, oj.hostname, oj.heartbeat_at, oj.token_extended_at
       from integration_token it
       left join onboarding_job oj on oj.id=it.onboarding_job_id
      where it.deleted_at is null

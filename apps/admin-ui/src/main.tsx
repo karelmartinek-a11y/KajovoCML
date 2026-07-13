@@ -29,6 +29,7 @@ import {
 } from "lucide-react";
 import "./styles.css";
 import { onboardingHandoffText } from "./onboarding-handoff.js";
+import { formatMinuteSecondCountdown, getIntegrationTokenLifecycle } from "./integration-token-lifecycle.js";
 
 type Page = "monitoring" | "integration" | "tokens" | "permissions" | "audit";
 type Session = { authenticated: boolean; account: string | null };
@@ -104,6 +105,8 @@ type IntegrationToken = {
   jobState: string | null;
   code: string | null;
   hostname: string | null;
+  heartbeatAt: string | null;
+  tokenExtendedAt: string | null;
 };
 type IntegrationSecret = IntegrationToken & {
   token: string;
@@ -524,8 +527,54 @@ function OnboardingJobModal({ jobId, onClose, onResume, onCancel }: { jobId: str
   );
 }
 
+function IntegrationTokenRunIndicator({ token, nowMs }: { token: IntegrationToken; nowMs: number }) {
+  const lifecycle = getIntegrationTokenLifecycle(token, nowMs);
+  return (
+    <div className={`integration-run-state ${lifecycle.runState}`} title={lifecycle.protectionLabel}>
+      <span className="integration-run-heading"><span className="integration-run-dot" /><strong>{lifecycle.runLabel}</strong></span>
+      <span className={`integration-protection ${lifecycle.protectionActive ? "protected" : "unprotected"}`}>
+        {lifecycle.protectionActive ? <ShieldCheck size={13} /> : <Clock3 size={13} />}{lifecycle.protectionLabel}
+      </span>
+      {token.tokenExtendedAt ? <small>Naposledy prodlouženo {formatDate(token.tokenExtendedAt)}</small> : null}
+    </div>
+  );
+}
+
+function IntegrationTokenExpiry({ token, nowMs }: { token: IntegrationToken; nowMs: number }) {
+  const lifecycle = getIntegrationTokenLifecycle(token, nowMs);
+  return (
+    <div className={`token-countdown ${lifecycle.tokenValid ? "valid" : "expired"}`} aria-label={lifecycle.tokenValid ? `Platnost končí za ${formatMinuteSecondCountdown(lifecycle.currentRemainingMs)}` : "Platnost tokenu skončila"}>
+      <strong>{formatMinuteSecondCountdown(lifecycle.currentRemainingMs)}</strong>
+      <small>{lifecycle.tokenValid ? `Končí ${formatDate(token.expiresAt)}` : "Token již nelze použít"}</small>
+    </div>
+  );
+}
+
+function IntegrationTokenMaximum({ token, nowMs }: { token: IntegrationToken; nowMs: number }) {
+  const lifecycle = getIntegrationTokenLifecycle(token, nowMs);
+  const maximumExhausted = lifecycle.maximumRemainingMs === 0;
+  const progressLabel = Math.round(lifecycle.maximumProgressPercent);
+  return (
+    <div className={`token-maximum ${lifecycle.nearMaximum || maximumExhausted ? "near" : "safe"}`}>
+      <strong>{formatMinuteSecondCountdown(lifecycle.maximumRemainingMs)}</strong>
+      <small>{maximumExhausted ? "Pevný limit 24 h vyčerpán" : lifecycle.nearMaximum ? "Blíží se pevný limit 24 h" : "Zbývá do pevného limitu 24 h"}</small>
+      <progress max="100" value={lifecycle.maximumProgressPercent} aria-label={`Využito ${progressLabel} procent z maximální doby 24 hodin`} />
+      <small>Využito {progressLabel} % · maximum {formatDate(token.maxExpiresAt)}</small>
+    </div>
+  );
+}
+
 function IntegrationTokensPage({ tokens, jobs, onCreate, onOpenJob, onResume, onRevoke, onDelete, onRefresh }: { tokens: IntegrationToken[]; jobs: OnboardingJob[]; onCreate: () => void; onOpenJob: (id: string) => void; onResume: (id: string) => void; onRevoke: (token: IntegrationToken) => void; onDelete: (token: IntegrationToken) => void; onRefresh: () => void }) {
   const [query, setQuery] = useState("");
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    const countdownTimer = window.setInterval(() => setNowMs(Date.now()), 1_000);
+    const refreshTimer = window.setInterval(onRefresh, 15_000);
+    return () => {
+      window.clearInterval(countdownTimer);
+      window.clearInterval(refreshTimer);
+    };
+  }, [onRefresh]);
   const filtered = tokens.filter((token) => `${token.label} ${token.fingerprint} ${token.code ?? ""}`.toLowerCase().includes(query.toLowerCase()));
   return (
     <>
@@ -534,7 +583,7 @@ function IntegrationTokensPage({ tokens, jobs, onCreate, onOpenJob, onResume, on
         <button onClick={onCreate}><Plus size={17} /> {integrationTokenActionLabel}</button><IconButton label="Obnovit" onClick={onRefresh}><RefreshCw size={17} /></IconButton>
       </PageHeader>
       <section className="panel table-panel"><div className="panel-head"><div><h2>Vydané tokeny</h2><p>Hodnotu tokenu nelze měnit ani znovu zobrazit.</p></div><span className="panel-count">{filtered.length} záznamů</span></div>
-        {filtered.length === 0 ? <div className="empty-state"><Workflow size={34} /><strong>Žádné implementační tokeny</strong><p>Vygeneruj první token a předej jej programátorovi bezpečným kanálem.</p></div> : <div className="table-scroll"><table><thead><tr><th>Označení</th><th>Fingerprint</th><th>KCML / job</th><th>Stav</th><th>Aktuální expirace</th><th>Maximum</th><th>Akce</th></tr></thead><tbody>{filtered.map((token) => <tr key={token.id}><td><strong>{token.label}</strong><span className="cell-subtitle">Vydán {formatDate(token.issuedAt)}</span></td><td><code>{token.fingerprint}</code></td><td>{token.code ?? "Čeká na upload"}<span className="cell-subtitle">{token.jobId ? token.jobId.slice(0, 8) : "Nevázaný"}</span></td><td><span className={`badge ${token.active ? "ok" : "danger"}`}>{token.jobState ?? (token.active ? "PŘIPRAVEN" : "NEPLATNÝ")}</span></td><td>{formatDate(token.expiresAt)}</td><td>{formatDate(token.maxExpiresAt)}</td><td><div className="row-actions">{token.jobId ? <button className="small-button" onClick={() => onOpenJob(token.jobId!)}>Detail</button> : null}{token.jobId && !["ACTIVE", "QUARANTINED", "CANCELLED"].includes(token.jobState ?? "") && !token.active ? <button className="small-button" onClick={() => onResume(token.jobId!)}>Navázat</button> : null}<button className="small-button" disabled={!token.active} onClick={() => onRevoke(token)}>Revokovat</button><button className="small-button danger-link" onClick={() => onDelete(token)}>Smazat</button></div></td></tr>)}</tbody></table></div>}
+        {filtered.length === 0 ? <div className="empty-state"><Workflow size={34} /><strong>Žádné implementační tokeny</strong><p>Vygeneruj první token a předej jej programátorovi bezpečným kanálem.</p></div> : <div className="table-scroll"><table className="integration-token-table"><thead><tr><th>Označení</th><th>Fingerprint</th><th>KCML / job</th><th>Stav jobu</th><th>Integrace / ochrana</th><th>Platnost končí za</th><th>Limit 24 hodin</th><th>Akce</th></tr></thead><tbody>{filtered.map((token) => <tr key={token.id}><td><strong>{token.label}</strong><span className="cell-subtitle">Vydán {formatDate(token.issuedAt)}</span></td><td><code>{token.fingerprint}</code></td><td>{token.code ?? "Čeká na upload"}<span className="cell-subtitle">{token.jobId ? token.jobId.slice(0, 8) : "Nevázaný"}</span></td><td><span className={`badge ${token.active ? "ok" : "danger"}`}>{token.jobState ?? (token.active ? "PŘIPRAVEN" : "NEPLATNÝ")}</span></td><td><IntegrationTokenRunIndicator token={token} nowMs={nowMs} /></td><td><IntegrationTokenExpiry token={token} nowMs={nowMs} /></td><td><IntegrationTokenMaximum token={token} nowMs={nowMs} /></td><td><div className="row-actions">{token.jobId ? <button className="small-button" onClick={() => onOpenJob(token.jobId!)}>Detail</button> : null}{token.jobId && !["ACTIVE", "QUARANTINED", "CANCELLED"].includes(token.jobState ?? "") && !token.active ? <button className="small-button" onClick={() => onResume(token.jobId!)}>Navázat</button> : null}<button className="small-button" disabled={!token.active} onClick={() => onRevoke(token)}>Revokovat</button><button className="small-button danger-link" onClick={() => onDelete(token)}>Smazat</button></div></td></tr>)}</tbody></table></div>}
       </section>
       <section className="panel"><div className="panel-head"><h2>Onboardingové joby</h2><span className="panel-count">{jobs.length} jobů</span></div>{jobs.length === 0 ? <div className="empty-state server-empty"><Rocket size={32} /><strong>Zatím nebyl zahájen žádný upload</strong></div> : <div className="job-cards">{jobs.map((job) => <button key={job.id} onClick={() => onOpenJob(job.id)}><span className={`status-dot ${job.state === "ACTIVE" ? "ok" : ["FAILED", "QUARANTINED", "CANCELLED"].includes(job.state) ? "danger" : "warn"}`} /><span><strong>{job.code ?? "Čeká na identitu"}</strong><small>{job.state} · {formatDate(job.updatedAt)}</small></span><ChevronDown className="item-chevron" size={15} /></button>)}</div>}</section>
     </>
