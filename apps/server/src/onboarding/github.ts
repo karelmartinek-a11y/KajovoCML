@@ -160,6 +160,7 @@ export class GitHubOnboardingClient {
       conclusion: typeof check.conclusion === "string" ? check.conclusion : null,
       url: typeof check.html_url === "string" ? check.html_url : null
     }));
+    if (String(pull.state) !== "open") return { state: "fail", headSha, checks };
     const byName = new Map(checks.map((check) => [check.name, check]));
     const required = REQUIRED_CHECKS.map((name) => byName.get(name));
     if (required.some((check) => !check || check.status !== "completed")) return { state: "pending", headSha, checks };
