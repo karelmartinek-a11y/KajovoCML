@@ -27,6 +27,7 @@ import {
 import "./styles.css";
 
 type Page = "monitoring" | "registration" | "tokens" | "permissions" | "audit";
+type ServerAction = "test" | "trial" | "mcp-test" | "bind-manifest" | "disable" | "resume" | "activate";
 type Session = { authenticated: boolean; account: string | null };
 type Server = {
   id: string;
@@ -41,15 +42,32 @@ type Server = {
   handlerKey: string;
   handlerVersion: string;
   contractVersion: string;
+  inputSchema: unknown;
+  outputSchema: unknown;
   artifactDigest: string;
   manifestDigest: string;
   successCount: number;
   unauthorizedCount: number;
   failureCount: number;
+  lastLatencyMs: number | null;
+  averageLatencyMs: number | null;
+  p95LatencyMs: number | null;
   lastSuccessAt: string | null;
   lastFailureAt: string | null;
   lastUnauthorizedAt: string | null;
   handlerSmokePassed: boolean;
+  manifestIdentityBound: boolean;
+  uiMcpTest: {
+    status: "PASS" | "FAIL";
+    testedAt: string;
+    latencyMs: number;
+    schemaValidated?: boolean;
+    toolCount?: number;
+    deviceCount?: number;
+    entityCount?: number;
+    rowCount?: number;
+    errorCode?: string;
+  } | null;
   acceptancePassed: boolean;
   createdAt: string;
   updatedAt: string;
@@ -82,6 +100,10 @@ type KajaPermission = {
 };
 type AuditEvent = { id: number; event_type: string; actor_type: string; object_type: string; object_id: string; correlation_id: string; created_at: string };
 type SecretResult = { publicId: string; label: string; clientSecret: string; fingerprint: string; expiresAt: string | null };
+type McpTestResult = {
+  result: { status: "PASS"; testedAt: string; latencyMs: number; schemaValidated: boolean; toolCount: number; deviceCount: number; entityCount: number; rowCount: number };
+  response: unknown;
+};
 
 const pageNames: Record<Page, string> = {
   monitoring: "Monitoring MCP",
@@ -234,6 +256,27 @@ function SecretModal({ secret, onClose }: { secret: SecretResult; onClose: () =>
   );
 }
 
+function McpTestResultModal({ value, onClose }: { value: McpTestResult; onClose: () => void }) {
+  return (
+    <Modal title="Výsledek skutečného MCP testu" onClose={onClose}>
+      <div className="test-result-dialog">
+        <div className="notice"><ShieldCheck size={18} /> OAuth, autorizace, initialize, tools/list, tools/call a výstupní schéma prošly.</div>
+        <dl className="registration-contract">
+          <dt>Výsledek</dt><dd>{value.result.status}</dd>
+          <dt>Latence celého toku</dt><dd>{value.result.latencyMs} ms</dd>
+          <dt>Nástroje</dt><dd>{value.result.toolCount}</dd>
+          <dt>Zařízení / entity</dt><dd>{value.result.deviceCount} / {value.result.entityCount}</dd>
+          <dt>Řádky tabulky</dt><dd>{value.result.rowCount}</dd>
+          <dt>Validace schématu</dt><dd>{value.result.schemaValidated ? "PASS" : "FAIL"}</dd>
+        </dl>
+        <h3>Přesná MCP odpověď</h3>
+        <pre className="test-output">{JSON.stringify(value.response, null, 2)}</pre>
+        <footer className="modal-actions"><button type="button" onClick={onClose}>Zavřít výsledek</button></footer>
+      </div>
+    </Modal>
+  );
+}
+
 function ConfirmModal({ credential, action, onClose, onConfirm }: { credential: KajaCredential; action: "revoke" | "delete"; onClose: () => void; onConfirm: () => Promise<void> }) {
   const [typed, setTyped] = useState("");
   const [busy, setBusy] = useState(false);
@@ -277,7 +320,7 @@ function MetricCard({ tone, icon, value, label }: { tone: "neutral" | "success" 
   return <article className={`metric-card ${tone}`}><span className="metric-icon">{icon}</span><strong>{value}</strong><span>{label}</span></article>;
 }
 
-function ServerDetailModal({ server, busy, onClose, onAction }: { server: Server; busy: boolean; onClose: () => void; onAction: (action: "test" | "trial" | "activate") => void }) {
+function ServerDetailModal({ server, busy, onClose, onAction }: { server: Server; busy: boolean; onClose: () => void; onAction: (action: ServerAction) => void }) {
   return (
     <Modal title={server.displayName} onClose={onClose}>
       <div className="server-detail">
@@ -288,27 +331,38 @@ function ServerDetailModal({ server, busy, onClose, onAction }: { server: Server
           <dt>Nástroj</dt><dd>{server.toolName}</dd>
           <dt>Handler</dt><dd>{server.handlerKey} · {server.handlerVersion}</dd>
           <dt>Contract</dt><dd>{server.contractVersion}</dd>
+          <dt>Artifact digest</dt><dd><code>{server.artifactDigest}</code></dd>
+          <dt>Manifest digest</dt><dd><code>{server.manifestDigest}</code></dd>
           <dt>Úspěšná volání</dt><dd>{server.successCount}</dd>
           <dt>Chyby autorizace</dt><dd>{server.unauthorizedCount}</dd>
           <dt>Provozní chyby</dt><dd>{server.failureCount}</dd>
+          <dt>Latence poslední / průměr / p95</dt><dd>{server.lastLatencyMs ?? "-"} / {server.averageLatencyMs ?? "-"} / {server.p95LatencyMs ?? "-"} ms</dd>
           <dt>Poslední úspěch</dt><dd>{formatDate(server.lastSuccessAt)}</dd>
           <dt>Poslední chyba</dt><dd>{formatDate(server.lastFailureAt)}</dd>
           <dt>Smoke test</dt><dd>{server.handlerSmokePassed ? "PASS" : "NOT TESTED"}</dd>
+          <dt>Identita v manifestu</dt><dd>{server.manifestIdentityBound ? "PASS" : "VYŽADUJE SYNCHRONIZACI"}</dd>
+          <dt>Skutečný MCP test</dt><dd>{server.uiMcpTest?.status ?? "NOT TESTED"}{server.uiMcpTest ? ` · ${server.uiMcpTest.latencyMs} ms` : ""}</dd>
           <dt>Akceptační matice</dt><dd>{server.acceptancePassed ? "PASS" : "NOT TESTED"}</dd>
         </dl>
         {server.description ? <p>{server.description}</p> : null}
+        <details><summary>Vstupní JSON Schema</summary><pre className="test-output">{JSON.stringify(server.inputSchema, null, 2)}</pre></details>
+        <details><summary>Výstupní JSON Schema</summary><pre className="test-output">{JSON.stringify(server.outputSchema, null, 2)}</pre></details>
         <footer className="modal-actions">
           <button type="button" className="secondary" onClick={onClose}>Zavřít detail</button>
           {server.registrationState === "REGISTERED_DISABLED" ? <button type="button" disabled={busy} onClick={() => onAction("test")}>Otestovat handler</button> : null}
+          {!server.manifestIdentityBound ? <button type="button" disabled={busy} onClick={() => onAction("bind-manifest")}>Synchronizovat manifest</button> : null}
           {server.registrationState === "REGISTERED_DISABLED" && server.handlerSmokePassed ? <button type="button" disabled={busy} onClick={() => onAction("trial")}>Povolit TRIAL</button> : null}
+          {["TRIAL", "ACTIVE"].includes(server.registrationState) ? <button type="button" disabled={busy} onClick={() => onAction("mcp-test")}>Otestovat přes MCP</button> : null}
           {server.registrationState === "TRIAL" && server.acceptancePassed ? <button type="button" disabled={busy} onClick={() => onAction("activate")}>Aktivovat</button> : null}
+          {["TRIAL", "ACTIVE"].includes(server.registrationState) ? <button type="button" className="danger-button" disabled={busy} onClick={() => { if (window.confirm("Opravdu okamžitě vypnout server a zneplatnit jeho access tokeny?")) onAction("disable"); }}>Vypnout server</button> : null}
+          {server.registrationState === "SUSPENDED" ? <button type="button" disabled={busy} onClick={() => onAction("resume")}>Obnovit provoz</button> : null}
         </footer>
       </div>
     </Modal>
   );
 }
 
-function MonitoringPage({ servers, actionBusy, onRefresh, onServerAction }: { servers: Server[]; actionBusy: boolean; onRefresh: () => void; onServerAction: (server: Server, action: "test" | "trial" | "activate") => Promise<void> }) {
+function MonitoringPage({ servers, actionBusy, onRefresh, onServerAction }: { servers: Server[]; actionBusy: boolean; onRefresh: () => void; onServerAction: (server: Server, action: ServerAction) => Promise<void> }) {
   const [query, setQuery] = useState("");
   const [timeRange, setTimeRange] = useState("24h");
   const [detailServer, setDetailServer] = useState<Server | null>(null);
@@ -465,6 +519,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
   const [secret, setSecret] = useState<SecretResult | null>(null);
   const [confirm, setConfirm] = useState<{ credential: KajaCredential; action: "revoke" | "delete" } | null>(null);
   const [serverActionBusy, setServerActionBusy] = useState(false);
+  const [mcpTestResult, setMcpTestResult] = useState<McpTestResult | null>(null);
   const [error, setError] = useState("");
   async function load() {
     setError("");
@@ -540,11 +595,12 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
     }
   }
 
-  async function runServerAction(server: Server, action: "test" | "trial" | "activate") {
+  async function runServerAction(server: Server, action: ServerAction) {
     setServerActionBusy(true);
     setError("");
     try {
-      await api(`/api/mcp-servers/${server.id}/${action}`, { method: "POST", headers: { "x-csrf-token": csrf() }, body: "{}" });
+      const result = await api<unknown>(`/api/mcp-servers/${server.id}/${action}`, { method: "POST", headers: { "x-csrf-token": csrf() }, body: "{}" });
+      if (action === "mcp-test") setMcpTestResult(result as McpTestResult);
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Operace serveru selhala");
@@ -577,6 +633,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
       </section>
       {createOpen && <CreateTokenModal serverCount={servers.length} onClose={() => setCreateOpen(false)} onCreated={(created) => { setCreateOpen(false); setSecret(created); void load(); }} />}
       {secret && <SecretModal secret={secret} onClose={() => setSecret(null)} />}
+      {mcpTestResult && <McpTestResultModal value={mcpTestResult} onClose={() => setMcpTestResult(null)} />}
       {confirm && <ConfirmModal credential={confirm.credential} action={confirm.action} onClose={() => setConfirm(null)} onConfirm={runConfirm} />}
     </main>
   );

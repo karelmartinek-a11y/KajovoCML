@@ -22,6 +22,7 @@ device/entity registries, current states, available services and configuration.
 - Maximum response size: 2 MiB.
 - Rate limit declared by the registration: 10 requests per 60 seconds.
 - Concurrency declared by the registration: 2.
+- Both limits are enforced in the handler before the upstream call.
 - Failure policy: fail closed with a generic MCP handler error; no partial or
   stale table is substituted.
 
@@ -34,12 +35,17 @@ device/entity registries, current states, available services and configuration.
    diagnostic commands or tickets.
 4. Confirm the catalog entry is `ACTIVE` or `TRIAL`, `enabled=true`, and its
    handler is `home_assistant_device_inventory@1.0.0`.
-5. If Home Assistant returns no devices unexpectedly, verify registry access
+5. Use **Otestovat přes MCP** in the server detail to run the real public
+   HTTPS flow through OAuth, Bearer authorization, `initialize`, `tools/list`,
+   `tools/call` and output-schema validation. The temporary Kaja credential is
+   deleted at the end of the test and the exact MCP response is shown in UI.
+6. If Home Assistant returns no devices unexpectedly, verify registry access
    over its authenticated WebSocket API and validate the agent token in place.
 
 ## Rollback
 
-Disable the catalog entry first so the public resource fails closed. Restore
+Use **Vypnout server** in the catalog detail first so the public resource fails
+closed and all existing access tokens for the resource are revoked. Restore
 the previous KCML and Home Assistant agent artifacts using the normal deployment
 rollback procedure, restart both services and verify their health endpoints.
 Do not reuse or export the Home Assistant token during rollback.
@@ -51,4 +57,3 @@ resource revocation epoch, retain the audit/evidence record, then set its
 registration state to `RETIRED`. Remove the handler only after no active or
 trial catalog entry references it. Remove the loopback endpoint in a separate
 Home Assistant agent change after the MCP dependency has been retired.
-

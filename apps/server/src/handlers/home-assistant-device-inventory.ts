@@ -73,20 +73,48 @@ export type HomeAssistantInventoryOutput = {
   markdown_table: string;
 };
 
-export async function fetchHomeAssistantInventory(fetchImpl: typeof fetch = fetch): Promise<HomeAssistantInventoryOutput> {
-  const response = await fetchImpl(HOME_ASSISTANT_INVENTORY_UPSTREAM, {
-    method: "GET",
-    headers: { accept: "application/json" },
-    signal: AbortSignal.timeout(15_000)
-  });
-  if (!response.ok) {
-    throw Object.assign(new Error(`home_assistant_inventory_upstream_${response.status}`), { classification: "upstream" });
+const activeByServer = new Map<string, number>();
+const invocationsByServer = new Map<string, number[]>();
+
+function reserveInvocation(serverId: string): () => void {
+  const now = Date.now();
+  const recent = (invocationsByServer.get(serverId) ?? []).filter((timestamp) => timestamp > now - 60_000);
+  if (recent.length >= 10) throw Object.assign(new Error("home_assistant_inventory_rate_limited"), { classification: "rate_limit" });
+  const active = activeByServer.get(serverId) ?? 0;
+  if (active >= 2) throw Object.assign(new Error("home_assistant_inventory_concurrency_limited"), { classification: "rate_limit" });
+  recent.push(now);
+  invocationsByServer.set(serverId, recent);
+  activeByServer.set(serverId, active + 1);
+  return () => activeByServer.set(serverId, Math.max(0, (activeByServer.get(serverId) ?? 1) - 1));
+}
+
+export async function fetchHomeAssistantInventory(correlationId: string, fetchImpl: typeof fetch = fetch): Promise<HomeAssistantInventoryOutput> {
+  try {
+    const response = await fetchImpl(HOME_ASSISTANT_INVENTORY_UPSTREAM, {
+      method: "GET",
+      headers: { accept: "application/json", "x-correlation-id": correlationId },
+      signal: AbortSignal.timeout(15_000)
+    });
+    if (!response.ok) {
+      throw Object.assign(new Error(`home_assistant_inventory_upstream_${response.status}`), { classification: "upstream" });
+    }
+    const text = await response.text();
+    if (Buffer.byteLength(text, "utf8") > 2 * 1024 * 1024) {
+      throw Object.assign(new Error("home_assistant_inventory_response_too_large"), { classification: "schema" });
+    }
+    try {
+      return JSON.parse(text) as HomeAssistantInventoryOutput;
+    } catch {
+      throw Object.assign(new Error("home_assistant_inventory_invalid_json"), { classification: "schema" });
+    }
+  } catch (error) {
+    if (typeof error === "object" && error && "classification" in error) throw error;
+    const name = error instanceof Error ? error.name : "";
+    if (["AbortError", "TimeoutError"].includes(name)) {
+      throw Object.assign(new Error("home_assistant_inventory_timeout"), { classification: "timeout" });
+    }
+    throw Object.assign(new Error("home_assistant_inventory_connection_failed"), { classification: "upstream" });
   }
-  const text = await response.text();
-  if (Buffer.byteLength(text, "utf8") > 2 * 1024 * 1024) {
-    throw Object.assign(new Error("home_assistant_inventory_response_too_large"), { classification: "schema" });
-  }
-  return JSON.parse(text) as HomeAssistantInventoryOutput;
 }
 
 export const homeAssistantDeviceInventoryHandler: KcmlHandler = {
@@ -94,7 +122,12 @@ export const homeAssistantDeviceInventoryHandler: KcmlHandler = {
   version: HOME_ASSISTANT_INVENTORY_HANDLER_VERSION,
   async invoke(_input, context) {
     context.logger.info({ correlationId: context.correlationId, upstreamSystem: "home-assistant-agent" }, "device inventory requested");
-    return fetchHomeAssistantInventory();
+    const release = reserveInvocation(context.server.id);
+    try {
+      return await fetchHomeAssistantInventory(context.correlationId);
+    } finally {
+      release();
+    }
   }
 };
 

@@ -303,6 +303,9 @@ input[type="checkbox"] { width: 17px; height: 17px; min-height: 17px; padding: 0
 .registration-contract dt, .registration-contract dd { margin: 0; padding: 12px 14px; border-bottom: 1px solid var(--line); }
 .registration-contract dt { color: #667382; font-weight: 700; background: #f8fafc; }
 .registration-contract dd { overflow-wrap: anywhere; }
+.test-result-dialog { display: grid; gap: 16px; min-width: 0; }
+.test-result-dialog h3 { margin: 0; font-size: 14px; }
+.test-output { margin: 0; max-height: 46vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid var(--line); border-radius: 6px; background: #101820; color: #d7f4ed; padding: 14px; font-size: 11px; line-height: 1.45; }
 .notice { display: flex; gap: 8px; align-items: center; background: #fff; border-radius: 6px; padding: 11px; border: 1px solid #f0c3c0; }
 .loading { min-height: 100vh; display: grid; place-items: center; color: #536170; }
 

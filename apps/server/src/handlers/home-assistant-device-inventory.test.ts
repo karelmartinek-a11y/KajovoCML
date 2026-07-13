@@ -27,17 +27,36 @@ const output = {
 
 describe("home assistant inventory handler", () => {
   it("uses only the loopback inventory upstream and returns its structured result", async () => {
-    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
       expect(url).toBe(HOME_ASSISTANT_INVENTORY_UPSTREAM);
+      expect(init?.headers).toMatchObject({ "x-correlation-id": "correlation-test" });
       return new Response(JSON.stringify(output), { status: 200, headers: { "content-type": "application/json" } });
     }) as unknown as typeof fetch;
-    await expect(fetchHomeAssistantInventory(fetchImpl)).resolves.toEqual(output);
+    await expect(fetchHomeAssistantInventory("correlation-test", fetchImpl)).resolves.toEqual(output);
     expect(homeAssistantDeviceInventoryHandler.key).toBe("home_assistant_device_inventory");
   });
 
   it("fails closed when the upstream is unavailable", async () => {
     const fetchImpl = vi.fn(async () => new Response("unavailable", { status: 503 })) as unknown as typeof fetch;
-    await expect(fetchHomeAssistantInventory(fetchImpl)).rejects.toThrow("home_assistant_inventory_upstream_503");
+    await expect(fetchHomeAssistantInventory("correlation-test", fetchImpl)).rejects.toThrow("home_assistant_inventory_upstream_503");
+  });
+
+  it("classifies timeouts without retry or fallback", async () => {
+    const timeout = Object.assign(new Error("timed out"), { name: "TimeoutError" });
+    const fetchImpl = vi.fn(async () => { throw timeout; }) as unknown as typeof fetch;
+    await expect(fetchHomeAssistantInventory("correlation-test", fetchImpl)).rejects.toMatchObject({
+      message: "home_assistant_inventory_timeout",
+      classification: "timeout"
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("classifies malformed upstream data as a schema failure", async () => {
+    const fetchImpl = vi.fn(async () => new Response("not-json", { status: 200 })) as unknown as typeof fetch;
+    await expect(fetchHomeAssistantInventory("correlation-test", fetchImpl)).rejects.toMatchObject({
+      message: "home_assistant_inventory_invalid_json",
+      classification: "schema"
+    });
   });
 });

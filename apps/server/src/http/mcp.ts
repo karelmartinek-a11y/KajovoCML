@@ -20,6 +20,13 @@ async function recordUnauthorized(db: Db, serverId: string): Promise<void> {
   );
 }
 
+async function recordInvocationMetric(db: Db, serverId: string, success: boolean, latencyMs: number, classification: string | null, correlationId: string): Promise<void> {
+  await db.query(
+    "insert into mcp_invocation_metric(server_id,success,latency_ms,classification,correlation_id) values ($1,$2,$3,$4,$5)",
+    [serverId, success, latencyMs, classification, correlationId]
+  );
+}
+
 export function registerMcpRoutes(app: FastifyInstance, db: Db, config: AppConfig): void {
   app.get("/.well-known/oauth-protected-resource", async (request, reply) => {
     const hostname = hostOf(request.headers.host);
@@ -48,6 +55,7 @@ export function registerMcpRoutes(app: FastifyInstance, db: Db, config: AppConfi
   app.all("/mcp", async (request, reply) => {
     const correlationId = randomUUID();
     const hostname = hostOf(request.headers.host);
+    request.log.info({ eventType: "mcp.request.received", correlationId, hostname, method: request.method }, "MCP request received");
     if (request.method !== "POST") return sendError(reply, 405, "method_not_allowed", "Only POST is supported", correlationId);
     if (!isKcmlHostname(hostname, config.PUBLIC_BASE_DOMAIN)) return sendError(reply, 404, "not_found", "Unknown resource", correlationId);
     const server = await getServerByHostname(db, hostname);
@@ -59,10 +67,12 @@ export function registerMcpRoutes(app: FastifyInstance, db: Db, config: AppConfi
       await appendAudit(db, { eventType: "mcp.disabled", actorType: "anonymous", objectType: "mcp_server", objectId: server.id, correlationId });
       return sendError(reply, 503, "service_unavailable", "Resource is unavailable", correlationId);
     }
+    const challenge = `Bearer resource_metadata="https://${hostname}/.well-known/oauth-protected-resource/mcp", scope="mcp:${server.code}"`;
     const auth = request.headers.authorization;
     if (!auth?.startsWith("Bearer ")) {
       await recordUnauthorized(db, server.id);
       await appendAudit(db, { eventType: "mcp.unauthorized", actorType: "anonymous", objectType: "mcp_server", objectId: server.id, after: { reason: "missing_bearer" }, correlationId });
+      reply.header("WWW-Authenticate", challenge);
       return sendError(reply, 401, "invalid_token", "Bearer token is required", correlationId);
     }
     let principal: Awaited<ReturnType<typeof validateBearer>>;
@@ -71,6 +81,7 @@ export function registerMcpRoutes(app: FastifyInstance, db: Db, config: AppConfi
     } catch {
       await recordUnauthorized(db, server.id);
       await appendAudit(db, { eventType: "mcp.unauthorized", actorType: "anonymous", objectType: "mcp_server", objectId: server.id, after: { reason: "invalid_bearer" }, correlationId });
+      reply.header("WWW-Authenticate", challenge);
       return sendError(reply, 401, "invalid_token", "Invalid token", correlationId);
     }
     const body = request.body as { jsonrpc?: string; id?: unknown; method?: string; params?: unknown };
@@ -103,23 +114,31 @@ export function registerMcpRoutes(app: FastifyInstance, db: Db, config: AppConfi
     }
     const validateInput = ajv.compile(server.inputSchema as AnySchema);
     if (!validateInput(params.arguments ?? {})) {
+      request.log.info({ eventType: "mcp.input_schema_failed", correlationId, code: server.code, hostname, toolName: server.toolName, errorCode: "input_schema_failed", classification: "schema" }, "MCP input schema rejected");
+      await appendAudit(db, { eventType: "mcp.input_schema_failed", actorType: "kaja", actorId: principal.credentialId, objectType: "mcp_server", objectId: server.id, after: { errorCode: "input_schema_failed", classification: "schema" }, correlationId });
       return { jsonrpc: "2.0", id: body.id ?? null, error: { code: -32602, message: "Input schema validation failed" } };
     }
     const handler = getHandler(server);
-    if (!handler) return sendError(reply, 503, "handler_unavailable", "Handler is not registered in this build", correlationId);
+    if (!handler) {
+      await appendAudit(db, { eventType: "mcp.handler_unavailable", actorType: "kaja", actorId: principal.credentialId, objectType: "mcp_server", objectId: server.id, after: { errorCode: "handler_unavailable", classification: "configuration" }, correlationId });
+      return sendError(reply, 503, "handler_unavailable", "Handler is not registered in this build", correlationId);
+    }
     await appendAudit(db, { eventType: "mcp.invocation.accepted", actorType: "kaja", actorId: principal.credentialId, objectType: "mcp_server", objectId: server.id, correlationId });
     const started = Date.now();
     try {
       const output = await handler.invoke(params.arguments ?? {}, { correlationId, server, logger: request.log });
       const validateOutput = ajv.compile(server.outputSchema as AnySchema);
       if (!validateOutput(output)) throw Object.assign(new Error("output_schema_failed"), { classification: "schema" });
+      const latencyMs = Date.now() - started;
       await db.query(
         `insert into function_statistics(server_id, success_count, last_success_at)
          values ($1,1,now())
          on conflict (server_id) do update set success_count=function_statistics.success_count+1, last_success_at=now()`,
         [server.id]
       );
-      await appendAudit(db, { eventType: "mcp.invocation.completed", actorType: "kaja", actorId: principal.credentialId, objectType: "mcp_server", objectId: server.id, after: { latencyMs: Date.now() - started }, correlationId });
+      await recordInvocationMetric(db, server.id, true, latencyMs, null, correlationId);
+      await appendAudit(db, { eventType: "mcp.invocation.completed", actorType: "kaja", actorId: principal.credentialId, objectType: "mcp_server", objectId: server.id, after: { latencyMs }, correlationId });
+      request.log.info({ eventType: "mcp.invocation.completed", correlationId, code: server.code, hostname, toolName: server.toolName, handlerKey: server.handlerKey, handlerVersion: server.handlerVersion, credentialId: principal.credentialId, result: "success", latencyMs }, "MCP invocation completed");
       const table = output && typeof output === "object" && "markdown_table" in output
         ? (output as { markdown_table?: unknown }).markdown_table
         : undefined;
@@ -132,13 +151,22 @@ export function registerMcpRoutes(app: FastifyInstance, db: Db, config: AppConfi
         }
       };
     } catch (error) {
+      const latencyMs = Date.now() - started;
+      const errorCode = error instanceof Error ? error.message : "unknown";
+      const classification = typeof error === "object" && error && "classification" in error ? String(error.classification) : "handler";
       await db.query(
         `insert into function_statistics(server_id, failure_count, last_failure_at)
          values ($1,1,now())
          on conflict (server_id) do update set failure_count=function_statistics.failure_count+1, last_failure_at=now()`,
         [server.id]
       );
-      await appendAudit(db, { eventType: "mcp.invocation.failed", actorType: "kaja", actorId: principal.credentialId, objectType: "mcp_server", objectId: server.id, after: { latencyMs: Date.now() - started, error: error instanceof Error ? error.message : "unknown" }, correlationId });
+      await recordInvocationMetric(db, server.id, false, latencyMs, classification, correlationId);
+      const classifiedEvent = errorCode === "output_schema_failed" ? "mcp.output_schema_failed"
+        : classification === "timeout" ? "mcp.timeout"
+          : classification === "upstream" ? "mcp.upstream_failed"
+            : "mcp.invocation.failed";
+      await appendAudit(db, { eventType: classifiedEvent, actorType: "kaja", actorId: principal.credentialId, objectType: "mcp_server", objectId: server.id, after: { latencyMs, errorCode, classification }, correlationId });
+      request.log.error({ eventType: classifiedEvent, correlationId, code: server.code, hostname, toolName: server.toolName, handlerKey: server.handlerKey, handlerVersion: server.handlerVersion, credentialId: principal.credentialId, result: "failure", latencyMs, errorCode, classification }, "MCP invocation failed");
       return { jsonrpc: "2.0", id: body.id ?? null, error: { code: -32603, message: "Handler failed" } };
     }
   });

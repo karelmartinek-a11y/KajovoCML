@@ -10,6 +10,12 @@ function asTimestamp(value: unknown): string | null {
 }
 
 function mapServer(row: Record<string, unknown>): McpServer {
+  const evidence: {
+    handlerSmoke?: { status?: string };
+    identityBound?: boolean;
+    uiMcpTest?: McpServer["uiMcpTest"];
+    acceptancePassed?: boolean;
+  } | null = row.evidence && typeof row.evidence === "object" ? row.evidence : null;
   return {
     id: String(row.id),
     code: String(row.code),
@@ -32,11 +38,16 @@ function mapServer(row: Record<string, unknown>): McpServer {
     successCount: Number(row.success_count ?? 0),
     unauthorizedCount: Number(row.unauthorized_count ?? 0),
     failureCount: Number(row.failure_count ?? 0),
+    lastLatencyMs: row.last_latency_ms === null || row.last_latency_ms === undefined ? null : Number(row.last_latency_ms),
+    averageLatencyMs: row.average_latency_ms === null || row.average_latency_ms === undefined ? null : Number(row.average_latency_ms),
+    p95LatencyMs: row.p95_latency_ms === null || row.p95_latency_ms === undefined ? null : Number(row.p95_latency_ms),
     lastSuccessAt: asTimestamp(row.last_success_at),
     lastFailureAt: asTimestamp(row.last_failure_at),
     lastUnauthorizedAt: asTimestamp(row.last_unauthorized_at),
-    handlerSmokePassed: Boolean((row.evidence as { handlerSmoke?: { status?: string } } | null)?.handlerSmoke?.status === "PASS"),
-    acceptancePassed: Boolean((row.evidence as { acceptancePassed?: boolean } | null)?.acceptancePassed),
+    handlerSmokePassed: Boolean(evidence?.handlerSmoke?.status === "PASS"),
+    manifestIdentityBound: Boolean(evidence?.identityBound),
+    uiMcpTest: evidence?.uiMcpTest ?? null,
+    acceptancePassed: Boolean(evidence?.acceptancePassed),
     createdAt: asTimestamp(row.created_at) ?? "",
     updatedAt: asTimestamp(row.updated_at) ?? ""
   };
@@ -62,7 +73,10 @@ export async function listServers(db: Db): Promise<McpServer[]> {
       fs.last_success_at,
       fs.last_failure_at,
       fs.last_unauthorized_at,
-      revision.evidence
+      revision.evidence,
+      latency.last_latency_ms,
+      latency.average_latency_ms,
+      latency.p95_latency_ms
     from mcp_server ms
     left join function_statistics fs on fs.server_id = ms.id
     left join lateral (
@@ -72,6 +86,14 @@ export async function listServers(db: Db): Promise<McpServer[]> {
       order by rr.created_at desc
       limit 1
     ) revision on true
+    left join lateral (
+      select
+        (array_agg(metric.latency_ms order by metric.created_at desc))[1] as last_latency_ms,
+        round(avg(metric.latency_ms)) as average_latency_ms,
+        round(percentile_cont(0.95) within group (order by metric.latency_ms)) as p95_latency_ms
+      from mcp_invocation_metric metric
+      where metric.server_id = ms.id and metric.created_at >= now() - interval '30 days'
+    ) latency on true
     order by ms.kcml_number asc
   `);
   return result.rows.map(mapServer);

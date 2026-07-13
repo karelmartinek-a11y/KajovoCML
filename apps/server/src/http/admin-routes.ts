@@ -16,10 +16,14 @@ import {
 import { listServers } from "../domain/catalog.js";
 import {
   activateHomeAssistantInventory,
+  bindHomeAssistantInventoryManifestIdentity,
+  disableHomeAssistantInventory,
   enableHomeAssistantInventoryTrial,
   recordAcceptanceMatrix,
   registerHomeAssistantInventory,
+  resumeHomeAssistantInventory,
   smokeTestHomeAssistantInventory,
+  testHomeAssistantInventoryThroughMcp,
   type AcceptanceMatrix
 } from "../domain/home-assistant-inventory-registration.js";
 import { hostOf, sendError } from "./errors.js";
@@ -131,6 +135,62 @@ export function registerAdminRoutes(app: FastifyInstance, db: Db, config: AppCon
     const { id } = request.params as { id: string };
     try {
       return await enableHomeAssistantInventoryTrial(db, id, accountId, correlationId);
+    } catch (error) {
+      return sendError(reply, Number((error as { statusCode?: number }).statusCode ?? 500), error instanceof Error ? error.message : "operation_failed", undefined, correlationId);
+    }
+  });
+
+  app.post("/api/mcp-servers/:id/mcp-test", async (request, reply) => {
+    const correlationId = randomUUID();
+    if (hostOf(request.headers.host) !== config.ADMIN_HOST) return sendError(reply, 404, "not_found", undefined, correlationId);
+    const accountId = await sessionAccountId(db, request);
+    if (!accountId) return sendError(reply, 401, "unauthorized", undefined, correlationId);
+    if (!requireCsrf(request)) return sendError(reply, 403, "csrf_failed", undefined, correlationId);
+    const { id } = request.params as { id: string };
+    try {
+      return await testHomeAssistantInventoryThroughMcp(db, config, id, accountId, correlationId);
+    } catch (error) {
+      return sendError(reply, Number((error as { statusCode?: number }).statusCode ?? 500), error instanceof Error ? error.message : "operation_failed", undefined, correlationId);
+    }
+  });
+
+  app.post("/api/mcp-servers/:id/bind-manifest", async (request, reply) => {
+    const correlationId = randomUUID();
+    if (hostOf(request.headers.host) !== config.ADMIN_HOST) return sendError(reply, 404, "not_found", undefined, correlationId);
+    const accountId = await sessionAccountId(db, request);
+    if (!accountId) return sendError(reply, 401, "unauthorized", undefined, correlationId);
+    if (!requireCsrf(request)) return sendError(reply, 403, "csrf_failed", undefined, correlationId);
+    const { id } = request.params as { id: string };
+    try {
+      return await bindHomeAssistantInventoryManifestIdentity(db, id, accountId, correlationId);
+    } catch (error) {
+      return sendError(reply, Number((error as { statusCode?: number }).statusCode ?? 500), error instanceof Error ? error.message : "operation_failed", undefined, correlationId);
+    }
+  });
+
+  app.post("/api/mcp-servers/:id/disable", async (request, reply) => {
+    const correlationId = randomUUID();
+    if (hostOf(request.headers.host) !== config.ADMIN_HOST) return sendError(reply, 404, "not_found", undefined, correlationId);
+    const accountId = await sessionAccountId(db, request);
+    if (!accountId) return sendError(reply, 401, "unauthorized", undefined, correlationId);
+    if (!requireCsrf(request)) return sendError(reply, 403, "csrf_failed", undefined, correlationId);
+    const { id } = request.params as { id: string };
+    try {
+      return await disableHomeAssistantInventory(db, id, accountId, correlationId);
+    } catch (error) {
+      return sendError(reply, Number((error as { statusCode?: number }).statusCode ?? 500), error instanceof Error ? error.message : "operation_failed", undefined, correlationId);
+    }
+  });
+
+  app.post("/api/mcp-servers/:id/resume", async (request, reply) => {
+    const correlationId = randomUUID();
+    if (hostOf(request.headers.host) !== config.ADMIN_HOST) return sendError(reply, 404, "not_found", undefined, correlationId);
+    const accountId = await sessionAccountId(db, request);
+    if (!accountId) return sendError(reply, 401, "unauthorized", undefined, correlationId);
+    if (!requireCsrf(request)) return sendError(reply, 403, "csrf_failed", undefined, correlationId);
+    const { id } = request.params as { id: string };
+    try {
+      return await resumeHomeAssistantInventory(db, id, accountId, correlationId);
     } catch (error) {
       return sendError(reply, Number((error as { statusCode?: number }).statusCode ?? 500), error instanceof Error ? error.message : "operation_failed", undefined, correlationId);
     }

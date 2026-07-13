@@ -16,6 +16,6 @@ evidence source that must be checked before a status is recorded as `PASS`.
 | T-16–T-20 | Admin workflow uses live catalog state, starts disabled, records the smoke result, requires evidence before activation, and retains audit history. |
 | T-21–T-25 | CI, backup/rollback, health monitoring, documentation traceability, and one-host/one-tool isolation pass. |
 
-No status may be promoted by assumption. The activation endpoint accepts only
-the complete C-01…C-10 and T-01…T-25 matrix with every status equal to `PASS`.
-
+No status may be promoted by assumption. The registration API stores the full
+matrix including honest `FAIL`, `BLOCKED` and `NOT TESTED` values. The activation
+endpoint remains closed unless C-01…C-10 and T-01…T-25 are all `PASS`.
