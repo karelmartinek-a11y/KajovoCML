@@ -7,7 +7,8 @@ import {
   createIntegrationToken,
   createOnboardingJob,
   requestDigest,
-  revokeIntegrationToken
+  revokeIntegrationToken,
+  transitionJob
 } from "./onboarding.js";
 import { validateOnboardingManifest } from "./registration.js";
 
@@ -68,6 +69,17 @@ describe.skipIf(!enabled)("onboarding PostgreSQL transactions", () => {
     expect(first.code).toBe("KCML0001");
     expect(first.hostname).toBe("kcml0001.hcasc.cz");
     expect((await db.query("select count(*)::int as count from onboarding_job")).rows[0].count).toBe(1);
+    const failed = await transitionJob(
+      db,
+      first.id,
+      first.lockVersion,
+      "FAILED",
+      "pipeline.failed",
+      { error: "regression test" },
+      randomUUID(),
+      { blocking_error_code: "regression_test", blocking_error_detail: "regression test" }
+    );
+    expect(failed.state).toBe("FAILED");
     await expect(createOnboardingJob(db, config, principal, "db-test-idempotency-other", manifest, evidence, randomUUID())).rejects.toThrow("integration_token_already_bound");
   });
 

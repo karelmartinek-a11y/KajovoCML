@@ -460,8 +460,8 @@ export async function transitionJob(
     });
     const terminal = TERMINAL_JOB_STATES.has(to) ? ", completed_at=now(), lease_owner=null, lease_expires_at=null" : "";
     const updated = await client.query(
-      `update onboarding_job set state=$3, ${assignments.length ? `${assignments.join(", ")}, ` : ""}
-              runtime_stopped_at=case when $3='DEPLOYING' then null else runtime_stopped_at end,
+      `update onboarding_job set state=$3::onboarding_job_state, ${assignments.length ? `${assignments.join(", ")}, ` : ""}
+              runtime_stopped_at=case when $3::onboarding_job_state='DEPLOYING'::onboarding_job_state then null else runtime_stopped_at end,
               lock_version=lock_version+1, next_run_at=now()${terminal}
         where id=$1 and lock_version=$2 returning *`,
       values
