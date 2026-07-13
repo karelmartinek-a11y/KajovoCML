@@ -81,6 +81,10 @@ jobs:
           install -m 0644 deploy/systemd/kcml.service /etc/systemd/system/kcml.service
           install -m 0644 deploy/systemd/kcml-onboarding-worker.service /etc/systemd/system/kcml-onboarding-worker.service
           install -m 0644 deploy/systemd/kcml-egress-proxy.service /etc/systemd/system/kcml-egress-proxy.service
+          kcml_uid="$(id -u kcml)"
+          loginctl enable-linger kcml
+          systemctl start "user@${kcml_uid}.service"
+          test -S "/run/user/${kcml_uid}/bus"
           systemctl daemon-reload
           systemctl enable kcml kcml-onboarding-worker kcml-egress-proxy
           deploy/scripts/backup.sh

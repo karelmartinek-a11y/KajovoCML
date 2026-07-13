@@ -35,6 +35,9 @@ jobs:
           . /etc/kcml/kcml.env
           set +a
 
+          kcml_uid="$(id -u kcml)"
+          runtime_dir="/run/user/${kcml_uid}"
+          test -S "${runtime_dir}/bus"
           auth_file=/var/lib/kcml/podman/auth.json
           docker_config=/var/lib/kcml/podman/.docker/config.json
           cleanup() {
@@ -47,7 +50,8 @@ jobs:
             HOME=/var/lib/kcml/podman \
             XDG_DATA_HOME=/var/lib/kcml/podman/data \
             XDG_CONFIG_HOME=/var/lib/kcml/podman/config \
-            XDG_RUNTIME_DIR=/run/kcml-podman \
+            XDG_RUNTIME_DIR="$runtime_dir" \
+            DBUS_SESSION_BUS_ADDRESS="unix:path=${runtime_dir}/bus" \
             podman login --authfile "$auth_file" --username "$GHCR_ACTOR" --password-stdin ghcr.io >/dev/null
           install -m 0600 -o kcml -g kcml "$auth_file" "$docker_config"
 
@@ -62,7 +66,8 @@ jobs:
               HOME=/var/lib/kcml/podman \
               XDG_DATA_HOME=/var/lib/kcml/podman/data \
               XDG_CONFIG_HOME=/var/lib/kcml/podman/config \
-              XDG_RUNTIME_DIR=/run/kcml-podman \
+              XDG_RUNTIME_DIR="$runtime_dir" \
+              DBUS_SESSION_BUS_ADDRESS="unix:path=${runtime_dir}/bus" \
               REGISTRY_AUTH_FILE="$auth_file" \
               sh -c 'cd /var/lib/kcml/podman && podman system migrate && podman pull "$1" >/dev/null' sh "$image"
           done <<< "$handlers"

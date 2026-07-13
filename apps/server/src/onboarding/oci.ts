@@ -9,9 +9,33 @@ import type { OnboardingManifest } from "../domain/registration.js";
 
 const execFileAsync = promisify(execFile);
 
+export function sanitizeCommandFailure(value: string): string {
+  return value
+    .replace(/\bkce_[A-Za-z0-9_-]+\b/g, "[REDACTED]")
+    .replace(/\bkci_[A-Za-z0-9_-]+\b/g, "[REDACTED]")
+    .replace(/\bKaja\d{4,}:[A-Za-z0-9_-]+\b/g, "[REDACTED]")
+    .replace(/\b(?:ghp|github_pat)_[A-Za-z0-9_-]+\b/g, "[REDACTED]")
+    .trim()
+    .slice(0, 1_000);
+}
+
 async function command(binary: string, args: string[], timeout = 120_000): Promise<string> {
-  const result = await execFileAsync(binary, args, { timeout, maxBuffer: 10 * 1024 * 1024, encoding: "utf8" });
-  return result.stdout.trim();
+  try {
+    const result = await execFileAsync(binary, args, { timeout, maxBuffer: 10 * 1024 * 1024, encoding: "utf8" });
+    return result.stdout.trim();
+  } catch (error) {
+    const failure = error as { stderr?: unknown; stdout?: unknown; code?: unknown; signal?: unknown };
+    const output = [failure.stderr, failure.stdout]
+      .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+      .join("\n");
+    const exit = typeof failure.code === "string" || typeof failure.code === "number"
+      ? String(failure.code)
+      : typeof failure.signal === "string" || typeof failure.signal === "number"
+        ? String(failure.signal)
+        : "unknown";
+    const detail = sanitizeCommandFailure(output) || `exit=${exit}`;
+    throw new Error(`command_failed:${path.basename(binary)}:${detail}`);
+  }
 }
 
 function evidenceDigest(value: string): string {

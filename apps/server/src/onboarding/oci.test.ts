@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { verifyAttestationEvidence, verifyLocalRuntimeEvidence } from "./oci.js";
+import { sanitizeCommandFailure, verifyAttestationEvidence, verifyLocalRuntimeEvidence } from "./oci.js";
 
 function envelope(statement: unknown): string {
   return JSON.stringify({ payload: Buffer.from(JSON.stringify(statement)).toString("base64") });
@@ -62,5 +62,12 @@ describe("local runtime integrity evidence", () => {
       expectedImageName,
       ...override
     })).toThrow(code);
+  });
+});
+
+describe("OCI command error redaction", () => {
+  it("removes capabilities and tokens from subprocess output", () => {
+    const value = sanitizeCommandFailure("failed kce_secret-value kci_another-secret Kaja0002:client-secret ghp_github-secret");
+    expect(value).toBe("failed [REDACTED] [REDACTED] [REDACTED] [REDACTED]");
   });
 });
