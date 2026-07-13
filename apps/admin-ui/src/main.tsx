@@ -30,6 +30,7 @@ import {
 import "./styles.css";
 import { onboardingHandoffText } from "./onboarding-handoff.js";
 import { formatMinuteSecondCountdown, getIntegrationTokenLifecycle } from "./integration-token-lifecycle.js";
+import { isExpiredAdminSession, SESSION_EXPIRED_EVENT } from "./session-auth.js";
 
 type Page = "monitoring" | "integration" | "tokens" | "permissions" | "audit";
 type Session = { authenticated: boolean; account: string | null };
@@ -159,6 +160,7 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, { ...init, credentials: "include", headers: { "content-type": "application/json", ...(init?.headers ?? {}) } });
   if (!res.ok) {
     const body = await res.json().catch((): { error?: string } => ({ error: res.statusText })) as { error?: string };
+    if (isExpiredAdminSession(res.status, body.error)) window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
     throw new Error(body.error ?? res.statusText);
   }
   return res.json() as Promise<T>;
@@ -192,7 +194,7 @@ function Modal({ title, children, onClose }: { title: string; children: React.Re
   );
 }
 
-function Login({ onLogin }: { onLogin: () => void }) {
+function Login({ notice, onLogin }: { notice?: string; onLogin: () => void }) {
   const [username, setUsername] = useState("karmar78");
   const [password, setPassword] = useState("");
   const [totp, setTotp] = useState("");
@@ -212,6 +214,7 @@ function Login({ onLogin }: { onLogin: () => void }) {
       <section className="login-panel">
         <div className="brand-row"><ShieldCheck size={28} /><strong>KCML</strong></div>
         <h1>Správce MCP serverů</h1>
+        {notice ? <div className="login-notice" role="status"><Clock3 size={18} /><span><strong>Je nutné se znovu přihlásit</strong>{notice}</span></div> : null}
         <form onSubmit={(event) => { void submit(event); }}>
           <label>Uživatel<input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" /></label>
           <label>Heslo<input value={password} onChange={(e) => setPassword(e.target.value)} type="password" autoComplete="current-password" /></label>
@@ -797,9 +800,18 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
 
 function App() {
   const [session, setSession] = useState<Session | null>(null);
+  const [sessionNotice, setSessionNotice] = useState("");
   useEffect(() => { void api<Session>("/api/session").then(setSession).catch(() => setSession({ authenticated: false, account: null })); }, []);
+  useEffect(() => {
+    const handleExpiredSession = () => {
+      setSessionNotice("Vaše přihlašovací relace skončila nebo byla odhlášena. Po přihlášení můžete bezpečně pokračovat ve stejné operaci.");
+      setSession({ authenticated: false, account: null });
+    };
+    window.addEventListener(SESSION_EXPIRED_EVENT, handleExpiredSession);
+    return () => window.removeEventListener(SESSION_EXPIRED_EVENT, handleExpiredSession);
+  }, []);
   if (!session) return <main className="loading">Načítám</main>;
-  return session.authenticated ? <Dashboard onLogout={() => setSession({ authenticated: false, account: null })} /> : <Login onLogin={() => setSession({ authenticated: true, account: "karmar78" })} />;
+  return session.authenticated ? <Dashboard onLogout={() => { setSessionNotice(""); setSession({ authenticated: false, account: null }); }} /> : <Login notice={sessionNotice} onLogin={() => { setSessionNotice(""); setSession({ authenticated: true, account: "karmar78" }); }} />;
 }
 
 createRoot(document.getElementById("root")!).render(<App />);

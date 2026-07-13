@@ -61,6 +61,10 @@ button:disabled { background: #e7ebef; border-color: #dfe4e9; color: #98a3af; cu
 .login-panel { width: min(430px, 100%); background: #fff; border: 1px solid var(--line-strong); border-radius: 7px; padding: 34px; box-shadow: 0 24px 70px rgba(23, 32, 42, 0.12); }
 .login-panel h1 { margin: 26px 0 8px; font-size: 29px; line-height: 1.12; }
 .login-panel form { margin-top: 24px; }
+.login-notice { display: flex; gap: 9px; align-items: flex-start; margin-top: 18px; padding: 11px 12px; border: 1px solid #e8c778; border-radius: 6px; background: #fff8e6; color: #76520f; font-size: 11.5px; line-height: 1.45; }
+.login-notice svg { flex: 0 0 auto; margin-top: 1px; }
+.login-notice span { display: grid; gap: 2px; }
+.login-notice strong { color: #68470b; font-size: 12px; }
 
 .brand-row { display: flex; align-items: center; gap: 10px; }
 .brand-row > div { display: grid; gap: 2px; }
