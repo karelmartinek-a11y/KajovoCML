@@ -64,6 +64,21 @@ def build(source: Path, destination: Path) -> None:
 
     replace_everywhere(document, "Connect in Catalog v1.2", "Connect in Catalog v1.4")
     replace_everywhere(document, "Verze 1.2", "Verze 1.4")
+    replace_exact(
+        document,
+        "Tento dokument určuje přesný postup a technické podmínky pro nový MCP server v KajovoMCPCML. Pokrývá handler, vlastní HTTPS identitu, katalog, autorizaci, logging, audit, monitoring, testy a aktivaci. Verze 1.4 přidává preferovaný automatický onboarding: správce vystaví jednorázově zobrazený integrační token, programátor odešle striktní manifest a zdrojový ZIP na register.hcasc.cz a serverový job provede PR, CI, podepsaný OCI deploy, veřejné testy a automatickou aktivaci pouze po úplném PASS.",
+        "Tento dokument určuje přesný postup a technické podmínky pro nový MCP server v KajovoMCPCML. Pokrývá handler, vlastní HTTPS identitu, katalog, autorizaci, logging, audit, monitoring, testy a aktivaci. Verze 1.4 stanoví jediný podporovaný registrační tok: správce vystaví jednorázově zobrazený integrační token, programátor odešle striktní manifest a zdrojový ZIP na register.hcasc.cz a serverový job provede PR, CI, podepsaný OCI deploy, veřejné testy a automatickou aktivaci pouze po úplném PASS."
+    )
+    replace_exact(
+        document,
+        "Preferovaně v UI zvolit Automaticky integrovat MCP server a vystavit integrační token; ruční Přidat MCP server zůstává pouze správcovská cesta mimo automatický onboarding.",
+        "V UI zvolit Automaticky integrovat MCP server a vystavit integrační token. Ruční registrace ani přímá správcovská aktivace nového serveru nejsou dostupné."
+    )
+    replace_exact(
+        document,
+        "Tato kapitola je závazná pro preferovanou cestu bez ručního vyplňování registrace v UI. Implementační token neobchází bezpečnostní brány: autorizuje jeden serverový onboardingový job, který po úplném PASS sám zaregistruje, otestuje a aktivuje právě jeden nový MCP server.",
+        "Tato kapitola je závazná pro jedinou podporovanou registraci bez ručního vyplňování v UI. Implementační token neobchází bezpečnostní brány: autorizuje jeden serverový onboardingový job, který po úplném PASS sám zaregistruje, otestuje a aktivuje právě jeden nový MCP server."
+    )
     replace_everywhere(
         document,
         "FAILED, QUARANTINED, CANCELLED nebo expirovaný token jsou nedokončený výsledek; předej správci job ID, correlation ID a blockingError.",

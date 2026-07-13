@@ -59,20 +59,6 @@ export type McpServer = {
   lastSuccessAt: string | null;
   lastFailureAt: string | null;
   lastUnauthorizedAt: string | null;
-  handlerSmokePassed: boolean;
-  manifestIdentityBound: boolean;
-  uiMcpTest: {
-    status: "PASS" | "FAIL";
-    testedAt: string;
-    latencyMs: number;
-    schemaValidated?: boolean;
-    toolCount?: number;
-    deviceCount?: number;
-    entityCount?: number;
-    rowCount?: number;
-    errorCode?: string;
-  } | null;
-  acceptancePassed: boolean;
   createdAt: string;
   updatedAt: string;
 };

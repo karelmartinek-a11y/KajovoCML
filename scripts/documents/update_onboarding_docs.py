@@ -296,7 +296,7 @@ def append_connect_chapters(doc):
     doc.add_page_break()
     doc.add_heading("27. Automatický onboarding integračním tokenem", level=1)
     doc.add_paragraph(
-        "Tato kapitola je závazná pro preferovanou cestu bez ručního vyplňování registrace v UI. "
+        "Tato kapitola je závazná pro jedinou podporovanou registraci bez ručního vyplňování v UI. "
         "Implementační token neobchází bezpečnostní brány: autorizuje jeden serverový onboardingový job, "
         "který po úplném PASS sám zaregistruje, otestuje a aktivuje právě jeden nový MCP server."
     )
@@ -497,12 +497,12 @@ def update_connect():
             paragraph.text = (
                 "Tento dokument určuje přesný postup a technické podmínky pro nový MCP server v KajovoMCPCML. "
                 "Pokrývá handler, vlastní HTTPS identitu, katalog, autorizaci, logging, audit, monitoring, testy a aktivaci. "
-                "Verze 1.2 přidává preferovaný automatický onboarding: správce vystaví jednorázově zobrazený integrační token, "
+                "Verze 1.2 zavádí jediný podporovaný automatický onboarding: správce vystaví jednorázově zobrazený integrační token, "
                 "programátor odešle striktní manifest a zdrojový ZIP na register.hcasc.cz a serverový job provede PR, CI, "
                 "podepsaný OCI deploy, veřejné testy a automatickou aktivaci pouze po úplném PASS."
             )
     replacements = {
-        "V UI správce zvolit Přidat MCP server.": "Preferovaně v UI zvolit Automaticky integrovat MCP server a vystavit integrační token; ruční Přidat MCP server zůstává pouze správcovská cesta mimo automatický onboarding.",
+        "V UI správce zvolit Přidat MCP server.": "V UI zvolit Automaticky integrovat MCP server a vystavit integrační token. Ruční registrace ani přímá správcovská aktivace nového serveru nejsou dostupné.",
         "Po úspěchu změnit stav přes PENDING_TECH_REVIEW, PENDING_SECURITY_REVIEW, PENDING_TEST, APPROVED, REGISTERED_DISABLED až na TRIAL nebo ACTIVE.": "Automatický job uloží jednotlivé gates, vytvoří REGISTERED_DISABLED, provede TRIAL_TESTING a po úplném PASS sám přejde do ACTIVE/enabled=true; ruční přepsání výsledku je zakázáno.",
         "☐ Server byl aktivován až po schválení a zůstává vypnutý, dokud není explicitně zapnut.": "☐ Server byl aktivován pouze automatickým stavovým automatem po úplném PASS; při automatickém onboardingu není závěrečné ruční kliknutí ani možnost obejít gate.",
         "Rezervovat identitu výhradně přes katalogové UI nebo jeho schválené API. Převzít přidělený KCML kód, hostname a resource beze změny. V handleru je nezapisovat natvrdo; handler je čte z context.server. Identita smí být uložena jen v katalogovém záznamu a schváleném manifestu.": "Použít integrační token a POST https://register.hcasc.cz/v1/onboardings. Identitu rezervuje transakčně systém; programátor převezme přidělený KCML kód, hostname, resource a toolName beze změny. Identitu nevkládá do vstupního manifestu ani natvrdo do handleru.",
@@ -589,7 +589,7 @@ def append_ssot_chapter(doc):
     width = 9069
     doc.add_page_break()
     doc.add_heading("37. Automatický onboarding zdrojového handleru", level=1)
-    doc.add_paragraph("Tato kapitola je normativní pro automatickou integraci jednoho nového MCP serveru integračním tokenem. Upřesňuje starší ruční registrační postup. Při rozporu má přednost bezpečnější požadavek této kapitoly; token autorizuje workflow, nikoli přímé zapnutí serveru.")
+    doc.add_paragraph("Tato kapitola je normativní pro jedinou podporovanou integraci jednoho nového MCP serveru integračním tokenem. Starší ruční registrační postup je odstraněn; token autorizuje workflow, nikoli přímé zapnutí serveru.")
     add_callout(doc, "AUTO-SSOT-01", "Jeden 512bitový kci_ token smí nevratně založit nebo obnovit právě jeden onboarding job a právě jednu centrálně přidělenou KCML identitu. Bez platného tokenu vrací všechny /v1/onboardings operace jednotné 401 invalid_integration_token.", width, SSOT_BLUE)
     doc.add_heading("37.1 Token, TTL a stavový automat", level=2)
     add_table(doc, ["Pravidlo", "Normativní požadavek"], [

@@ -1672,7 +1672,7 @@ Při skutečném rozporu, který nelze vyřešit tímto pořadím, se implementa
 
 ## 37. Automatický onboarding zdrojového handleru
 
-Tato kapitola je normativní pro automatickou integraci jednoho nového MCP serveru integračním tokenem. Upřesňuje starší ruční registrační postup. Při rozporu má přednost bezpečnější požadavek této kapitoly; token autorizuje workflow, nikoli přímé zapnutí serveru.
+Tato kapitola je normativní pro jedinou podporovanou integraci jednoho nového MCP serveru integračním tokenem. Starší ruční registrační postup je odstraněn; token autorizuje workflow, nikoli přímé zapnutí serveru.
 
 ### 37.1 Token, TTL a stavový automat
 
