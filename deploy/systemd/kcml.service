@@ -14,7 +14,7 @@ RestartSec=5
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ReadWritePaths=/opt/kcml /var/log/kcml /var/lib/kcml/runtime
+ReadWritePaths=/opt/kcml /var/log/kcml /var/lib/kcml/onboarding /var/lib/kcml/runtime
 
 [Install]
 WantedBy=multi-user.target
