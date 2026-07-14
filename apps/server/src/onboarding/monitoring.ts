@@ -38,6 +38,18 @@ export const LEGACY_MONITORING_INTERVALS: Record<ProbeName, number> = {
 };
 export const LEGACY_MONITORING_STALE_AFTER_SECONDS = Math.max(...Object.values(LEGACY_MONITORING_INTERVALS));
 
+export function completedProbeCheckTimes(rows: Array<Record<string, unknown>>): Map<string, number> {
+  const completed = new Map<string, number>();
+  for (const row of rows) {
+    if (row.status === "STALE") continue;
+    const probeType = String(row.probe_type);
+    const checkedAt = new Date(row.checked_at as string | number | Date).getTime();
+    if (!Number.isFinite(checkedAt) || checkedAt <= Number(completed.get(probeType) ?? 0)) continue;
+    completed.set(probeType, checkedAt);
+  }
+  return completed;
+}
+
 export function expectedMonitoringProfileDigest(schemaVersion: string, profile: unknown, storedProfileText: unknown): string {
   if (schemaVersion === "1.4") {
     if (typeof storedProfileText !== "string") throw new Error("legacy_monitoring_profile_text_missing");
@@ -328,13 +340,13 @@ export class MonitoringScheduler {
     const manifest = validated.manifest;
     const policy = monitorPolicy(manifest);
     const latestResult = await this.db.query(
-      `select distinct on (probe_type) probe_type,status,checked_at
+      `select distinct on (probe_type,status) probe_type,status,checked_at
          from monitoring_probe_result
         where server_id=$1
-        order by probe_type,checked_at desc,id desc`,
+        order by probe_type,status,checked_at desc,id desc`,
       [serverId]
     );
-    const latest = new Map(latestResult.rows.map((item) => [String(item.probe_type), new Date(item.checked_at).getTime()]));
+    const latest = completedProbeCheckTimes(latestResult.rows as Array<Record<string, unknown>>);
     const due = (name: ProbeName): boolean => !latest.has(name) || Date.now() - Number(latest.get(name)) >= policy.intervals[name] * 1_000;
     const probes: Probe[] = [];
     const run = async (name: ProbeName, fn: () => Promise<Record<string, unknown>>): Promise<void> => {
