@@ -91,7 +91,9 @@ jobs:
           output: /tmp/codeql-results
           upload: false
       - name: Enforce clean CodeQL results
-        run: jq -e '[.runs[].results[]?] | length == 0' /tmp/codeql-results/javascript.sarif
+        run: |
+          jq -r '.runs[].results[]? | [.ruleId, (.level // "warning"), .message.text, (.locations[0].physicalLocation.artifactLocation.uri // ""), ((.locations[0].physicalLocation.region.startLine // 0) | tostring)] | @tsv' /tmp/codeql-results/javascript.sarif
+          jq -e '[.runs[].results[]?] | length == 0' /tmp/codeql-results/javascript.sarif
 
   release:
     if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
