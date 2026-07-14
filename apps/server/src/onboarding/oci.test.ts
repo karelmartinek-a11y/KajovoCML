@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  keylessVerificationArgs,
   rootlessContainerUserArgs,
   rootlessPodmanServiceInvocation,
   sanitizeCommandFailure,
@@ -15,6 +16,18 @@ const imageDigest = `sha256:${"a".repeat(64)}`;
 const subject = [{ name: "handler-image", digest: { sha256: "a".repeat(64) } }];
 
 describe("OCI attestation evidence", () => {
+  it("pins keyless verification to one GitHub workflow identity and issuer", () => {
+    expect(keylessVerificationArgs(
+      "https://github.com/example/repository/.github/workflows/onboarding-build.yml@refs/heads/main",
+      "https://token.actions.githubusercontent.com"
+    )).toEqual([
+      "--certificate-identity",
+      "https://github.com/example/repository/.github/workflows/onboarding-build.yml@refs/heads/main",
+      "--certificate-oidc-issuer",
+      "https://token.actions.githubusercontent.com"
+    ]);
+  });
+
   it("binds SBOM and provenance to the exact digest, commit and Actions run", () => {
     const sbom = envelope({ subject, predicate: { packages: [] } });
     const provenance = envelope({
@@ -110,8 +123,8 @@ describe("rootless Podman user-manager execution", () => {
     expect(invocation.binary).toBe("/usr/bin/systemd-run");
     expect(invocation.args).toContain("--unit=kcml-podman-test-id");
     expect(invocation.args).toContain("KillMode=process");
-    expect(invocation.args).toContain("XDG_RUNTIME_DIR=/run/user/993");
-    expect(invocation.args).toContain("DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/993/bus");
+    expect(invocation.args).toContain("XDG_RUNTIME_DIR=/run/kcml-podman");
+    expect(invocation.args).toContain("DBUS_SESSION_BUS_ADDRESS=unix:path=/run/kcml-podman/bus");
     expect(invocation.args).toContain("REGISTRY_AUTH_FILE=/var/lib/kcml/podman/auth.json");
     expect(invocation.args).not.toContain("UNRELATED_SECRET=must-not-be-forwarded");
     expect(invocation.args.slice(-4)).toEqual(["/usr/bin/podman", "image", "inspect", "example"]);

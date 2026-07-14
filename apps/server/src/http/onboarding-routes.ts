@@ -4,11 +4,12 @@ import path from "node:path";
 import argon2 from "argon2";
 import { authenticator } from "otplib";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { ZodError } from "zod";
+import { z, ZodError } from "zod";
 import type { AppConfig } from "../config.js";
 import type { Db } from "../db.js";
 import {
   authenticateIntegrationToken,
+  beginActiveServerRevision,
   cancelOnboardingJob,
   createIntegrationToken,
   createOnboardingJob,
@@ -21,14 +22,34 @@ import {
   requestDigest,
   revokeIntegrationToken
 } from "../domain/onboarding.js";
-import type { OnboardingDescriptor } from "../domain/onboarding.js";
-import { validateOnboardingManifest } from "../domain/registration.js";
+import { evidenceReferencesForManifest, validateOnboardingManifest } from "../domain/registration.js";
 import { MAX_ARCHIVE_BYTES, validateAndQuarantineArchive } from "../domain/upload-validation.js";
+import { decryptMfaSecret } from "../security/secrets.js";
 import { requireCsrf, sessionAccount } from "./admin-routes.js";
 import { hostOf, sendError } from "./errors.js";
 
 const IDEMPOTENCY_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/;
-const ONBOARDING_CATALOG_FILE = "Connect_in_Catalog_KajovoMCPCML_v1.4.docx";
+const ONBOARDING_CATALOG_FILE = "Connect_in_Catalog_KajovoMCPCML_v1.5.docx";
+const onboardingDescriptorSchema = z.object({
+  summary: z.string().trim().min(3).max(240),
+  businessPurpose: z.string().trim().min(20).max(2_000),
+  serviceOwner: z.string().trim().min(2).max(160),
+  technicalOwner: z.string().trim().min(2).max(160),
+  criticality: z.enum(["LOW", "MEDIUM", "HIGH", "CRITICAL"])
+}).strict();
+const integrationTokenRequestSchema = z.object({
+  label: z.string().trim().min(1).max(120),
+  descriptor: onboardingDescriptorSchema,
+  resumeJobId: z.string().uuid().optional()
+}).strict();
+
+export function verifyEncryptedMfaTotp(totp: string, encryptedSecret: string, encryptionKey: Buffer): boolean {
+  try {
+    return authenticator.check(totp, decryptMfaSecret(encryptedSecret, encryptionKey));
+  } catch {
+    return false;
+  }
+}
 
 function bearer(request: FastifyRequest): string | null {
   const authorization = request.headers.authorization;
@@ -64,17 +85,6 @@ function errorCode(error: unknown): string {
   return error instanceof Error ? error.message.split(":")[0] ?? "operation_failed" : "operation_failed";
 }
 
-function defaultDescriptor(label: string): OnboardingDescriptor {
-  const fallback = label.trim() || "Neoznačený server";
-  return {
-    summary: fallback,
-    businessPurpose: fallback,
-    serviceOwner: "unspecified",
-    technicalOwner: "unspecified",
-    criticality: "MEDIUM"
-  };
-}
-
 async function multipartPayload(request: FastifyRequest): Promise<{ manifestInput: unknown; archive: Buffer }> {
   if (!request.isMultipart()) throw Object.assign(new Error("multipart_required"), { statusCode: 415 });
   let manifestText: string | null = null;
@@ -102,6 +112,11 @@ async function validatedUpload(request: FastifyRequest, config: AppConfig) {
   const { manifestInput, archive } = await multipartPayload(request);
   const { manifest, digest: manifestDigest } = validateOnboardingManifest(manifestInput);
   const validation = await validateAndQuarantineArchive(archive, config.QUARANTINE_ROOT);
+  const missingEvidence = evidenceReferencesForManifest(manifest).filter((reference) => !validation.files.includes(reference));
+  if (missingEvidence.length) {
+    await fs.rm(validation.directory, { recursive: true, force: true });
+    throw Object.assign(new Error(`manifest_evidence_missing:${missingEvidence[0]}`), { statusCode: 400 });
+  }
   return {
     manifest,
     validation,
@@ -142,38 +157,42 @@ async function adminIdentity(db: Db, config: AppConfig, request: FastifyRequest,
 }
 
 export function registerOnboardingRoutes(app: FastifyInstance, db: Db, config: AppConfig): void {
-  app.post("/api/integration-tokens", async (request, reply) => {
+  app.post("/api/mcp-servers/:id/revisions", async (request, reply) => {
+    const correlationId = randomUUID();
+    const accountId = await adminIdentity(db, config, request, reply, correlationId, true);
+    if (!accountId) return;
+    const { id } = request.params as { id: string };
+    try {
+      return { jobId: await beginActiveServerRevision(db, id, accountId, correlationId) };
+    } catch (error) {
+      return sendError(reply, statusCode(error), errorCode(error), undefined, correlationId);
+    }
+  });
+
+  app.post("/api/integration-tokens", {
+    config: { rateLimit: { max: 10, timeWindow: "1 minute", groupId: "admin-integration-token-create" } }
+  }, async (request, reply) => {
     const correlationId = randomUUID();
     const accountId = await adminIdentity(db, config, request, reply, correlationId, true);
     if (!accountId) return;
     if (!config.ONBOARDING_WORKER_ENABLED) {
       return sendError(reply, 503, "onboarding_unavailable", "Automatická integrace není na serveru připravená.", correlationId);
     }
-    const body = request.body as { note?: unknown; label?: unknown; descriptor?: unknown; resumeJobId?: unknown };
-    const note = typeof body.note === "string" ? body.note.trim() : "";
-    const legacyLabel = typeof body.label === "string" ? body.label.trim() : "";
-    const label = note || legacyLabel;
-    const resumeJobId = typeof body.resumeJobId === "string" && body.resumeJobId ? body.resumeJobId : undefined;
-    if (!label || label.length > 120) return sendError(reply, 400, "invalid_label", "Label is required and must be at most 120 characters", correlationId);
-    const descriptorInput = body.descriptor && typeof body.descriptor === "object" ? body.descriptor as Partial<OnboardingDescriptor> : null;
-    const descriptor = descriptorInput
-      ? {
-          summary: typeof descriptorInput.summary === "string" && descriptorInput.summary.trim() ? descriptorInput.summary.trim() : label,
-          businessPurpose: typeof descriptorInput.businessPurpose === "string" && descriptorInput.businessPurpose.trim() ? descriptorInput.businessPurpose.trim() : label,
-          serviceOwner: typeof descriptorInput.serviceOwner === "string" && descriptorInput.serviceOwner.trim() ? descriptorInput.serviceOwner.trim() : "unspecified",
-          technicalOwner: typeof descriptorInput.technicalOwner === "string" && descriptorInput.technicalOwner.trim() ? descriptorInput.technicalOwner.trim() : "unspecified",
-          criticality: ["LOW", "MEDIUM", "HIGH", "CRITICAL"].includes(String(descriptorInput.criticality)) ? String(descriptorInput.criticality) as OnboardingDescriptor["criticality"] : "MEDIUM"
-        }
-      : defaultDescriptor(label);
+    let parsed: z.infer<typeof integrationTokenRequestSchema>;
+    try {
+      parsed = integrationTokenRequestSchema.parse(request.body);
+    } catch (error) {
+      return sendError(reply, 400, "invalid_integration_descriptor", error instanceof Error ? error.message : undefined, correlationId);
+    }
     try {
       await fs.access(path.resolve(process.cwd(), ONBOARDING_CATALOG_FILE));
     } catch {
-      return sendError(reply, 503, "onboarding_catalog_unavailable", "Onboarding katalog v1.4 není na serveru dostupný.", correlationId);
+      return sendError(reply, 503, "onboarding_catalog_unavailable", "Onboarding katalog v1.5 není na serveru dostupný.", correlationId);
     }
     try {
       reply.header("cache-control", "no-store");
       return {
-        ...await createIntegrationToken(db, config, accountId, correlationId, label, descriptor, resumeJobId),
+        ...await createIntegrationToken(db, config, accountId, correlationId, parsed.label, parsed.descriptor, parsed.resumeJobId),
         onboardingCatalogUrl: "/api/onboarding-catalog",
         onboardingCatalogFileName: ONBOARDING_CATALOG_FILE,
         programmerApiUrl: `https://${config.REGISTER_HOST}/v1/onboardings`
@@ -183,7 +202,9 @@ export function registerOnboardingRoutes(app: FastifyInstance, db: Db, config: A
     }
   });
 
-  app.get("/api/onboarding-catalog", async (request, reply) => {
+  app.get("/api/onboarding-catalog", {
+    config: { rateLimit: { max: 5, timeWindow: "1 minute", groupId: "admin-onboarding-catalog" } }
+  }, async (request, reply) => {
     if (!await adminIdentity(db, config, request, reply)) return;
     try {
       const catalog = await fs.readFile(path.resolve(process.cwd(), ONBOARDING_CATALOG_FILE));
@@ -257,7 +278,9 @@ export function registerOnboardingRoutes(app: FastifyInstance, db: Db, config: A
     }
   });
 
-  app.post("/api/onboarding-jobs/:id/release-quarantine", async (request, reply) => {
+  app.post("/api/onboarding-jobs/:id/release-quarantine", {
+    config: { rateLimit: { max: 5, timeWindow: "1 minute", groupId: "admin-quarantine-release" } }
+  }, async (request, reply) => {
     const correlationId = randomUUID();
     const accountId = await adminIdentity(db, config, request, reply, correlationId, true);
     if (!accountId) return;
@@ -273,7 +296,7 @@ export function registerOnboardingRoutes(app: FastifyInstance, db: Db, config: A
     const account = await db.query("select password_hash,mfa_enabled,mfa_secret from admin_account where id=$1", [accountId]);
     const passwordOk = Boolean(account.rowCount && account.rows[0].password_hash) && await argon2.verify(String(account.rows[0].password_hash), password);
     const mfaOk = account.rowCount && account.rows[0].mfa_enabled
-      ? authenticator.check(totp, String(account.rows[0].mfa_secret))
+      ? verifyEncryptedMfaTotp(totp, String(account.rows[0].mfa_secret), config.MFA_ENCRYPTION_KEY_BASE64)
       : true;
     if (!passwordOk || !mfaOk) return sendError(reply, 403, "reauthentication_failed", "Opětovné ověření administrátora selhalo.", correlationId);
     try {

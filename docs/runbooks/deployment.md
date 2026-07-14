@@ -1,44 +1,42 @@
-# Deployment Runbook
+# Production Deployment Runbook
 
-## Required secrets
+## Trust model
 
-- GitHub secret `PASS`: production password for admin account `karmar78`.
-- Server-side `/etc/kcml/kcml.env`: `DATABASE_URL`, purpose-separated access/integration/egress HMAC keys, session/CSRF/MFA keys, host names, GitHub API authorization (existing repository token or GitHub App), GHCR namespace and trusted signing-key path.
+- The only manually managed GitHub secret is the protected `production` environment secret `PASS` for the deployment-managed `karmar78` account.
+- GitHub's automatic `GITHUB_TOKEN` is used only to download and verify the release attestation.
+- Database, HMAC, MFA, GitHub App and alert-webhook credentials remain on the server. `split-service-config.sh` exposes only the credentials required by each service through systemd `LoadCredential`.
+- Handler images use keyless Cosign verification bound to the exact GitHub OIDC issuer, repository, workflow and `main` identity.
+- The `kcml-deploy` runner is unprivileged. Its only sudo grants are the root-owned release and bounded GHCR preload wrappers.
 
-`PASS` is never echoed. If `PASS` is missing or empty, deployment fails closed.
-Operational secrets are generated and retained
-on the production server, not stored in GitHub Secrets.
+## Release gate
 
-## Order
+1. Pull-request CI runs lint, typecheck, unit/integration tests, clean migrations, a production-shape upgrade, database-role isolation, dependency audit, secret scan, CodeQL and build.
+2. A manual `workflow_dispatch` on `main` assembles the already-built production release. A push or pull request cannot deploy; this is the compensating approval control for private repositories whose GitHub plan does not expose environment reviewers.
+3. CI emits an SBOM, release checksum and GitHub OIDC build-provenance attestation.
+4. The deploy job uses the `production` environment and its sole `PASS` secret. Workflow conditions require `refs/heads/main` and an explicit manual dispatch.
+5. The dedicated runner verifies the checksum. The sudo wrapper verifies the GitHub attestation, source repository and immutable release manifest before extraction.
 
-1. Build and test in CI.
-2. Deploy job runs on the production self-hosted runner.
-3. Load `/etc/kcml/kcml.env`.
-4. Run `deploy/scripts/preflight.sh`. It blocks release without the DNS-01 wildcard certificate SAN for `*.hcasc.cz`, rootless Podman, cosign, GitHub API/OCI configuration, writable quarantine/runtime directories and the required systemd units.
-5. Run `deploy/scripts/backup.sh`.
-6. Run migrations.
-7. Synchronize admin password from `PASS`.
-8. Build a versioned release directory, install its production dependencies, atomically repoint `/opt/kcml/current`, and restart `kcml.service`, `kcml-onboarding-worker.service` and `kcml-egress-proxy.service`.
-9. Validate and reload the nginx config for `admin.hcasc.cz`, `auth.hcasc.cz`, `register.hcasc.cz`, the restricted KCML hostname regex and the default deny host.
-10. Check `/health`, worker logs and egress-proxy socket readiness.
-11. Keep the previous release for rollback; a failed health/service/socket check automatically repoints `current` to it.
+## Server install order
 
-## Automatic onboarding production gate
+`install-release.sh` performs the following fail-closed sequence:
 
-Do not enable `ONBOARDING_WORKER_ENABLED=true` until all of these are true:
+1. Install nginx and systemd definitions, including the separate `kcml-monitor.service`.
+2. Materialize per-service environment and credential files with modes `0700/0600`.
+3. Run preflight for TLS SAN, rootless Podman, Cosign identity, two separately keyed signed HTTPS alert sinks, `age`, service credentials and writable isolated paths.
+4. Create an encrypted custom-format PostgreSQL backup plus checksum.
+5. Apply checksum-locked forward migrations under advisory lock and timeouts.
+6. Create/update the non-owner `kcml_app` role through local PostgreSQL administration and revoke direct audit-table mutation.
+7. Synchronize only the `karmar78` password from `PASS` and the server-held MFA secret.
+8. Snapshot the prior nginx/systemd process contract, atomically switch `/opt/kcml/current`, and start web, onboarding, monitor, egress and both alert sinks.
+9. Require all services active, both signed webhook deliveries confirmed, admin login from `PASS`, OAuth metadata, unknown-host rejection, KCML0002 discovery, egress socket, audit chain, migration 019 and KCML0002 `ACTIVE/HEALTHY`.
 
-- GitHub API authorization can create repository contents and pull requests and read checks and Actions runs; a least-privilege GitHub App is preferred, while an existing repository-capable token is supported; required checks match `.github/workflows/onboarding-pr.yml`;
-- the trusted main workflow can push signed immutable images, SBOM and provenance to GHCR;
-- the `kcml` system user can run rootless Podman and cannot access production application secrets from handler containers;
-- `register.hcasc.cz` and a representative `kcmlNNNN.hcasc.cz` pass real DNS, TLS SAN, SNI and Host-routing tests;
-- a staging reference handler completes token issuance, upload, PR/CI, signed deploy, public OAuth/MCP trial and `ACTIVE/HEALTHY`.
+## Backup and restore evidence
+
+- `/opt/kcml/backups` is mode `0700`; files are mode `0600`.
+- `backup.sh` encrypts every new dump to the server's `age` recipient before persistence and applies retention cleanup.
+- `restore-test.sh` verifies the checksum, restores into an isolated temporary database and validates the audit chain.
+- A restore test is required quarterly and before a risky database change.
 
 ## Rollback
 
-Run `deploy/scripts/rollback.sh <release-id>`. Database rollback is permitted
-only to a migration-compatible application version. KCML identifiers, token
-revocation epochs, audit events, and statistics are never reset.
-
-Rollback must stop onboarding leases before changing the web release. An active
-job remains disabled unless its exact source commit, build ID, image digest,
-signature and attestations still verify after recovery.
+Run `deploy/scripts/rollback.sh <release-id>`. Rollback is allowed only to a migration-compatible release. The script restores the versioned nginx/systemd snapshot together with the immutable release symlink; database history, audit events, KCML identities and revocation epochs are never reset.

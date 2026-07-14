@@ -7,6 +7,8 @@ import type { Db } from "../db.js";
 import { tx } from "../db.js";
 import { appendAudit } from "../domain/audit.js";
 import { getServerByHostname, isKcmlHostname, resourceFor } from "../domain/catalog.js";
+import { beginInvocation, finalizeInvocation, recordFinalizationFailure } from "../domain/invocation.js";
+import { evaluateRecertification } from "../domain/recertification.js";
 import type { McpServer } from "../domain/types.js";
 import { validateBearer } from "../domain/auth.js";
 import { getHandler } from "../handlers/registry.js";
@@ -118,31 +120,12 @@ async function reserveIdempotency(
   });
 }
 
-async function completeIdempotency(db: Db, serverId: string, credentialId: string, reservation: IdempotencyReservation | null, response: JsonRpcResponse): Promise<void> {
-  if (!reservation || reservation.replay) return;
-  await db.query(
-    `update mcp_invocation_idempotency
-        set status='COMPLETED',
-            response_json=$4,
-            completed_at=now()
-      where server_id=$1 and credential_id=$2 and idempotency_key=$3`,
-    [serverId, credentialId, reservation.key, JSON.stringify(response)]
-  );
-}
-
 async function recordUnauthorized(db: Db, serverId: string): Promise<void> {
   await db.query(
     `insert into function_statistics(server_id, unauthorized_count, last_unauthorized_at)
      values ($1,1,now())
      on conflict (server_id) do update set unauthorized_count=function_statistics.unauthorized_count+1, last_unauthorized_at=now()`,
     [serverId]
-  );
-}
-
-async function recordInvocationMetric(db: Db, serverId: string, success: boolean, latencyMs: number, classification: string | null, correlationId: string): Promise<void> {
-  await db.query(
-    "insert into mcp_invocation_metric(server_id,success,latency_ms,classification,correlation_id) values ($1,$2,$3,$4,$5)",
-    [serverId, success, latencyMs, classification, correlationId]
   );
 }
 
@@ -175,12 +158,6 @@ function contentTextForOutput(output: unknown): string {
   return typeof table === "string" ? table : JSON.stringify(output);
 }
 
-function isReviewOverdue(reviewDueAt: string | null): boolean {
-  if (!reviewDueAt) return false;
-  const parsed = new Date(reviewDueAt);
-  return Number.isFinite(parsed.getTime()) && parsed.getTime() <= Date.now();
-}
-
 function originAllowed(origin: unknown, hostname: string): boolean {
   if (typeof origin !== "string" || !origin) return true;
   try {
@@ -207,12 +184,41 @@ function sendSsePoll(reply: FastifyReply, correlationId: string): void {
   reply.raw.end(`id: ${correlationId}\nretry: 15000\ndata:\n\n`);
 }
 
+function serverAvailability(server: McpServer): ReturnType<typeof evaluateRecertification> {
+  return evaluateRecertification({
+    activeRevisionId: server.activeRevisionId,
+    validationState: server.registrationValidationState,
+    approvedAt: server.reviewApprovedAt,
+    reviewDueAt: server.reviewDueAt,
+    reviewIntervalDays: server.reviewIntervalDays
+  });
+}
+
+function serverCanServe(server: McpServer): boolean {
+  return server.enabled
+    && ["ACTIVE", "TRIAL"].includes(server.registrationState)
+    && server.monitoringEnabled
+    && Boolean(server.monitoringProfileDigest)
+    && serverAvailability(server).canServeExisting;
+}
+
 export function registerMcpRoutes(app: FastifyInstance, db: Db, config: AppConfig): void {
   app.get("/.well-known/oauth-protected-resource", async (request, reply) => {
     const hostname = hostOf(request.headers.host);
     if (!isKcmlHostname(hostname, config.PUBLIC_BASE_DOMAIN)) return sendError(reply, 404, "not_found");
     const server = await getServerByHostname(db, hostname);
     if (!server) return sendError(reply, 404, "not_found");
+    if (!serverCanServe(server)) {
+      await appendAudit(db, {
+        eventType: "mcp.discovery.unavailable",
+        actorType: "anonymous",
+        objectType: "mcp_server",
+        objectId: server.id,
+        after: { reason: "resource_unavailable" },
+        correlationId: randomUUID()
+      });
+      return sendError(reply, 503, "service_unavailable", "Resource is unavailable");
+    }
     return {
       resource: resourceFor(hostname),
       authorization_servers: [`https://${config.AUTH_HOST}`],
@@ -225,6 +231,17 @@ export function registerMcpRoutes(app: FastifyInstance, db: Db, config: AppConfi
     if (!isKcmlHostname(hostname, config.PUBLIC_BASE_DOMAIN)) return sendError(reply, 404, "not_found");
     const server = await getServerByHostname(db, hostname);
     if (!server) return sendError(reply, 404, "not_found");
+    if (!serverCanServe(server)) {
+      await appendAudit(db, {
+        eventType: "mcp.discovery.unavailable",
+        actorType: "anonymous",
+        objectType: "mcp_server",
+        objectId: server.id,
+        after: { reason: "resource_unavailable" },
+        correlationId: randomUUID()
+      });
+      return sendError(reply, 503, "service_unavailable", "Resource is unavailable");
+    }
     return {
       resource: resourceFor(hostname),
       authorization_servers: [`https://${config.AUTH_HOST}`],
@@ -232,7 +249,9 @@ export function registerMcpRoutes(app: FastifyInstance, db: Db, config: AppConfi
     };
   });
 
-  app.all("/mcp", async (request, reply) => {
+  app.all("/mcp", {
+    config: { rateLimit: { max: 120, timeWindow: "1 minute", groupId: "mcp-http" } }
+  }, async (request, reply) => {
     const correlationId = randomUUID();
     reply.header("x-correlation-id", correlationId);
     const hostname = hostOf(request.headers.host);
@@ -248,7 +267,7 @@ export function registerMcpRoutes(app: FastifyInstance, db: Db, config: AppConfi
       await appendAudit(db, { eventType: "mcp.unknown_host", actorType: "anonymous", objectType: "hostname", objectId: hostname, correlationId });
       return sendError(reply, 404, "not_found", "Unknown resource", correlationId);
     }
-    if (!server.enabled || !["ACTIVE", "TRIAL"].includes(server.registrationState) || isReviewOverdue(server.reviewDueAt)) {
+    if (!serverCanServe(server)) {
       await appendAudit(db, { eventType: "mcp.disabled", actorType: "anonymous", objectType: "mcp_server", objectId: server.id, correlationId });
       return sendError(reply, 503, "service_unavailable", "Resource is unavailable", correlationId);
     }
@@ -411,7 +430,6 @@ export function registerMcpRoutes(app: FastifyInstance, db: Db, config: AppConfi
       return reply.send(jsonRpcError(body.id, -32004, "Registered tool concurrency limit exceeded", correlationId));
     }
 
-    await appendAudit(db, { eventType: "mcp.invocation.accepted", actorType: "kaja", actorId: principal.credentialId, objectType: "mcp_server", objectId: server.id, correlationId });
     const runtimeLog = async (level: "info" | "error", eventName: string, fields: object): Promise<void> => {
       const safeFields = redact({ ...fields, serverCode: server.code, handlerVersion: server.handlerVersion }) as object;
       const safeEventName = String(redact(eventName)).slice(0, 160);
@@ -423,7 +441,45 @@ export function registerMcpRoutes(app: FastifyInstance, db: Db, config: AppConfi
         [server.id, level, safeEventName, JSON.stringify(safeFields), correlationId, server.imageDigest]
       );
     };
-    await runtimeLog("info", "mcp.invocation.accepted", { actorId: principal.credentialId, toolName: server.toolName });
+    const reportFinalizationFailure = async (input: { invocationId: string; error: unknown }): Promise<void> => {
+      try {
+        await recordFinalizationFailure(db, {
+          invocationId: input.invocationId,
+          serverId: server.id,
+          correlationId,
+          error: input.error instanceof Error ? input.error.message
+            : typeof input.error === "string" ? input.error
+              : "finalization_failed"
+        });
+      } catch (alertError) {
+        request.log.error(
+          { eventType: "mcp.invocation.finalization_alert_failed", correlationId, invocationId: input.invocationId, code: server.code, alertError },
+          "MCP invocation finalization failure could not be persisted"
+        );
+      }
+    };
+    let invocationId = "";
+    try {
+      invocationId = await beginInvocation(db, {
+        serverId: server.id,
+        credentialId: principal.credentialId,
+        correlationId,
+        requestDigest: requestDigest(params.arguments ?? {}),
+        idempotencyKey: idempotency?.key ?? null
+      });
+      await runtimeLog("info", "mcp.invocation.accepted", { actorId: principal.credentialId, toolName: server.toolName });
+    } catch (error) {
+      if (invocationId) {
+        await reportFinalizationFailure({ invocationId, error });
+      }
+      try {
+        await releaseConcurrencyLease(db, leaseId);
+      } catch (releaseError) {
+        request.log.error({ eventType: "mcp.concurrency_release_failed", correlationId, leaseId, code: server.code, releaseError }, "MCP concurrency lease release failed");
+      }
+      request.log.error({ eventType: "mcp.invocation.acceptance_failed", correlationId, code: server.code, error }, "MCP invocation acceptance failed");
+      return reply.send(jsonRpcError(body.id, -32603, "Invocation acceptance failed", correlationId));
+    }
 
     const started = Date.now();
     try {
@@ -451,16 +507,6 @@ export function registerMcpRoutes(app: FastifyInstance, db: Db, config: AppConfi
       }
 
       const latencyMs = Date.now() - started;
-      await db.query(
-        `insert into function_statistics(server_id, success_count, last_success_at)
-         values ($1,1,now())
-         on conflict (server_id) do update set success_count=function_statistics.success_count+1, last_success_at=now()`,
-        [server.id]
-      );
-      await recordInvocationMetric(db, server.id, true, latencyMs, null, correlationId);
-      await appendAudit(db, { eventType: "mcp.invocation.completed", actorType: "kaja", actorId: principal.credentialId, objectType: "mcp_server", objectId: server.id, after: { latencyMs }, correlationId });
-      await runtimeLog("info", "mcp.invocation.completed", { latencyMs });
-      request.log.info({ eventType: "mcp.invocation.completed", correlationId, code: server.code, hostname, toolName: server.toolName, handlerKey: server.handlerKey, handlerVersion: server.handlerVersion, credentialId: principal.credentialId, result: "success", latencyMs }, "MCP invocation completed");
       const response: JsonRpcResponse = {
         jsonrpc: "2.0",
         id: body.id ?? null,
@@ -469,19 +515,34 @@ export function registerMcpRoutes(app: FastifyInstance, db: Db, config: AppConfi
           structuredContent: output
         }
       };
-      await completeIdempotency(db, server.id, principal.credentialId, idempotency, response);
+      try {
+        await finalizeInvocation(db, {
+          invocationId,
+          serverId: server.id,
+          credentialId: principal.credentialId,
+          correlationId,
+          outcome: {
+            success: true,
+            latencyMs,
+            errorClass: null,
+            eventType: "mcp.invocation.completed",
+            response,
+            idempotency: idempotency ? { key: idempotency.key, credentialId: principal.credentialId } : null
+          }
+        });
+      } catch (error) {
+        await reportFinalizationFailure({ invocationId, error });
+        return reply.send(jsonRpcError(body.id, -32603, "Invocation finalization failed", correlationId));
+      }
+      await runtimeLog("info", "mcp.invocation.completed", { latencyMs, invocationId }).catch((error) => {
+        request.log.error({ eventType: "mcp.runtime_log.failed", correlationId, invocationId, error }, "MCP completion runtime log failed");
+      });
+      request.log.info({ eventType: "mcp.invocation.completed", correlationId, invocationId, code: server.code, hostname, toolName: server.toolName, handlerKey: server.handlerKey, handlerVersion: server.handlerVersion, credentialId: principal.credentialId, result: "success", latencyMs }, "MCP invocation completed");
       return reply.send(response);
     } catch (error) {
       const latencyMs = Date.now() - started;
       const errorCode = error instanceof Error ? error.message : "unknown";
       const classification = typeof error === "object" && error && "classification" in error ? String(error.classification) : "handler";
-      await db.query(
-        `insert into function_statistics(server_id, failure_count, last_failure_at)
-         values ($1,1,now())
-         on conflict (server_id) do update set failure_count=function_statistics.failure_count+1, last_failure_at=now()`,
-        [server.id]
-      );
-      await recordInvocationMetric(db, server.id, false, latencyMs, classification, correlationId);
       const classifiedEvent = errorCode === "output_schema_failed" ? "mcp.output_schema_failed"
         : classification === "timeout" ? "mcp.timeout"
           : classification === "schema" ? "mcp.output_schema_failed"
@@ -489,9 +550,6 @@ export function registerMcpRoutes(app: FastifyInstance, db: Db, config: AppConfi
               : classification === "saturation" ? "mcp.concurrency_rejected"
                 : classification === "upstream" ? "mcp.upstream_failed"
                   : "mcp.invocation.failed";
-      await appendAudit(db, { eventType: classifiedEvent, actorType: "kaja", actorId: principal.credentialId, objectType: "mcp_server", objectId: server.id, after: { latencyMs, errorCode, classification }, correlationId });
-      await runtimeLog("error", classifiedEvent, { latencyMs, errorCode, classification });
-      request.log.error({ eventType: classifiedEvent, correlationId, code: server.code, hostname, toolName: server.toolName, handlerKey: server.handlerKey, handlerVersion: server.handlerVersion, credentialId: principal.credentialId, result: "failure", latencyMs, errorCode, classification }, "MCP invocation failed");
       const code = classification === "timeout" ? -32005
         : classification === "size" ? -32006
           : classification === "schema" ? -32603
@@ -502,7 +560,29 @@ export function registerMcpRoutes(app: FastifyInstance, db: Db, config: AppConfi
           : errorCode === "output_schema_failed" ? "Output schema validation failed"
             : "Handler failed";
       const response = jsonRpcError(body.id, code, message, correlationId);
-      await completeIdempotency(db, server.id, principal.credentialId, idempotency, response);
+      try {
+        await finalizeInvocation(db, {
+          invocationId,
+          serverId: server.id,
+          credentialId: principal.credentialId,
+          correlationId,
+          outcome: {
+            success: false,
+            latencyMs,
+            errorClass: classification,
+            eventType: classifiedEvent,
+            response,
+            idempotency: idempotency ? { key: idempotency.key, credentialId: principal.credentialId } : null
+          }
+        });
+      } catch (finalizationError) {
+        await reportFinalizationFailure({ invocationId, error: finalizationError });
+        return reply.send(jsonRpcError(body.id, -32603, "Invocation finalization failed", correlationId));
+      }
+      await runtimeLog("error", classifiedEvent, { latencyMs, errorCode, classification, invocationId }).catch((runtimeLogError) => {
+        request.log.error({ eventType: "mcp.runtime_log.failed", correlationId, invocationId, error: runtimeLogError }, "MCP failure runtime log failed");
+      });
+      request.log.error({ eventType: classifiedEvent, correlationId, invocationId, code: server.code, hostname, toolName: server.toolName, handlerKey: server.handlerKey, handlerVersion: server.handlerVersion, credentialId: principal.credentialId, result: "failure", latencyMs, errorCode, classification }, "MCP invocation failed");
       return reply.send(response);
     } finally {
       if (leaseId) await releaseConcurrencyLease(db, leaseId);

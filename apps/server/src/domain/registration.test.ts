@@ -1,158 +1,107 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { digestCanonicalJson, validateManifest, validateOnboardingManifest } from "./registration.js";
+import { digestCanonicalJson, reviewMetadataForManifest, validateManifest, validateOnboardingManifest, validateStoredOnboardingManifest } from "./registration.js";
 
-const inputSchema = { type: "object", additionalProperties: false, properties: {} };
-const outputSchema = { type: "object", additionalProperties: false, properties: {} };
-const protocol = {
-  protocolVersion: "2025-11-25",
-  transport: "streamable-http",
-  capabilities: ["tools"],
-  errorCatalog: [{ code: "E_TEST", description: "Test error" }]
-};
-const dependencies = {
-  runtime: [{ name: "nodejs22", version: "22.0.0" }],
-  externalServices: ["auth"],
-  secretRefs: ["vault://kcml/test"],
-  networkPolicy: {
-    outboundAllowlist: ["auth.example.com"],
-    dnsPolicy: "strict",
-    databaseRole: "kcml_reader",
-    filesystemPolicy: "read-only"
-  },
-  dataClassification: {
-    input: "internal",
-    output: "internal",
-    containsPersonalData: false,
-    loggingPolicy: "redacted",
-    redactionFields: ["token"],
-    retentionPolicy: "30 days"
-  }
-};
+const manifestFixture = JSON.parse(
+  readFileSync(new URL("../../../../docs/onboarding-manifest-v1.5.example.json", import.meta.url), "utf8")
+) as Record<string, unknown>;
 
-const validManifest = {
-  schemaVersion: "1.3",
-  registrationRevision: "rev-1",
-  environment: "production",
-  identity: { code: "KCML0001", hostname: "kcml0001.hcasc.cz", resource: "https://kcml0001.hcasc.cz/mcp" },
-  handlerKey: "example",
-  handlerVersion: "1.0.0",
-  displayName: "Example",
-  businessPurpose: "A concrete production purpose.",
-  owners: { service: "svc", technical: "tech", security: "sec", operations: "ops" },
-  tool: {
-    name: "example",
-    title: "example",
-    description: "Example tool",
-    inputSchema,
-    outputSchema,
-    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false, taskSupport: "forbidden" }
-  },
-  contractDigests: { inputSchema: digestCanonicalJson(inputSchema), outputSchema: digestCanonicalJson(outputSchema) },
-  behavior: {
-    effectClass: "READ_ONLY",
-    timeoutMs: 1000,
-    maxConcurrency: 1,
-    requestMaxBytes: 1024,
-    responseMaxBytes: 1024,
-    rateLimit: { windowSeconds: 60, maxRequests: 10 },
-    shutdownPolicy: "COMPLETE_IN_FLIGHT",
-    idempotencyPolicy: "read only",
-    retryPolicy: { automaticRetry: false }
-  },
-  testContract: { safeInput: {}, expectedResult: {}, cleanupOrCompensation: "none required" },
-  protocol,
-  dependencies,
-  monitoringProfile: {
-    sloTargets: {},
-    probeIntervals: {},
-    alertRules: [{ severity: "critical" }],
-    runbookRef: "docs/runbooks/example.md",
-    primaryAlertChannel: "primary",
-    backupAlertChannel: "backup"
-  },
-  errorCatalog: [{ code: "E_TEST", description: "Test error" }],
-  approvals: { architecture: "approved", security: "approved", operations: "approved" },
-  artifact: {
-    sourceCommit: "abc123",
-    buildId: "build-1",
-    digest: `sha256:${"a".repeat(64)}`,
-    sbomDigest: `sha256:${"b".repeat(64)}`
-  },
-  change: {
-    changeClass: "MINOR",
-    migrationRef: "migrations/001.sql",
-    rollbackRef: "rollback",
-    decommissionRef: "decommission",
-    previousApprovedRevision: null,
-    reviewDueAt: "2027-01-01T00:00:00.000Z"
-  }
-};
+function manifest(): Record<string, unknown> {
+  return structuredClone(manifestFixture);
+}
 
-describe("registration manifest", () => {
-  it("accepts strict complete manifests", () => {
-    expect(validateManifest(validManifest, "hcasc.cz").digest).toMatch(/^sha256:/);
+describe("registration manifest 1.5", () => {
+  it("accepts the published strict onboarding example", () => {
+    expect(validateOnboardingManifest(manifest()).digest).toMatch(/^sha256:[a-f0-9]{64}$/);
+  });
+
+  it("uses the same strict contract for registration intake", () => {
+    expect(validateManifest(manifest(), "hcasc.cz").digest).toMatch(/^sha256:[a-f0-9]{64}$/);
   });
 
   it("rejects unknown fields and automatic retry", () => {
-    expect(() => validateManifest({ ...validManifest, extra: true }, "hcasc.cz")).toThrow();
-    expect(() => validateManifest({ ...validManifest, behavior: { ...validManifest.behavior, retryPolicy: { automaticRetry: true } } }, "hcasc.cz")).toThrow();
+    expect(() => validateOnboardingManifest({ ...manifest(), bypassActivation: true })).toThrow();
+    const changed = manifest();
+    changed.behavior = {
+      ...(changed.behavior as Record<string, unknown>),
+      retryPolicy: { automaticRetry: true }
+    };
+    expect(() => validateOnboardingManifest(changed)).toThrow();
+  });
+
+  it("rejects runtime expansion beyond the isolation contract", () => {
+    const changed = manifest();
+    changed.runtime = { ...(changed.runtime as Record<string, unknown>), memoryMb: 2_048 };
+    expect(() => validateOnboardingManifest(changed)).toThrow();
   });
 
   it("binds the digest to nested contract values", () => {
-    const original = validateManifest(validManifest, "hcasc.cz").digest;
-    const changed = validateManifest({
-      ...validManifest,
-      behavior: { ...validManifest.behavior, timeoutMs: validManifest.behavior.timeoutMs + 1 }
-    }, "hcasc.cz").digest;
-    expect(changed).not.toBe(original);
+    const original = validateOnboardingManifest(manifest()).digest;
+    const changed = manifest();
+    changed.behavior = { ...(changed.behavior as Record<string, unknown>), timeoutMs: 10_001 };
+    expect(validateOnboardingManifest(changed).digest).not.toBe(original);
+  });
+
+  it("rejects schema digest drift before registration", () => {
+    const changed = manifest();
+    const tool = changed.tool as Record<string, unknown>;
+    tool.inputSchema = {
+      ...(tool.inputSchema as Record<string, unknown>),
+      description: "An unapproved schema change"
+    };
+    expect(() => validateOnboardingManifest(changed)).toThrow("input_schema_digest_mismatch");
+  });
+
+  it("computes the published schema digest canonically", () => {
+    const current = manifest();
+    const tool = current.tool as Record<string, unknown>;
+    const digests = current.contractDigests as Record<string, unknown>;
+    expect(digestCanonicalJson(tool.inputSchema)).toBe(digests.inputSchema);
+    expect(digestCanonicalJson(tool.outputSchema)).toBe(digests.outputSchema);
   });
 });
 
-const onboardingManifest = {
-  schemaVersion: "1.4",
-  registrationRevision: "rev-1",
-  environment: "production",
-  handlerKey: "example-handler",
-  handlerVersion: "1.0.0",
-  displayName: "Example",
-  businessPurpose: "A concrete production purpose.",
-  owners: { service: "svc", technical: "tech", security: "sec", operations: "ops" },
-  source: { runtime: "nodejs22-typescript", entrypoint: "src/index.ts", testCommand: "pnpm test" },
-  runtime: { memoryMb: 128, cpuCores: 0.5, pidsLimit: 32, egressAllowlist: ["api.example.com"] },
-  tool: {
-    title: "Example",
-    description: "Example tool",
-    inputSchema: { type: "object", additionalProperties: false, properties: {} },
-    outputSchema: { type: "object", additionalProperties: false, properties: {} },
-    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false, taskSupport: "forbidden" }
-  },
-  behavior: {
-    effectClass: "READ_ONLY", timeoutMs: 1000, maxConcurrency: 1, requestMaxBytes: 1024, responseMaxBytes: 1024,
-    rateLimit: { windowSeconds: 60, maxRequests: 10 }, shutdownPolicy: "COMPLETE_IN_FLIGHT", idempotencyPolicy: "read only", retryPolicy: { automaticRetry: false }
-  },
-  testContract: { safeInput: {}, expectedResult: {}, cleanupOrCompensation: "none required" },
-  protocol,
-  dependencies,
-  monitoringProfile: { sloTargets: {}, probeIntervals: {}, alertRules: [{ severity: "critical" }], runbookRef: "docs/runbooks/example.md", primaryAlertChannel: "primary", backupAlertChannel: "backup" },
-  errorCatalog: [{ code: "E_TEST", description: "Test error" }],
-  change: {
-    changeClass: "MINOR",
-    migrationRef: "migrations/001.sql",
-    rollbackRef: "rollback",
-    decommissionRef: "decommission",
-    previousApprovedRevision: null,
-    reviewDueAt: "2027-01-01T00:00:00.000Z"
-  }
-};
+describe("stored production manifest 1.4 compatibility", () => {
+  const legacy = {
+    schemaVersion: "1.4",
+    registrationRevision: "ha-device-catalog-2.0.16",
+    environment: "production",
+    handlerKey: "home_assistant_device_catalog",
+    handlerVersion: "2.0.16",
+    displayName: "Seznam zařízení Home Assistant",
+    businessPurpose: "Poskytuje úplný aktuální katalog zařízení pro produkční agenty.",
+    owners: { service: "Karel Martinek", technical: "Karel Martinek", security: "Karel Martinek", operations: "Karel Martinek" },
+    source: { runtime: "nodejs22-typescript", entrypoint: "src/index.ts", testCommand: "pnpm test" },
+    runtime: { memoryMb: 256, cpuCores: 0.5, pidsLimit: 64, egressAllowlist: ["ha-inventory.hcasc.cz:443"] },
+    tool: {
+      title: "Vyžádat kompletní seznam zařízení Home Assistant",
+      description: "Vrátí aktuální katalog zařízení.",
+      inputSchema: { type: "object", additionalProperties: false },
+      outputSchema: { type: "object", additionalProperties: false },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false, taskSupport: "forbidden" }
+    },
+    behavior: {
+      effectClass: "READ_ONLY", timeoutMs: 20_000, maxConcurrency: 2, requestMaxBytes: 1_024, responseMaxBytes: 1_048_576,
+      rateLimit: { windowSeconds: 60, maxRequests: 10 }, shutdownPolicy: "COMPLETE_IN_FLIGHT",
+      idempotencyPolicy: "Operace je pouze pro čtení a je bezpečně opakovatelná.", retryPolicy: { automaticRetry: false }
+    },
+    testContract: { safeInput: {}, expectedResult: {}, cleanupOrCompensation: "Není potřeba; operace je pouze pro čtení." },
+    monitoringProfile: {
+      sloTargets: { availabilityPercent: 99 }, probeIntervals: { syntheticSeconds: 300 },
+      alertRules: [{ name: "catalog_probe_failure", severity: "critical", consecutiveFailures: 3 }],
+      runbookRef: "mcp-handler/README.md", primaryAlertChannel: "KCML operations", backupAlertChannel: "Karel Martinek"
+    },
+    change: {
+      rollbackRef: "Vrátit produkční handler na předchozí podepsaný OCI digest.",
+      decommissionRef: "Deaktivovat MCP server a odstranit runtime.",
+      reviewDueAt: "2027-01-13T00:00:00.000Z"
+    }
+  };
 
-describe("automated onboarding manifest", () => {
-  it("accepts the isolated Node.js 22 contract", () => {
-    expect(validateOnboardingManifest(onboardingManifest).digest).toMatch(/^sha256:[a-f0-9]{64}$/);
-  });
-
-  it("rejects runtime expansion, unknown fields and automatic retries", () => {
-    expect(() => validateOnboardingManifest({ ...onboardingManifest, runtime: { ...onboardingManifest.runtime, memoryMb: 2048 } })).toThrow();
-    expect(() => validateOnboardingManifest({ ...onboardingManifest, bypassActivation: true })).toThrow();
-    expect(() => validateOnboardingManifest({ ...onboardingManifest, behavior: { ...onboardingManifest.behavior, retryPolicy: { automaticRetry: true } } })).toThrow();
+  it("reads the immutable historic production shape without accepting it at intake", () => {
+    const stored = validateStoredOnboardingManifest(legacy);
+    expect(stored.manifest.schemaVersion).toBe("1.4");
+    expect(reviewMetadataForManifest(stored.manifest)).toMatchObject({ reviewDueAt: "2027-01-13T00:00:00.000Z", intervalDays: 365 });
+    expect(() => validateOnboardingManifest(legacy)).toThrow();
   });
 });

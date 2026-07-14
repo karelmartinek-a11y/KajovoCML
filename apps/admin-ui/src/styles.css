@@ -208,6 +208,18 @@ h2 { margin: 0; color: var(--ink); font-size: 13.5px; font-weight: 720; }
 .table-panel { min-height: 290px; }
 
 .monitor-panel { min-height: 280px; }
+.monitor-toolbar { min-height: 48px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 6px 8px; border: 1px solid var(--line); border-radius: var(--radius); background: #fff; }
+.segmented-control { min-width: 0; display: flex; gap: 2px; padding: 3px; border: 1px solid var(--line); border-radius: 6px; background: #f2f5f7; overflow-x: auto; }
+.segmented-control button { min-height: 31px; flex: 0 0 auto; padding: 0 11px; border: 0; background: transparent; color: #5d6977; font-size: 11px; }
+.segmented-control button:hover { background: #fff; color: #263441; }
+.segmented-control button[aria-pressed="true"] { background: #fff; color: #075f5c; box-shadow: 0 1px 3px rgba(20, 32, 43, 0.12); }
+.segmented-control button span { min-width: 18px; min-height: 18px; display: inline-grid; place-items: center; border-radius: 4px; background: #f8e3df; color: #a52d27; font-size: 9px; }
+.scheduler-state { min-width: 160px; display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 0 7px; color: #4d5a68; }
+.scheduler-state > span:last-child { display: grid; gap: 2px; }
+.scheduler-state strong { font-size: 10.5px; }
+.scheduler-state small { color: #83909c; font-size: 9.5px; }
+.scheduler-state.ok .status-dot { background: var(--green); }
+.scheduler-state.danger .status-dot { background: var(--red); }
 .timeline-chart { min-height: 225px; display: grid; grid-template-columns: 47px 1fr; padding: 15px 18px 9px 8px; }
 .chart-y-axis { padding: 0 8px 25px 0; display: flex; flex-direction: column; justify-content: space-between; text-align: right; color: #8b96a2; font-size: 10px; }
 .chart-grid { position: relative; min-width: 0; background: repeating-linear-gradient(to bottom, #e7ebef 0, #e7ebef 1px, transparent 1px, transparent 25%); }
@@ -322,6 +334,7 @@ code { font-family: "SFMono-Regular", Consolas, monospace; font-size: 10.5px; }
 .status-dot.danger { background: #d7443b; }
 .list-empty { padding: 18px 10px; color: #87929e; font-size: 11px; text-align: center; }
 .permissions-panel { position: relative; display: grid; grid-template-rows: auto 1fr auto; }
+.permissions-panel > table { align-self: start; }
 .permissions-panel select { min-width: 145px; }
 .credential-reference { color: #647280; font: 10.5px "SFMono-Regular", Consolas, monospace; background: #f1f4f6; border-radius: 4px; padding: 5px 7px; }
 .permissions-foot { min-height: 42px; display: flex; align-items: center; gap: 7px; padding: 0 13px; border-top: 1px solid var(--line); color: #778491; font-size: 10px; }
@@ -375,6 +388,11 @@ input[type="checkbox"] { width: 17px; height: 17px; min-height: 17px; padding: 0
 .handoff-step > div { min-width: 0; display: grid; justify-items: start; gap: 9px; }
 .handoff-step p { margin: 0; color: #667382; font-size: 11px; line-height: 1.45; }
 .handoff-step .secret-once { width: 100%; }
+.descriptor-dl { width: 100%; display: grid; grid-template-columns: minmax(105px, 0.42fr) minmax(0, 1fr); margin: 0; border: 1px solid var(--line); border-radius: 5px; overflow: hidden; }
+.descriptor-dl dt, .descriptor-dl dd { min-height: 34px; display: flex; align-items: center; margin: 0; padding: 7px 10px; border-bottom: 1px solid var(--line); font-size: 10.5px; line-height: 1.35; overflow-wrap: anywhere; }
+.descriptor-dl dt { background: #f7f9fa; color: #65717f; font-weight: 680; }
+.descriptor-dl dd { color: #263442; }
+.descriptor-dl dt:last-of-type, .descriptor-dl dd:last-of-type { border-bottom: 0; }
 .button-link { min-height: 36px; border: 1px solid var(--line-strong); border-radius: var(--radius); padding: 0 13px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; color: #354252; font-size: 12.5px; font-weight: 700; text-decoration: none; }
 .button-link:hover { background: #f7f9fa; border-color: #b8c1cb; }
 .destructive-copy { margin: 0; color: #8f2722; background: #fdf1f0; border: 1px solid #f0c3c0; border-radius: 6px; padding: 12px; font-size: 11.5px; line-height: 1.45; }
@@ -449,6 +467,9 @@ input[type="checkbox"] { width: 17px; height: 17px; min-height: 17px; padding: 0
   .permissions-layout { grid-template-columns: 1fr; min-height: auto; }
   .security-grid { grid-template-columns: 1fr; }
   .config-grid { grid-template-columns: 1fr; }
+  .monitor-toolbar { align-items: stretch; flex-direction: column; }
+  .segmented-control { width: 100%; }
+  .scheduler-state { justify-content: flex-start; min-height: 32px; }
   .token-list-panel { max-height: 330px; }
   .permissions-panel { min-height: 430px; }
   .server-panel-head { align-items: flex-start; flex-direction: column; }
@@ -470,6 +491,7 @@ input[type="checkbox"] { width: 17px; height: 17px; min-height: 17px; padding: 0
   .range-select { min-width: 0; }
   .row-actions { flex-wrap: wrap; }
   .modal-actions button { flex: 1; }
+  .descriptor-dl { grid-template-columns: 96px minmax(0, 1fr); }
   .security-meta { grid-template-columns: 1fr; }
   .config-meta { grid-template-columns: 1fr; }
   .gate-grid, .job-cards { grid-template-columns: 1fr; }

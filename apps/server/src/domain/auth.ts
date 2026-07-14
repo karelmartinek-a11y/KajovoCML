@@ -4,6 +4,36 @@ import { tx } from "../db.js";
 import { hmacToken, issueOpaqueSecret, hashPasswordLikeSecret, verifyPasswordLikeSecret, fingerprintSecret } from "../security/secrets.js";
 import { appendAudit } from "./audit.js";
 import { resourceFor } from "./catalog.js";
+import { evaluateRecertification } from "./recertification.js";
+
+function timestamp(value: unknown): string | null {
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === "string" && value) return value;
+  return null;
+}
+
+function scalarText(value: unknown): string | null {
+  return typeof value === "string" || typeof value === "number" ? String(value) : null;
+}
+
+function assertRuntimeAvailable(row: Record<string, unknown>): void {
+  const recertification = evaluateRecertification({
+    activeRevisionId: scalarText(row.active_revision_id),
+    validationState: scalarText(row.validation_state),
+    approvedAt: timestamp(row.approved_at),
+    reviewDueAt: timestamp(row.review_due_at),
+    reviewIntervalDays: row.review_interval_days === null || row.review_interval_days === undefined
+      ? null
+      : Number(row.review_interval_days)
+  });
+  if (!row.enabled
+    || !["ACTIVE", "TRIAL"].includes(String(row.registration_state))
+    || !row.monitoring_enabled
+    || !row.monitoring_profile_digest
+    || !recertification.canServeExisting) {
+    throw Object.assign(new Error("resource_unavailable"), { statusCode: 503 });
+  }
+}
 
 export type KajaCredentialSummary = {
   id: string;
@@ -285,24 +315,18 @@ export async function issueAccessToken(db: Db, params: {
   if (!verified) throw Object.assign(new Error("invalid_client"), { statusCode: 401 });
 
   const serverResult = await db.query(
-    `select ms.id, ms.code, ms.hostname, ms.enabled, ms.registration_state, ms.revocation_epoch, rr.manifest->'change'->>'reviewDueAt' as review_due_at
+    `select ms.id, ms.code, ms.hostname, ms.enabled, ms.registration_state, ms.revocation_epoch,
+            rr.id as active_revision_id, rr.validation_state, rr.approved_at, rr.review_due_at, rr.review_interval_days,
+            coalesce(mp.enabled,false) as monitoring_enabled, mp.profile_digest as monitoring_profile_digest
        from mcp_server ms
-       left join lateral (
-         select manifest
-           from registration_revision
-          where server_id=ms.id
-          order by created_at desc
-          limit 1
-       ) rr on true
+       left join registration_revision rr on rr.id=ms.active_revision_id and rr.server_id=ms.id and rr.active=true
+       left join monitoring_profile mp on mp.server_id=ms.id and mp.registration_revision_id=rr.id
       where $1 = ('https://' || ms.hostname || '/mcp')`,
     [params.resource]
   );
   if (!serverResult.rowCount) throw Object.assign(new Error("invalid_resource"), { statusCode: 400 });
   const server = serverResult.rows[0];
-  const reviewDueAt = server.review_due_at ? new Date(String(server.review_due_at)) : null;
-  if (!server.enabled || !["ACTIVE", "TRIAL"].includes(String(server.registration_state)) || (reviewDueAt && reviewDueAt.getTime() <= Date.now())) {
-    throw Object.assign(new Error("resource_unavailable"), { statusCode: 503 });
-  }
+  assertRuntimeAvailable(server);
   const permission = await db.query(
     "select 1 from kaja_permission where credential_id=$1 and server_id=$2 and revoked_at is null and access_level='EXECUTE'",
     [credential.id, server.id]
@@ -334,17 +358,14 @@ export async function validateBearer(db: Db, token: string, hostname: string, hm
   const digest = hmacToken(token, hmacKey);
   const resource = resourceFor(hostname);
   const result = await db.query(
-    `select at.credential_id, at.server_id, ms.code, ms.tool_name, rr.manifest->'change'->>'reviewDueAt' as review_due_at
+    `select at.credential_id, at.server_id, ms.code, ms.tool_name, ms.enabled, ms.registration_state,
+            rr.id as active_revision_id, rr.validation_state, rr.approved_at, rr.review_due_at, rr.review_interval_days,
+            coalesce(mp.enabled,false) as monitoring_enabled, mp.profile_digest as monitoring_profile_digest
        from access_token at
        join kaja_credential kc on kc.id=at.credential_id
        join mcp_server ms on ms.id=at.server_id
-       left join lateral (
-         select manifest
-           from registration_revision
-          where server_id=ms.id
-          order by created_at desc
-          limit 1
-       ) rr on true
+       left join registration_revision rr on rr.id=ms.active_revision_id and rr.server_id=ms.id and rr.active=true
+       left join monitoring_profile mp on mp.server_id=ms.id and mp.registration_revision_id=rr.id
       where at.lookup_digest=$1
         and at.audience=$2
         and at.expires_at > now()
@@ -354,13 +375,15 @@ export async function validateBearer(db: Db, token: string, hostname: string, hm
         and kc.deleted_at is null
         and (kc.expires_at is null or kc.expires_at > now())
         and at.credential_revocation_epoch = kc.revocation_epoch
-        and at.server_revocation_epoch = ms.revocation_epoch
-        and ms.enabled is true
-        and ms.registration_state in ('ACTIVE','TRIAL')
-        and coalesce((rr.manifest->'change'->>'reviewDueAt')::timestamptz, 'infinity'::timestamptz) > now()`,
+        and at.server_revocation_epoch = ms.revocation_epoch`,
     [digest, resource]
   );
   if (!result.rowCount) throw Object.assign(new Error("invalid_token"), { statusCode: 401, fingerprint: fingerprintSecret(token) });
+  try {
+    assertRuntimeAvailable(result.rows[0]);
+  } catch {
+    throw Object.assign(new Error("invalid_token"), { statusCode: 401, fingerprint: fingerprintSecret(token) });
+  }
   await db.query(
     `update access_token
         set last_used_at=case

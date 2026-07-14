@@ -28,7 +28,7 @@ describe("GitHub onboarding authorization", () => {
       GITHUB_REPO: "repository",
       GITHUB_TOKEN: "github-token-with-sufficient-length",
       OCI_IMAGE_NAMESPACE: "example/handlers",
-      OCI_SIGNING_PUBLIC_KEY: "/tmp/cosign.pub"
+      OCI_CERTIFICATE_IDENTITY: "https://github.com/example/repository/.github/workflows/onboarding-build.yml@refs/heads/main"
     });
 
     await expect(new GitHubOnboardingClient(config).checkTrustedBuild("abc123")).resolves.toMatchObject({ state: "pending" });

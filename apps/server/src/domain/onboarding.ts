@@ -6,6 +6,7 @@ import { tx } from "../db.js";
 import { fingerprintSecret, hmacToken } from "../security/secrets.js";
 import { appendAudit } from "./audit.js";
 import type { OnboardingManifest } from "./registration.js";
+import { transitionServerState } from "./server-state.js";
 
 export const ONBOARDING_JOB_STATES = [
   "CREATED",
@@ -27,6 +28,24 @@ export const ONBOARDING_JOB_STATES = [
 export type OnboardingJobState = (typeof ONBOARDING_JOB_STATES)[number];
 export type GateStatus = "PENDING" | "RUNNING" | "PASS" | "FAIL" | "QUARANTINED" | "SKIPPED";
 
+async function disableOnboardingServer(client: pg.PoolClient, serverId: string, reason: string, correlationId: string): Promise<void> {
+  const result = await client.query("select registration_state from mcp_server where id=$1", [serverId]);
+  if (!result.rowCount) return;
+  const state = String(result.rows[0].registration_state);
+  if (["TRIAL", "ACTIVE", "TEST_FAILED"].includes(state)) {
+    await transitionServerState(client, {
+      serverId,
+      to: "REGISTERED_DISABLED",
+      actorType: "system",
+      reason,
+      correlationId
+    });
+    return;
+  }
+  await client.query("update access_token set revoked_at=coalesce(revoked_at,now()) where server_id=$1", [serverId]);
+  await client.query("update egress_capability set revoked_at=coalesce(revoked_at,now()) where server_id=$1", [serverId]);
+}
+
 export const TERMINAL_JOB_STATES = new Set<OnboardingJobState>(["ACTIVE", "FAILED", "QUARANTINED", "CANCELLED"]);
 const HEARTBEAT_EXTENSION_MS = 2 * 60 * 60 * 1000;
 const INITIAL_TTL_MS = 2 * 60 * 60 * 1000;
@@ -43,7 +62,7 @@ const TRANSITIONS: Record<OnboardingJobState, ReadonlySet<OnboardingJobState>> =
   DEPLOYING: new Set(["REGISTERED_DISABLED", "CANCELLED", "FAILED", "QUARANTINED"]),
   REGISTERED_DISABLED: new Set(["TRIAL_TESTING", "CANCELLED", "FAILED", "QUARANTINED"]),
   TRIAL_TESTING: new Set(["ACTIVE", "REGISTERED_DISABLED", "CANCELLED", "FAILED", "QUARANTINED"]),
-  ACTIVE: new Set(),
+  ACTIVE: new Set(["AWAITING_REVISION"]),
   FAILED: new Set(["SOURCE_UPLOADED", "CANCELLED"]),
   QUARANTINED: new Set(["AWAITING_REVISION"]),
   CANCELLED: new Set()
@@ -151,6 +170,7 @@ function mapToken(row: Record<string, unknown>) {
       technicalOwner: typeof descriptor.technicalOwner === "string" ? descriptor.technicalOwner : "",
       criticality: typeof descriptor.criticality === "string" ? descriptor.criticality as OnboardingDescriptor["criticality"] : "MEDIUM"
     } satisfies OnboardingDescriptor,
+    legacyBackfill: Boolean(row.legacy_backfill),
     jobId: optionalText(row.onboarding_job_id),
     issuedAt: asIso(row.issued_at) ?? "",
     initialExpiresAt: asIso(row.initial_expires_at) ?? "",
@@ -192,7 +212,7 @@ export async function createIntegrationToken(
         [resumeJobId]
       );
       if (!job.rowCount) throw Object.assign(new Error("job_not_found"), { statusCode: 404 });
-      if (["ACTIVE", "QUARANTINED", "CANCELLED"].includes(String(job.rows[0].state)) || Boolean(job.rows[0].enabled)) {
+      if (["ACTIVE", "QUARANTINED", "CANCELLED"].includes(String(job.rows[0].state))) {
         throw Object.assign(new Error("job_not_resumable"), { statusCode: 409 });
       }
       resumeState = job.rows[0].state as OnboardingJobState;
@@ -242,6 +262,46 @@ export async function createIntegrationToken(
     ...mapToken(result),
     token: secret.value
   };
+}
+
+export async function beginActiveServerRevision(db: Db, serverId: string, actorId: string, correlationId: string): Promise<string> {
+  return tx(db, async (client) => {
+    const result = await client.query(
+      `select oj.id,oj.state,ms.code,ms.registration_state
+         from onboarding_job oj
+         join mcp_server ms on ms.id=oj.server_id
+        where ms.id=$1
+        for update of oj,ms`,
+      [serverId]
+    );
+    if (!result.rowCount) throw Object.assign(new Error("onboarding_job_not_found"), { statusCode: 404 });
+    const row = result.rows[0];
+    if (String(row.state) === "AWAITING_REVISION") return String(row.id);
+    if (String(row.state) !== "ACTIVE" || String(row.registration_state) !== "ACTIVE") {
+      throw Object.assign(new Error("active_server_revision_not_available"), { statusCode: 409 });
+    }
+    assertTransition("ACTIVE", "AWAITING_REVISION");
+    await client.query(
+      `update onboarding_job
+          set state='AWAITING_REVISION',completed_at=null,next_run_at=now(),
+              blocking_error_code='registration_revision_required',
+              blocking_error_detail='Upload a complete manifest 1.5 and evidence bundle.',
+              lock_version=lock_version+1
+        where id=$1`,
+      [row.id]
+    );
+    await recordTransition(client, String(row.id), "ACTIVE", "AWAITING_REVISION", "registration_revision.requested", { serverId }, correlationId);
+    await appendAudit(client, {
+      eventType: "registration_revision.requested",
+      actorType: "admin",
+      actorId,
+      objectType: "mcp_server",
+      objectId: serverId,
+      after: { code: row.code, onboardingJobId: row.id, requiredSchemaVersion: "1.5" },
+      correlationId
+    });
+    return String(row.id);
+  });
 }
 
 export async function releaseQuarantinedOnboardingJob(
@@ -674,8 +734,7 @@ export async function cancelOnboardingJob(db: Db, jobId: string, actorType: "adm
     await client.query("update integration_token set revoked_at=coalesce(revoked_at,now()) where onboarding_job_id=$1", [jobId]);
     await client.query("update egress_capability set revoked_at=coalesce(revoked_at,now()) where job_id=$1", [jobId]);
     if (row.server_id) {
-      await client.query("update mcp_server set enabled=false, registration_state='REGISTERED_DISABLED', operational_state='DISABLED', revocation_epoch=gen_random_uuid() where id=$1", [row.server_id]);
-      await client.query("update access_token set revoked_at=coalesce(revoked_at,now()) where server_id=$1", [row.server_id]);
+      await disableOnboardingServer(client, String(row.server_id), "onboarding_job_cancelled", correlationId);
     }
     await recordTransition(client, jobId, from, "CANCELLED", "job.cancelled", {}, correlationId);
     await appendAudit(client, { eventType: "onboarding.cancelled", actorType, actorId, objectType: "onboarding_job", objectId: jobId, correlationId });
@@ -721,11 +780,7 @@ export async function pauseExpiredOnboardingJobs(db: Db): Promise<Array<{ id: st
       );
       await client.query("update egress_capability set revoked_at=coalesce(revoked_at,now()) where job_id=$1", [row.id]);
       if (row.server_id) {
-        await client.query(
-          "update mcp_server set enabled=false,registration_state='REGISTERED_DISABLED',operational_state='DISABLED',revocation_epoch=gen_random_uuid(),lock_version=lock_version+1 where id=$1",
-          [row.server_id]
-        );
-        await client.query("update access_token set revoked_at=coalesce(revoked_at,now()) where server_id=$1", [row.server_id]);
+        await disableOnboardingServer(client, String(row.server_id), "integration_token_expired", String(row.correlation_id));
       }
       await client.query(
         `insert into onboarding_event(job_id,from_state,to_state,event_type,detail,correlation_id)

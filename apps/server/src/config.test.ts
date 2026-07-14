@@ -42,7 +42,7 @@ describe("configuration gates", () => {
       GITHUB_REPO: "repository",
       GITHUB_TOKEN: "github-token-with-sufficient-length",
       OCI_IMAGE_NAMESPACE: "example/handlers",
-      OCI_SIGNING_PUBLIC_KEY: "/tmp/cosign.pub"
+      OCI_CERTIFICATE_IDENTITY: "https://github.com/example/repository/.github/workflows/onboarding-build.yml@refs/heads/main"
     })).not.toThrow();
   });
 
@@ -59,7 +59,38 @@ describe("configuration gates", () => {
       GITHUB_OWNER: "example",
       GITHUB_REPO: "repository",
       OCI_IMAGE_NAMESPACE: "example/handlers",
-      OCI_SIGNING_PUBLIC_KEY: "/tmp/cosign.pub"
+      OCI_CERTIFICATE_IDENTITY: "https://github.com/example/repository/.github/workflows/onboarding-build.yml@refs/heads/main"
     })).toThrow();
+  });
+
+  it("allows a worker to start with only its own runtime credential", () => {
+    expect(() => loadConfig({
+      KCML_PROCESS_ROLE: "worker",
+      DATABASE_URL: "postgres://localhost/kcml",
+      EGRESS_CAPABILITY_HMAC_KEY_BASE64: Buffer.alloc(32, 3).toString("base64"),
+      ONBOARDING_WORKER_ENABLED: "true",
+      GITHUB_OWNER: "example",
+      GITHUB_REPO: "repository",
+      GITHUB_TOKEN: "github-token-with-sufficient-length",
+      OCI_IMAGE_NAMESPACE: "example/handlers",
+      OCI_CERTIFICATE_IDENTITY: "https://github.com/example/repository/.github/workflows/onboarding-build.yml@refs/heads/main"
+    })).not.toThrow();
+  });
+
+  it("does not let the web process start without its session and token credentials", () => {
+    expect(() => loadConfig({
+      KCML_PROCESS_ROLE: "web",
+      DATABASE_URL: "postgres://localhost/kcml",
+      ACCESS_TOKEN_HMAC_KEY_BASE64: secret,
+      INTEGRATION_TOKEN_HMAC_KEY_BASE64: Buffer.alloc(32, 2).toString("base64")
+    })).toThrow();
+  });
+
+  it("does not apply worker gates to a migrator inheriting a legacy enable flag", () => {
+    expect(() => loadConfig({
+      KCML_PROCESS_ROLE: "migrate",
+      DATABASE_URL: "postgres://localhost/kcml",
+      ONBOARDING_WORKER_ENABLED: "true"
+    })).not.toThrow();
   });
 });

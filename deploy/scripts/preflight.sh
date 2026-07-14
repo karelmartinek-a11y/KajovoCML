@@ -19,15 +19,26 @@ if [ -z "${GITHUB_TOKEN:-}" ]; then
   test -n "${GITHUB_APP_PRIVATE_KEY_BASE64:-}"
 fi
 test -n "${OCI_IMAGE_NAMESPACE:-}"
-test -n "${OCI_SIGNING_PUBLIC_KEY:-}"
-test -f "${OCI_SIGNING_PUBLIC_KEY}"
-runuser -u kcml -- test -r "${OCI_SIGNING_PUBLIC_KEY}"
+test -n "${OCI_CERTIFICATE_IDENTITY:-}"
+case "${OCI_CERTIFICATE_IDENTITY}" in
+  https://github.com/*/.github/workflows/onboarding-build.yml@refs/heads/main) ;;
+  *) echo "invalid OCI_CERTIFICATE_IDENTITY" >&2; exit 1 ;;
+esac
+test "${OCI_CERTIFICATE_OIDC_ISSUER:-https://token.actions.githubusercontent.com}" = "https://token.actions.githubusercontent.com"
+test "${MONITOR_ENABLED:-}" = "true"
+test -n "${ALERT_PRIMARY_WEBHOOK_URL:-}"
+test -n "${ALERT_PRIMARY_HMAC_KEY_BASE64:-}"
+test -n "${ALERT_BACKUP_WEBHOOK_URL:-}"
+test -n "${ALERT_BACKUP_HMAC_KEY_BASE64:-}"
+test "${ALERT_PRIMARY_WEBHOOK_URL}" != "${ALERT_BACKUP_WEBHOOK_URL}"
 test -f "${WILDCARD_TLS_CERT_PATH:-/etc/letsencrypt/live/wildcard.hcasc.cz/fullchain.pem}"
 openssl x509 -in "${WILDCARD_TLS_CERT_PATH:-/etc/letsencrypt/live/wildcard.hcasc.cz/fullchain.pem}" -checkend 86400 -noout
 openssl x509 -in "${WILDCARD_TLS_CERT_PATH:-/etc/letsencrypt/live/wildcard.hcasc.cz/fullchain.pem}" -noout -text | grep -F 'DNS:*.hcasc.cz' >/dev/null
 command -v "${PODMAN_BINARY:-podman}" >/dev/null
 command -v systemd-run >/dev/null
 command -v "${COSIGN_BINARY:-cosign}" >/dev/null
+command -v age >/dev/null
+test -r "${AGE_RECIPIENT_FILE:-/etc/kcml/backup.age.recipient}"
 grep -Eq '^kcml:' /etc/subuid
 grep -Eq '^kcml:' /etc/subgid
 install -d -m 0700 -o kcml -g kcml /run/kcml-podman
@@ -55,4 +66,9 @@ install -d -m 0700 -o kcml -g kcml "${QUARANTINE_ROOT:-/var/lib/kcml/onboarding}
 runuser -u kcml -- test -w "${QUARANTINE_ROOT:-/var/lib/kcml/onboarding}"
 runuser -u kcml -- test -w "${RUNTIME_SOCKET_ROOT:-/var/lib/kcml/runtime}"
 runuser -u kcml -- test -w /var/lib/kcml/egress
+for service in web worker monitor egress migrator admin-sync alert-primary-sink alert-backup-sink; do
+  test "$(stat -c '%a' "/etc/kcml/credentials/$service")" = "700"
+  test -z "$(find "/etc/kcml/credentials/$service" -type f ! -perm 0600 -print -quit)"
+done
+node --check "${KCML_RELEASE_SOURCE:-/opt/kcml/current}/deploy/alert-sink/receiver.mjs" >/dev/null
 echo "preflight-ok"

@@ -13,7 +13,7 @@ export const MAX_FILES = 1_000;
 const RUNTIME_DEPENDENCIES = new Set(["@kcml/handler-sdk", "zod"]);
 const DEVELOPMENT_DEPENDENCIES = new Set(["@types/node", "eslint", "typescript", "vitest"]);
 const EXACT_VERSION = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?$/;
-const TEXT_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".mjs", ".cjs", ".json", ".md", ".txt", ".yaml", ".yml"]);
+const TEXT_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".mjs", ".cjs", ".json", ".md", ".txt", ".yaml", ".yml", ".sarif", ".spdx"]);
 const BINARY_EXTENSIONS = new Set([".node", ".so", ".dll", ".dylib", ".exe", ".bin", ".wasm", ".jar", ".class"]);
 const ROOT_SOURCE_FILES = new Set(["package.json", "pnpm-lock.yaml", "tsconfig.json", "readme.md", "license", "license.txt", "license.md"]);
 const SECRET_PATTERNS = [
@@ -94,7 +94,9 @@ function assertAllowedPath(name: string): void {
   if (segments.length > 20 || name.length > 240) throw invalid("archive_path_too_deep");
   const sourceDirectory = lower === "src/" || (lower.startsWith("src/") && lower.endsWith("/"));
   const typescriptSource = lower.startsWith("src/") && lower.endsWith(".ts");
-  if (!ROOT_SOURCE_FILES.has(lower) && !sourceDirectory && !typescriptSource) throw invalid("source_file_not_allowed");
+  const evidenceDirectory = lower === "evidence/" || (lower.startsWith("evidence/") && lower.endsWith("/"));
+  const evidenceFile = lower.startsWith("evidence/") && TEXT_EXTENSIONS.has(path.extname(lower));
+  if (!ROOT_SOURCE_FILES.has(lower) && !sourceDirectory && !typescriptSource && !evidenceDirectory && !evidenceFile) throw invalid("source_file_not_allowed");
 }
 
 function assertNoSecrets(content: Buffer, name: string): void {

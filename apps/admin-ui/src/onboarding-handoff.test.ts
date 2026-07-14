@@ -4,7 +4,7 @@ import { onboardingHandoffText } from "./onboarding-handoff.js";
 describe("onboarding handoff", () => {
   it("contains the existing catalog instruction, token, deadline and automatic outcome", () => {
     const text = onboardingHandoffText({
-      note: "Fakturační MCP",
+      label: "Fakturační MCP",
       descriptor: {
         summary: "Zpracování faktur",
         businessPurpose: "Automatizace fakturačního workflow",
@@ -17,11 +17,11 @@ describe("onboarding handoff", () => {
       programmerApiUrl: "https://register.hcasc.cz/v1/onboardings"
     });
 
-    expect(text).toContain("Poznámka k serveru: Fakturační MCP");
+    expect(text).toContain("Označení integračního toku: Fakturační MCP");
     expect(text).toContain("Shrnutí serveru: Zpracování faktur");
     expect(text).toContain("Kritičnost: HIGH");
     expect(text).toContain("Integrační token: kci_example");
-    expect(text).toContain("Connect in Catalog v1.4");
+    expect(text).toContain("Connect in Catalog v1.5");
     expect(text).toContain("https://register.hcasc.cz/v1/onboardings");
     expect(text).toContain("sám přidělí KCML identitu a HTTPS adresu");
     expect(text).toContain("UPLOAD_REVISION");

@@ -49,7 +49,14 @@ function createDb(serverOverrides: Partial<Record<string, unknown>> = {}): Db {
     artifact_digest: "sha256:artifact",
     manifest_digest: "sha256:manifest",
     registration_revision: "rev-1",
+    active_revision_id: "revision-id",
+    registration_schema_version: "1.5",
+    registration_validation_state: "VALID",
+    review_approved_at: "2026-01-01T00:00:00.000Z",
     review_due_at: "2027-01-01T00:00:00.000Z",
+    review_interval_days: 365,
+    monitoring_enabled: true,
+    monitoring_profile_digest: "sha256:monitoring",
     image_reference: null,
     image_digest: "sha256:image",
     sbom_digest: null,
@@ -87,7 +94,9 @@ function createDb(serverOverrides: Partial<Record<string, unknown>> = {}): Db {
     }
     if (sql.startsWith("insert into function_statistics")) return { rowCount: 1, rows: [] };
     if (sql.startsWith("insert into mcp_invocation_metric")) return { rowCount: 1, rows: [] };
-    if (sql.startsWith("insert into audit_event")) return { rowCount: 1, rows: [] };
+    if (sql.startsWith("insert into mcp_invocation(")) return { rowCount: 1, rows: [{ id: "invocation-id" }] };
+    if (sql.startsWith("update mcp_invocation")) return { rowCount: 1, rows: [{ id: "invocation-id" }] };
+    if (sql.includes("append_audit_event")) return { rowCount: 1, rows: [] };
     if (sql.startsWith("insert into runtime_log_event")) return { rowCount: 1, rows: [] };
     if (sql.startsWith("update access_token")) return { rowCount: 1, rows: [] };
     if (sql === "delete from function_concurrency_lease where expires_at <= now()") return { rowCount: 0, rows: [] };
@@ -246,5 +255,59 @@ describe("MCP route", () => {
     });
     expect(response.statusCode).toBe(200);
     expect(response.json().error.message).toContain("Idempotency-Key");
+  });
+
+  it.each([
+    ["missing active revision", { active_revision_id: null }],
+    ["invalid revision", { registration_validation_state: "INVALID" }],
+    ["missing monitoring profile", { monitoring_profile_digest: null }],
+    ["disabled monitoring", { monitoring_enabled: false }]
+  ])("fails closed for %s without exposing catalog details", async (_reason, overrides) => {
+    app = Fastify();
+    registerMcpRoutes(app, createDb(overrides), config);
+    await app.ready();
+    const response = await app.inject({
+      method: "GET",
+      url: "/.well-known/oauth-protected-resource/mcp",
+      headers: { host: "kcml0001.hcasc.cz" }
+    });
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toMatchObject({ error: "service_unavailable" });
+    expect(response.body).not.toContain("example_tool");
+  });
+
+  it("continues existing MCP operation during grace and suspends it after 30 days", async () => {
+    const due = new Date(Date.now() - 24 * 60 * 60 * 1_000);
+    const approved = new Date(due.getTime() - 365 * 24 * 60 * 60 * 1_000);
+    app = Fastify();
+    registerMcpRoutes(app, createDb({
+      review_approved_at: approved.toISOString(),
+      review_due_at: due.toISOString()
+    }), config);
+    await app.ready();
+    const grace = await app.inject({
+      method: "POST",
+      url: "/mcp",
+      headers: { host: "kcml0001.hcasc.cz", authorization: "Bearer token" },
+      payload: { jsonrpc: "2.0", id: 12, method: "tools/list" }
+    });
+    expect(grace.statusCode).toBe(200);
+    await app.close();
+
+    const suspendedDue = new Date(Date.now() - 31 * 24 * 60 * 60 * 1_000);
+    const suspendedApproved = new Date(suspendedDue.getTime() - 365 * 24 * 60 * 60 * 1_000);
+    app = Fastify();
+    registerMcpRoutes(app, createDb({
+      review_approved_at: suspendedApproved.toISOString(),
+      review_due_at: suspendedDue.toISOString()
+    }), config);
+    await app.ready();
+    const suspended = await app.inject({
+      method: "POST",
+      url: "/mcp",
+      headers: { host: "kcml0001.hcasc.cz", authorization: "Bearer token" },
+      payload: { jsonrpc: "2.0", id: 13, method: "tools/list" }
+    });
+    expect(suspended.statusCode).toBe(503);
   });
 });

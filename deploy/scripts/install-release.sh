@@ -1,0 +1,198 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 027
+
+source_dir="${1:?verified release directory required}"
+release_id="${2:?release id required}"
+case "$release_id" in
+  *[!A-Za-z0-9._-]*) echo "invalid release id" >&2; exit 1 ;;
+esac
+test "$(id -u)" = "0"
+test -f "$source_dir/release-manifest.json"
+test -f /etc/kcml/kcml.env
+: "${PASS:?PASS is required}"
+
+set -a
+. /etc/kcml/kcml.env
+set +a
+export BUILD_ID="$release_id"
+
+release_dir="/opt/kcml/releases/$release_id"
+previous_release="$(readlink -f /opt/kcml/current 2>/dev/null || true)"
+test ! -e "$release_dir"
+install -d -m 0755 /opt/kcml/releases
+if [ -n "$previous_release" ] && [ -d "$previous_release" ]; then
+  previous_release_id="$(basename "$previous_release")"
+  bash "$source_dir/deploy/scripts/release-config.sh" snapshot "$previous_release_id"
+else
+  previous_release_id=""
+fi
+switched=false
+rollback_on_error() {
+  exit_code=$?
+  trap - ERR
+  if [ "$switched" = "true" ] && [ -n "$previous_release_id" ] && [ -d "$previous_release" ]; then
+    bash "$release_dir/deploy/scripts/release-config.sh" restore "$previous_release_id" "$previous_release" || true
+  fi
+  exit "$exit_code"
+}
+trap rollback_on_error ERR
+
+install -m 0644 "$source_dir/deploy/nginx/kcml.conf" /etc/nginx/sites-available/kcml.conf
+ln -sfn /etc/nginx/sites-available/kcml.conf /etc/nginx/sites-enabled/kcml.conf
+for unit in kcml.service kcml-onboarding-worker.service kcml-monitor.service kcml-egress-proxy.service kcml-alert-primary.service kcml-alert-backup.service; do
+  install -m 0644 "$source_dir/deploy/systemd/$unit" "/etc/systemd/system/$unit"
+done
+install -d -m 0755 /opt/kcml/alert-sink
+install -m 0755 "$source_dir/deploy/alert-sink/receiver.mjs" /opt/kcml/alert-sink/receiver.mjs
+install -d -m 0700 -o kcml -g kcml /var/lib/kcml/alert-primary-sink /var/lib/kcml/alert-backup-sink
+kcml_uid="$(id -u kcml)"
+install -d -m 0755 /etc/systemd/system/kcml-onboarding-worker.service.d
+sed "s/@KCML_UID@/${kcml_uid}/g" "$source_dir/deploy/systemd/kcml-onboarding-worker-runtime.conf.in" \
+  > /etc/systemd/system/kcml-onboarding-worker.service.d/runtime-user.conf
+chmod 0644 /etc/systemd/system/kcml-onboarding-worker.service.d/runtime-user.conf
+install -d -m 0755 /etc/systemd/system/kcml-monitor.service.d
+sed "s/@KCML_UID@/${kcml_uid}/g" "$source_dir/deploy/systemd/kcml-monitor-runtime.conf.in" \
+  > /etc/systemd/system/kcml-monitor.service.d/runtime-user.conf
+chmod 0644 /etc/systemd/system/kcml-monitor.service.d/runtime-user.conf
+
+DATABASE_APP_URL="${DATABASE_APP_URL:-$DATABASE_URL}" bash "$source_dir/deploy/scripts/split-service-config.sh" "$release_id"
+KCML_RELEASE_SOURCE="$source_dir" bash "$source_dir/deploy/scripts/preflight.sh"
+bash "$source_dir/deploy/scripts/backup.sh"
+
+KCML_PROCESS_ROLE=migrate \
+DATABASE_URL_FILE=/etc/kcml/credentials/migrator/database_url \
+NODE_ENV=production \
+BUILD_ID="$release_id" \
+  node "$source_dir/apps/server/dist/cli/migrate.js"
+
+bash "$source_dir/deploy/scripts/configure-db-roles.sh"
+export DATABASE_APP_URL="$(cat /etc/kcml/database-app.url)"
+bash "$source_dir/deploy/scripts/split-service-config.sh" "$release_id"
+
+PASS="$PASS" \
+KCML_PROCESS_ROLE=admin-sync \
+DATABASE_URL_FILE=/etc/kcml/credentials/admin-sync/database_url \
+MFA_ENCRYPTION_KEY_BASE64_FILE=/etc/kcml/credentials/admin-sync/mfa_encryption \
+ADMIN_TOTP_SECRET_FILE=/etc/kcml/credentials/admin-sync/admin_totp \
+NODE_ENV=production \
+BUILD_ID="$release_id" \
+  node "$source_dir/apps/server/dist/cli/sync-admin-password.js"
+
+mv "$source_dir" "$release_dir"
+chown -R root:kcml "$release_dir"
+chmod -R g=rX,o= "$release_dir"
+ln -sfn "$release_dir" /opt/kcml/current
+switched=true
+
+systemctl daemon-reload
+systemctl enable kcml kcml-onboarding-worker kcml-monitor kcml-egress-proxy kcml-alert-primary kcml-alert-backup
+systemctl restart kcml-alert-primary
+systemctl restart kcml-alert-backup
+nginx -t
+systemctl reload nginx
+
+test_correlation="$(cat /proc/sys/kernel/random/uuid)"
+test_alert_id="$(psql "$DATABASE_APP_URL" --no-psqlrc --tuples-only --no-align --quiet --set ON_ERROR_STOP=1 \
+  --set correlation="$test_correlation" --set release_id="$release_id" <<'SQL' | tail -n 1
+begin;
+update operational_alert
+   set status='CLOSED',closed_at=now(),last_seen_at=now()
+ where alert_type='deployment.webhook_test' and status in ('OPEN','ACKNOWLEDGED','SUPPRESSED');
+insert into operational_alert(severity,alert_type,title,detail,correlation_id)
+values ('CRITICAL','deployment.webhook_test','KCML deployment webhook test',jsonb_build_object('buildId', :'release_id'),:'correlation'::uuid)
+returning id \gset
+insert into alert_webhook_delivery(alert_id,channel,idempotency_key)
+values (:'id','PRIMARY',gen_random_uuid()),(:'id','BACKUP',gen_random_uuid());
+select append_audit_event(
+  'deployment.webhook_test.opened','deployment',null,'operational_alert',:'id',null,
+  jsonb_build_object('buildId', :'release_id'),:'correlation'::uuid
+);
+commit;
+\echo :id
+SQL
+)"
+[[ "$test_alert_id" =~ ^[0-9a-f-]{36}$ ]]
+
+systemctl restart kcml
+systemctl restart kcml-egress-proxy
+systemctl restart kcml-onboarding-worker
+systemctl restart kcml-monitor
+
+admin_host="${ADMIN_HOST:-admin.hcasc.cz}"
+healthy=false
+for _attempt in $(seq 1 45); do
+  if curl -fsS -H "Host: $admin_host" "http://127.0.0.1:${PORT:-3010}/health" >/dev/null \
+    && systemctl is-active --quiet kcml \
+    && systemctl is-active --quiet kcml-egress-proxy \
+    && systemctl is-active --quiet kcml-onboarding-worker \
+    && systemctl is-active --quiet kcml-monitor \
+    && systemctl is-active --quiet kcml-alert-primary \
+    && systemctl is-active --quiet kcml-alert-backup \
+    && curl -fsS http://127.0.0.1:3011/health >/dev/null \
+    && curl -fsS http://127.0.0.1:3012/health >/dev/null \
+    && test -S "${EGRESS_PROXY_SOCKET_PATH:-/var/lib/kcml/egress/proxy.sock}"; then
+    healthy=true
+    break
+  fi
+  sleep 2
+done
+
+if [ "$healthy" != "true" ]; then
+  systemctl status kcml kcml-egress-proxy kcml-onboarding-worker kcml-monitor kcml-alert-primary kcml-alert-backup --no-pager -l || true
+  false
+fi
+
+app_database_url="$(cat /etc/kcml/database-app.url)"
+webhook_delivered=false
+for _attempt in $(seq 1 75); do
+  if [ "$(psql "$app_database_url" --no-psqlrc --tuples-only --no-align --quiet --command \
+    "select count(*) from alert_webhook_delivery where alert_id='$test_alert_id' and state='DELIVERED' and last_http_status=200")" = "2" ]; then
+    webhook_delivered=true
+    break
+  fi
+  sleep 2
+done
+test "$webhook_delivered" = "true"
+while IFS='|' read -r channel delivery_id; do
+  case "$channel" in
+    PRIMARY) test -s "/var/lib/kcml/alert-primary-sink/$delivery_id.json" ;;
+    BACKUP) test -s "/var/lib/kcml/alert-backup-sink/$delivery_id.json" ;;
+    *) exit 1 ;;
+  esac
+done < <(psql "$app_database_url" --no-psqlrc --tuples-only --no-align --quiet --command \
+  "select channel,idempotency_key from alert_webhook_delivery where alert_id='$test_alert_id' order by channel")
+
+login_payload="$(jq -nc --arg username karmar78 --arg password "$PASS" '{username:$username,password:$password}')"
+curl -fsS -H "Host: $admin_host" -H 'content-type: application/json' \
+  --data "$login_payload" "http://127.0.0.1:${PORT:-3010}/api/login" | jq -e '.ok == true' >/dev/null
+unset login_payload
+curl -fsS -H "Host: ${AUTH_HOST:-auth.hcasc.cz}" \
+  "http://127.0.0.1:${PORT:-3010}/.well-known/oauth-authorization-server" \
+  | jq -e --arg issuer "https://${AUTH_HOST:-auth.hcasc.cz}" '.issuer == $issuer' >/dev/null
+curl -fsS -H "Host: kcml0002.${PUBLIC_BASE_DOMAIN:-hcasc.cz}" \
+  "http://127.0.0.1:${PORT:-3010}/.well-known/oauth-protected-resource/mcp" \
+  | jq -e --arg resource "https://kcml0002.${PUBLIC_BASE_DOMAIN:-hcasc.cz}/mcp" '.resource == $resource' >/dev/null
+test "$(curl -sS -o /dev/null -w '%{http_code}' -H 'Host: unknown.invalid' \
+  "http://127.0.0.1:${PORT:-3010}/health")" = "404"
+
+psql "$app_database_url" --no-psqlrc --quiet --set ON_ERROR_STOP=1 \
+  --set alert_id="$test_alert_id" --set correlation="$test_correlation" --set release_id="$release_id" <<'SQL'
+begin;
+update operational_alert set status='CLOSED',closed_at=now(),last_seen_at=now() where id=:'alert_id';
+update admin_session
+   set revoked_at=now()
+ where account_id=(select id from admin_account where username='karmar78') and revoked_at is null;
+select append_audit_event(
+  'deployment.webhook_test.closed','deployment',null,'operational_alert',:'alert_id',null,
+  jsonb_build_object('buildId', :'release_id'),:'correlation'::uuid
+);
+commit;
+SQL
+
+test "$(psql "$app_database_url" --no-psqlrc --tuples-only --no-align --quiet --command 'select valid from verify_audit_chain()')" = "t"
+test "$(psql "$app_database_url" --no-psqlrc --tuples-only --no-align --quiet --command "select registration_state::text || '/' || operational_state::text from mcp_server where code='KCML0002'")" = "ACTIVE/HEALTHY"
+test "$(psql "$app_database_url" --no-psqlrc --tuples-only --no-align --quiet --command "select count(*) from schema_migration where version='019_postgres_http_rate_limiting.sql'")" = "1"
+
+trap - ERR
+echo "release-installed:$release_id"

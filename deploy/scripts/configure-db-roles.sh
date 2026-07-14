@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+: "${DATABASE_URL:?migrator DATABASE_URL is required}"
+password_file="${KCML_APP_DB_PASSWORD_FILE:-/etc/kcml/database-app.password}"
+url_file="${KCML_APP_DB_URL_FILE:-/etc/kcml/database-app.url}"
+mkdir -p "$(dirname "$password_file")"
+if [ ! -s "$password_file" ]; then
+  openssl rand -base64 48 | tr -d '=+/\n' | head -c 56 > "$password_file"
+fi
+chmod 0600 "$password_file"
+app_password="$(cat "$password_file")"
+
+database_name="$(node - "$DATABASE_URL" <<'NODE'
+const raw = process.argv[2];
+const url = new URL(raw);
+const database = decodeURIComponent(url.pathname.slice(1));
+if (!/^[A-Za-z0-9_]+$/.test(database)) throw new Error("invalid_database_name");
+process.stdout.write(database);
+NODE
+)"
+
+if [ -n "${DATABASE_ADMIN_URL:-}" ]; then
+  admin_psql=(psql "$DATABASE_ADMIN_URL")
+elif [ "$(id -u)" = "0" ] && id postgres >/dev/null 2>&1; then
+  admin_psql=(runuser -u postgres -- psql --dbname "$database_name")
+else
+  admin_psql=(psql "$DATABASE_URL")
+fi
+
+"${admin_psql[@]}" --no-psqlrc --set ON_ERROR_STOP=1 --set app_password="$app_password" <<'SQL'
+do $$
+begin
+  if not exists (select 1 from pg_roles where rolname='kcml_app') then
+    create role kcml_app login nosuperuser nocreatedb nocreaterole noinherit;
+  end if;
+end $$;
+alter role kcml_app password :'app_password';
+select format('grant connect on database %I to kcml_app', current_database()) \gexec
+grant usage on schema public to kcml_app;
+grant select,insert,update,delete on all tables in schema public to kcml_app;
+grant usage,select on all sequences in schema public to kcml_app;
+revoke all on table audit_event,audit_head from kcml_app;
+grant select on table audit_event to kcml_app;
+grant execute on function append_audit_event(text,text,text,text,text,jsonb,jsonb,uuid) to kcml_app;
+grant execute on function verify_audit_chain() to kcml_app;
+SQL
+
+app_url="$(node - "$DATABASE_URL" "$app_password" <<'NODE'
+const [raw, password] = process.argv.slice(2);
+const url = new URL(raw);
+if (!url.hostname) url.hostname = "127.0.0.1";
+url.username = "kcml_app";
+url.password = password;
+process.stdout.write(url.toString());
+NODE
+)"
+mkdir -p "$(dirname "$url_file")"
+printf '%s' "$app_url" > "$url_file"
+chmod 0600 "$url_file"
+echo "database-role-configured:kcml_app"

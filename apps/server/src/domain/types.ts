@@ -39,7 +39,14 @@ export type McpServer = {
   artifactDigest: string;
   manifestDigest: string;
   registrationRevision: string | null;
+  activeRevisionId: string | null;
+  registrationSchemaVersion: string | null;
+  registrationValidationState: string | null;
+  reviewApprovedAt: string | null;
   reviewDueAt: string | null;
+  reviewIntervalDays: number | null;
+  monitoringEnabled: boolean;
+  monitoringProfileDigest: string | null;
   imageReference: string | null;
   imageDigest: string | null;
   sbomDigest: string | null;

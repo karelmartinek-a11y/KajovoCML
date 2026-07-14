@@ -12,12 +12,11 @@ import {
   transitionJob,
   type OnboardingJobState
 } from "../domain/onboarding.js";
-import { validateOnboardingManifest, type OnboardingManifest } from "../domain/registration.js";
+import { validateStoredOnboardingManifest, type OnboardingManifest } from "../domain/registration.js";
 import { attachEgressCapabilityToServer, createEgressCapability, revokeEgressCapabilities } from "../domain/egress.js";
-import { disableAfterFailure, registerDisabledServer, runPublicPreflight, runTrialAndActivate, type ActivationJob } from "./activation.js";
+import { beginTrial, disableAfterFailure, registerDisabledServer, rollbackTrial, runPublicPreflight, runTrialAndActivate, type ActivationJob } from "./activation.js";
 import { GitHubOnboardingClient } from "./github.js";
 import { OciRuntime } from "./oci.js";
-import { MonitoringScheduler } from "./monitoring.js";
 
 type InternalJob = {
   id: string;
@@ -67,14 +66,11 @@ export class OnboardingWorker {
   private readonly id = `worker-${randomUUID()}`;
   private readonly github: GitHubOnboardingClient;
   private readonly oci: OciRuntime;
-  private readonly monitoring: MonitoringScheduler;
   private lastMaintenanceAt = 0;
-  private lastMonitoringAt = 0;
 
   constructor(private readonly db: Db, private readonly config: AppConfig) {
     this.github = new GitHubOnboardingClient(config);
     this.oci = new OciRuntime(config);
-    this.monitoring = new MonitoringScheduler(db, config);
   }
 
   private async internalJob(id: string): Promise<InternalJob> {
@@ -145,7 +141,7 @@ export class OnboardingWorker {
 
   private async process(job: InternalJob): Promise<void> {
     const correlationId = randomUUID();
-    const { manifest } = validateOnboardingManifest(job.manifest);
+    const { manifest } = validateStoredOnboardingManifest(job.manifest);
     if (job.state === "SOURCE_UPLOADED") {
       const sourceDirectory = path.join(path.dirname(job.source_archive_path), "source");
       const pull = await this.github.createPullRequest({
@@ -240,14 +236,20 @@ export class OnboardingWorker {
       if (!job.server_id) throw new Error("registered_server_missing");
       const activation = this.activationJob(job, manifest);
       try {
+        await transitionJob(this.db, job.id, Number(job.lock_version), "TRIAL_TESTING", "trial.started", {}, correlationId);
+        await beginTrial(this.db, job.id, job.server_id, correlationId);
         const evidence = await runPublicPreflight(this.db, this.config, job.server_id, activation, correlationId);
         for (const gate of ["dns", "tls_san", "host_routing"]) await setGate(this.db, job.id, gate, "PASS", evidence, correlationId);
-        await transitionJob(this.db, job.id, Number(job.lock_version), "TRIAL_TESTING", "trial.started", {}, correlationId);
       } catch (error) {
         const failure = error instanceof Error ? error : new Error("preflight_failed");
         const gate = failure.message.includes("tls") || failure.message.includes("certificate") ? "tls_san" : failure.message.includes("dns") ? "dns" : "host_routing";
         await setGate(this.db, job.id, gate, "FAIL", { error: failure.message.slice(0, 500) }, correlationId);
-        await this.blockForRetry(job, failure, 120);
+        await rollbackTrial(this.db, job.server_id, correlationId, `preflight_failed:${failure.message.slice(0, 300)}`);
+        const current = await this.internalJob(job.id);
+        if (current.state === "TRIAL_TESTING") {
+          await transitionJob(this.db, job.id, Number(current.lock_version), "REGISTERED_DISABLED", "trial.preflight_failed", { error: failure.message.slice(0, 500) }, correlationId);
+        }
+        await this.blockForRetry(current, failure, 120);
       }
       return;
     }
@@ -277,10 +279,6 @@ export class OnboardingWorker {
       for (const row of cleanup.rows) await this.stopRuntime(String(row.id), String(row.code)).catch(() => undefined);
       await cleanupIntegrationTokens(this.db);
       this.lastMaintenanceAt = Date.now();
-    }
-    if (this.lastMonitoringAt < Date.now() - 5 * 60_000) {
-      await this.monitoring.runOnce();
-      this.lastMonitoringAt = Date.now();
     }
     const summary = await leaseNextJob(this.db, this.id);
     if (!summary) return false;

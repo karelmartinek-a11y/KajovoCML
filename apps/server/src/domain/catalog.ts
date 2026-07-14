@@ -13,10 +13,6 @@ function optionalText(value: unknown): string | null {
   return typeof value === "string" ? value : typeof value === "number" ? String(value) : null;
 }
 
-function reviewDueAtFromRow(row: Record<string, unknown>): string | null {
-  return typeof row.review_due_at === "string" ? row.review_due_at : null;
-}
-
 function mapServer(row: Record<string, unknown>): McpServer {
   return {
     id: String(row.id),
@@ -37,7 +33,14 @@ function mapServer(row: Record<string, unknown>): McpServer {
     artifactDigest: String(row.artifact_digest),
     manifestDigest: String(row.manifest_digest),
     registrationRevision: optionalText(row.registration_revision),
-    reviewDueAt: reviewDueAtFromRow(row),
+    activeRevisionId: optionalText(row.active_revision_id),
+    registrationSchemaVersion: optionalText(row.registration_schema_version),
+    registrationValidationState: optionalText(row.registration_validation_state),
+    reviewApprovedAt: asTimestamp(row.review_approved_at),
+    reviewDueAt: asTimestamp(row.review_due_at),
+    reviewIntervalDays: row.review_interval_days === null || row.review_interval_days === undefined ? null : Number(row.review_interval_days),
+    monitoringEnabled: Boolean(row.monitoring_enabled),
+    monitoringProfileDigest: optionalText(row.monitoring_profile_digest),
     imageReference: optionalText(row.image_reference),
     imageDigest: optionalText(row.image_digest),
     sbomDigest: optionalText(row.sbom_digest),
@@ -76,7 +79,14 @@ function serverQuery(): string {
     select
       ms.*,
       rr.revision as registration_revision,
-      rr.manifest->'change'->>'reviewDueAt' as review_due_at,
+      rr.id as active_revision_id,
+      rr.schema_version as registration_schema_version,
+      rr.validation_state as registration_validation_state,
+      rr.approved_at as review_approved_at,
+      rr.review_due_at,
+      rr.review_interval_days,
+      coalesce(mp.enabled, false) as monitoring_enabled,
+      mp.profile_digest as monitoring_profile_digest,
       coalesce(fs.success_count, 0) as success_count,
       coalesce(fs.unauthorized_count, 0) as unauthorized_count,
       coalesce(fs.failure_count, 0) as failure_count,
@@ -88,12 +98,11 @@ function serverQuery(): string {
       latency.p95_latency_ms
     from mcp_server ms
     left join lateral (
-      select revision, manifest
+      select id, revision, schema_version, validation_state, approved_at, review_due_at, review_interval_days
         from registration_revision
-       where server_id = ms.id
-       order by created_at desc
-       limit 1
+       where id = ms.active_revision_id and server_id = ms.id
     ) rr on true
+    left join monitoring_profile mp on mp.server_id=ms.id and mp.registration_revision_id=rr.id
     left join function_statistics fs on fs.server_id = ms.id
     left join lateral (
       select
