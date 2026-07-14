@@ -21,6 +21,6 @@ Legacy production revision 1.4 remains immutable and readable until recertificat
 | Keyless supply chain | GitHub OIDC and Cosign identity policy | immutable image digest and attestation | exact issuer/repository/workflow mismatch fails closed |
 | Admin security | deployment-managed `karmar78`, session/CSRF/MFA | login/recovery/security events | no public bootstrap route; password sync only through `PASS` |
 | Least privilege | owner/migrator and `kcml_app` roles; per-service credentials | grants and credential-file inventory | application cannot mutate audit rows/head or run migrations |
-| Immutable delivery | CI-built release, SBOM, checksum and GitHub attestation | release manifest/build ID | production does not build or download dependencies |
+| Immutable delivery | CI-built release, SBOM, checksum and keyless Sigstore bundle | release manifest/build ID plus GitHub OIDC certificate and transparency proof | production verifies repository/workflow/ref/SHA/trigger and does not build or download dependencies |
 | Recovery | encrypted `age` backup and isolated restore test | checksum and restore evidence | backup mode/recipient/preflight and quarterly restore gate |
 | UI operations | token modal, permissions page and monitoring workspace | recertification phase, block reason, alerts, probe age, history and deliveries | Playwright desktop/mobile workflows and empty states |
