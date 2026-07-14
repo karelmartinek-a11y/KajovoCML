@@ -8,23 +8,28 @@ source_commit="${3:?source commit required}"
 run_id="${4:?run id required}"
 run_attempt="${5:?run attempt required}"
 case "$repository" in *[!A-Za-z0-9._/-]*) exit 2 ;; esac
-case "$source_commit" in *[!a-f0-9]*|'') exit 2 ;; esac
+[[ "$source_commit" =~ ^[a-f0-9]{40}$ ]] || exit 2
 case "$run_id:$run_attempt" in *[!0-9:]*) exit 2 ;; esac
 test "$(id -u)" = "0"
-test -n "${GH_TOKEN:-}"
 test -n "${PASS:-}"
 
 artifact="$(realpath -e "$artifact")"
+bundle="$(realpath -e "${artifact}.sigstore.json")"
 test -f "$artifact"
 test ! -L "$artifact"
+test -f "$bundle"
+test ! -L "$bundle"
 test "$(stat -c '%U' "$artifact")" = "kcml-deploy"
-gh attestation verify "$artifact" \
-  --repo "$repository" \
-  --signer-workflow "$repository/.github/workflows/ci-deploy.yml" \
-  --cert-oidc-issuer "https://token.actions.githubusercontent.com" \
-  --source-ref "refs/heads/main" \
-  --source-digest "$source_commit" \
-  --deny-self-hosted-runners >/dev/null
+test "$(stat -c '%U' "$bundle")" = "kcml-deploy"
+cosign verify-blob \
+  --bundle "$bundle" \
+  --certificate-identity "https://github.com/${repository}/.github/workflows/ci-deploy.yml@refs/heads/main" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  --certificate-github-workflow-repository "$repository" \
+  --certificate-github-workflow-ref "refs/heads/main" \
+  --certificate-github-workflow-sha "$source_commit" \
+  --certificate-github-workflow-trigger "workflow_dispatch" \
+  "$artifact" >/dev/null
 
 release_id="${source_commit}-${run_id}-${run_attempt}"
 staging="/opt/kcml/releases/.staging-$release_id"
@@ -34,5 +39,4 @@ tar --zstd --extract --file "$artifact" --directory "$staging" --no-same-owner -
 test "$(jq -r .sourceCommit "$staging/release-manifest.json")" = "$source_commit"
 test "$(jq -r .repository "$staging/release-manifest.json")" = "$repository"
 test "$(jq -r .workflow "$staging/release-manifest.json")" = "$repository/.github/workflows/ci-deploy.yml@refs/heads/main"
-unset GH_TOKEN
 exec "$staging/deploy/scripts/install-release.sh" "$staging" "$release_id"

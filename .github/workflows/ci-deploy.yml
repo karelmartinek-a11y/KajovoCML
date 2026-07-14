@@ -102,7 +102,6 @@ jobs:
     permissions:
       contents: read
       id-token: write
-      attestations: write
     steps:
       - uses: actions/checkout@v4
         with: { persist-credentials: false }
@@ -131,15 +130,18 @@ jobs:
           install -m 0644 /tmp/kcml-release.spdx.json /tmp/kcml-release/SBOM.spdx.json
           tar --zstd --create --file /tmp/kcml-release.tar.zst --directory /tmp/kcml-release .
           sha256sum /tmp/kcml-release.tar.zst > /tmp/kcml-release.tar.zst.sha256
-      - uses: actions/attest-build-provenance@v2
+      - uses: sigstore/cosign-installer@v3.8.2
         with:
-          subject-path: /tmp/kcml-release.tar.zst
+          cosign-release: v3.1.1
+      - name: Keyless-sign release bundle through GitHub OIDC
+        run: cosign sign-blob --yes --bundle /tmp/kcml-release.tar.zst.sigstore.json /tmp/kcml-release.tar.zst
       - uses: actions/upload-artifact@v4
         with:
           name: kcml-release-${{ github.sha }}
           path: |
             /tmp/kcml-release.tar.zst
             /tmp/kcml-release.tar.zst.sha256
+            /tmp/kcml-release.tar.zst.sigstore.json
             /tmp/kcml-release.spdx.json
           if-no-files-found: error
           retention-days: 14
@@ -151,7 +153,6 @@ jobs:
     environment: production
     permissions:
       contents: read
-      attestations: read
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -162,13 +163,12 @@ jobs:
         run: sha256sum --check kcml-release.tar.zst.sha256
       - name: Deploy verified release
         env:
-          GH_TOKEN: ${{ github.token }}
           PASS: ${{ secrets.PASS }}
         run: |
           set -euo pipefail
           echo "::add-mask::$PASS"
           test -n "$PASS"
-          sudo --preserve-env=GH_TOKEN,PASS /usr/local/sbin/kcml-deploy-wrapper \
+          sudo --preserve-env=PASS /usr/local/sbin/kcml-deploy-wrapper \
             "${{ runner.temp }}/kcml-release/kcml-release.tar.zst" \
             "${{ github.repository }}" \
             "${{ github.sha }}" \

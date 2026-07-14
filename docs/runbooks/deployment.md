@@ -3,7 +3,7 @@
 ## Trust model
 
 - The only manually managed GitHub secret is the protected `production` environment secret `PASS` for the deployment-managed `karmar78` account.
-- GitHub's automatic `GITHUB_TOKEN` is used only to download and verify the release attestation.
+- GitHub's automatic `GITHUB_TOKEN` is used only by standard artifact transfer actions; release trust comes from a keyless Sigstore bundle issued from GitHub OIDC.
 - Database, HMAC, MFA, GitHub App and alert-webhook credentials remain on the server. `split-service-config.sh` exposes only the credentials required by each service through systemd `LoadCredential`.
 - Handler images use keyless Cosign verification bound to the exact GitHub OIDC issuer, repository, workflow and `main` identity.
 - The `kcml-deploy` runner is unprivileged. Its only sudo grants are the root-owned release and bounded GHCR preload wrappers.
@@ -12,9 +12,9 @@
 
 1. Pull-request CI runs lint, typecheck, unit/integration tests, clean migrations, a production-shape upgrade, database-role isolation, dependency audit, secret scan, CodeQL and build.
 2. A manual `workflow_dispatch` on `main` assembles the already-built production release. A push or pull request cannot deploy; this is the compensating approval control for private repositories whose GitHub plan does not expose environment reviewers.
-3. CI emits an SBOM, release checksum and GitHub OIDC build-provenance attestation.
+3. CI emits an SBOM, release checksum and transparency-logged keyless Sigstore bundle issued from GitHub OIDC.
 4. The deploy job uses the `production` environment and its sole `PASS` secret. Workflow conditions require `refs/heads/main` and an explicit manual dispatch.
-5. The dedicated runner verifies the checksum. The sudo wrapper verifies the GitHub attestation, source repository and immutable release manifest before extraction.
+5. The dedicated runner verifies the checksum. The sudo wrapper verifies the Sigstore bundle's issuer, workflow identity, repository, `main` ref, exact commit SHA and `workflow_dispatch` trigger before extraction, then checks the immutable release manifest.
 
 ## Server install order
 
