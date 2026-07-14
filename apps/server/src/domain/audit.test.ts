@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import type pg from "pg";
 import type { Db } from "../db.js";
 import { appendAudit, verifyAuditChain } from "./audit.js";
 
@@ -42,5 +43,23 @@ describe("audit hash chain", () => {
     expect(rows[1]?.prev_hash).toEqual(rows[0]?.event_hash);
 
     await expect(verifyAuditChain(db)).resolves.toMatchObject({ valid: true, eventCount: 2, brokenEventId: null });
+  });
+
+  it("appends through an existing pool client without opening a nested transaction", async () => {
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes("select event_hash from audit_event order by id desc limit 1")) return { rowCount: 0, rows: [] };
+      if (sql.includes("insert into audit_event")) return { rowCount: 1, rows: [] };
+      return { rowCount: 0, rows: [] };
+    });
+    const client = { query, release: vi.fn(), connect: vi.fn() } as unknown as pg.PoolClient;
+
+    await appendAudit(client, {
+      eventType: "client.append",
+      actorType: "admin",
+      correlationId: "00000000-0000-0000-0000-000000000003"
+    });
+
+    expect(query.mock.calls.some(([sql]) => sql === "BEGIN")).toBe(false);
+    expect(query.mock.calls.some(([sql]) => String(sql).includes("insert into audit_event"))).toBe(true);
   });
 });

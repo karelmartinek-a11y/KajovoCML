@@ -27,7 +27,7 @@ type AuditHashPayload = {
 };
 
 function isDb(value: pg.PoolClient | Db): value is Db {
-  return "connect" in value;
+  return "connect" in value && !("release" in value);
 }
 
 export function hashAuditEvent(prevHashHex: string | null, payload: AuditHashPayload): Buffer {
