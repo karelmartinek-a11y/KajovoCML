@@ -22,7 +22,8 @@ export function rootlessPodmanServiceInvocation(input: {
     throw new Error("rootless_runtime_user_required");
   }
   const home = input.env.HOME ?? "/var/lib/kcml/podman";
-  const userRuntime = `/run/user/${input.runtimeUid}`;
+  const userRuntime = input.env.XDG_RUNTIME_DIR ?? `/run/user/${input.runtimeUid}`;
+  const dbusSessionBus = input.env.DBUS_SESSION_BUS_ADDRESS ?? `unix:path=${userRuntime}/bus`;
   const serviceEnvironment: Array<[string, string]> = [
     ["HOME", home],
     ["USER", input.env.USER ?? "kcml"],
@@ -30,7 +31,7 @@ export function rootlessPodmanServiceInvocation(input: {
     ["XDG_DATA_HOME", input.env.XDG_DATA_HOME ?? `${home}/data`],
     ["XDG_CONFIG_HOME", input.env.XDG_CONFIG_HOME ?? `${home}/config`],
     ["XDG_RUNTIME_DIR", userRuntime],
-    ["DBUS_SESSION_BUS_ADDRESS", `unix:path=${userRuntime}/bus`]
+    ["DBUS_SESSION_BUS_ADDRESS", dbusSessionBus]
   ];
   for (const name of ["REGISTRY_AUTH_FILE", "DOCKER_CONFIG"] as const) {
     const value = input.env[name];
@@ -117,6 +118,10 @@ export function verifyLocalRuntimeEvidence(input: {
   if (input.actualDigest !== input.expectedDigest) throw new Error("artifact_digest_drift");
   if (input.runtimeDigestLabel !== input.expectedDigest) throw new Error("artifact_label_drift");
   if (input.actualImageName !== input.expectedImageName) throw new Error("artifact_reference_drift");
+}
+
+export function keylessVerificationArgs(identity: string, issuer: string): string[] {
+  return ["--certificate-identity", identity, "--certificate-oidc-issuer", issuer];
 }
 
 export function rootlessContainerUserArgs(runtimeUid: number | undefined, runtimeGid: number | undefined): string[] {
@@ -213,17 +218,18 @@ export class OciRuntime {
     provenanceDigest: string;
     buildId: string;
   }> {
-    if (!this.config.OCI_SIGNING_PUBLIC_KEY) throw new Error("oci_signing_key_not_configured");
+    if (!this.config.OCI_CERTIFICATE_IDENTITY) throw new Error("oci_certificate_identity_not_configured");
     await command(this.config.PODMAN_BINARY, ["pull", imageReference], 300_000);
     const repoDigest = await command(this.config.PODMAN_BINARY, ["image", "inspect", imageReference, "--format", "{{index .RepoDigests 0}}"]);
     const imageDigest = digestFromRepoReference(repoDigest);
     if (!/^sha256:[a-f0-9]{64}$/.test(imageDigest)) throw new Error("image_digest_invalid");
     const immutable = `${withoutTag(imageReference)}@${imageDigest}`;
-    const signature = await command(this.config.COSIGN_BINARY, ["verify", "--key", this.config.OCI_SIGNING_PUBLIC_KEY, "--output", "json", immutable]);
+    const keyless = keylessVerificationArgs(this.config.OCI_CERTIFICATE_IDENTITY, this.config.OCI_CERTIFICATE_OIDC_ISSUER);
+    const signature = await command(this.config.COSIGN_BINARY, ["verify", ...keyless, "--output", "json", immutable]);
     const signatures = JSON.parse(signature) as Array<{ critical?: { image?: { "docker-manifest-digest"?: string } } }>;
     if (!Array.isArray(signatures) || !signatures.some((item) => item.critical?.image?.["docker-manifest-digest"] === imageDigest)) throw new Error("image_signature_invalid");
-    const sbom = await command(this.config.COSIGN_BINARY, ["verify-attestation", "--key", this.config.OCI_SIGNING_PUBLIC_KEY, "--type", "spdxjson", immutable]);
-    const provenance = await command(this.config.COSIGN_BINARY, ["verify-attestation", "--key", this.config.OCI_SIGNING_PUBLIC_KEY, "--type", "slsaprovenance", immutable]);
+    const sbom = await command(this.config.COSIGN_BINARY, ["verify-attestation", ...keyless, "--type", "spdxjson", immutable]);
+    const provenance = await command(this.config.COSIGN_BINARY, ["verify-attestation", ...keyless, "--type", "slsaprovenance", immutable]);
     verifyAttestationEvidence(sbom, provenance, imageDigest, expectedSourceCommit, expectedBuildId);
     return {
       imageReference,

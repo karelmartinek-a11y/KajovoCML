@@ -3,12 +3,10 @@ name: CI and production deploy
 on:
   push:
     branches: [main]
-    # Handler-only merges are built, signed and deployed by the dedicated OCI
-    # workflows. Restarting the KCML control plane here can interrupt their
-    # activation without changing any control-plane code.
     paths-ignore:
       - "handlers/**"
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -30,114 +28,140 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
+      CI: "true"
       NODE_ENV: test
       DATABASE_URL: postgres://kcml:kcml-test@127.0.0.1:5432/kcml_test
+      KCML_UPGRADE_DATABASE_URL: postgres://kcml:kcml-test@127.0.0.1:5432/kcml_upgrade_test
       ACCESS_TOKEN_HMAC_KEY_BASE64: AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=
       INTEGRATION_TOKEN_HMAC_KEY_BASE64: AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=
       EGRESS_CAPABILITY_HMAC_KEY_BASE64: AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM=
       SESSION_SECRET_BASE64: BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ=
       CSRF_SECRET_BASE64: BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU=
       MFA_ENCRYPTION_KEY_BASE64: BgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgY=
-      KCML_TEST_DATABASE: "1"
     steps:
       - uses: actions/checkout@v4
         with: { persist-credentials: false }
       - uses: pnpm/action-setup@v4
-        with:
-          version: 9.15.4
+        with: { version: 9.15.4 }
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm db:migrate
-      - run: pnpm run ci
+      - name: Deployment and alert-sink checks
+        run: |
+          bash -n deploy/scripts/*.sh scripts/*.sh
+          node --check deploy/alert-sink/receiver.mjs
+          bash scripts/test-alert-sink.sh
+      - name: Clean schema migrations
+        env:
+          KCML_PROCESS_ROLE: migrate
+        run: pnpm db:migrate
+      - name: Production-shape migration upgrade
+        run: bash scripts/test-migration-upgrade.sh
+      - name: Application-role isolation
+        run: bash scripts/test-db-role-isolation.sh
+      - name: PostgreSQL transaction and audit concurrency tests
+        env:
+          KCML_TEST_DATABASE: "1"
+        run: pnpm exec vitest run apps/server/src/domain/onboarding-db.test.ts apps/server/src/domain/audit-db.test.ts --no-file-parallelism
+      - name: Dependency audit
+        run: pnpm audit --prod --audit-level=high
+      - name: Lint, typecheck, all tests and build
+        run: pnpm run ci
 
-  deploy:
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    needs: ci
-    runs-on: [self-hosted, kcml-production]
-    environment: production
+  security:
+    runs-on: ubuntu-latest
     permissions:
       contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false, fetch-depth: 0 }
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+      - uses: github/codeql-action/analyze@v3
+
+  release:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
+    needs: [ci, security]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v4
         with: { persist-credentials: false }
-      - name: Mask UI password
-        run: |
-          echo "::add-mask::${{ secrets.PASS }}"
-      - name: Deploy on production server
+      - uses: pnpm/action-setup@v4
+        with: { version: 9.15.4 }
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Assemble immutable release
         env:
+          BUILD_ID: ${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          NODE_VERSION: "22"
+          PNPM_VERSION: "9.15.4"
+        run: bash scripts/build-release.sh /tmp/kcml-release
+      - uses: anchore/sbom-action@v0
+        with:
+          path: /tmp/kcml-release
+          format: spdx-json
+          output-file: /tmp/kcml-release.spdx.json
+          upload-artifact: false
+      - name: Archive and checksum release
+        run: |
+          install -m 0644 /tmp/kcml-release.spdx.json /tmp/kcml-release/SBOM.spdx.json
+          tar --zstd --create --file /tmp/kcml-release.tar.zst --directory /tmp/kcml-release .
+          sha256sum /tmp/kcml-release.tar.zst > /tmp/kcml-release.tar.zst.sha256
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: /tmp/kcml-release.tar.zst
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kcml-release-${{ github.sha }}
+          path: |
+            /tmp/kcml-release.tar.zst
+            /tmp/kcml-release.tar.zst.sha256
+            /tmp/kcml-release.spdx.json
+          if-no-files-found: error
+          retention-days: 14
+
+  deploy:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
+    needs: [ci, security, release]
+    runs-on: [self-hosted, kcml-deploy]
+    environment: production
+    permissions:
+      contents: read
+      attestations: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: kcml-release-${{ github.sha }}
+          path: ${{ runner.temp }}/kcml-release
+      - name: Verify checksum
+        working-directory: ${{ runner.temp }}/kcml-release
+        run: sha256sum --check kcml-release.tar.zst.sha256
+      - name: Deploy verified release
+        env:
+          GH_TOKEN: ${{ github.token }}
           PASS: ${{ secrets.PASS }}
         run: |
           set -euo pipefail
-          test -f /etc/kcml/kcml.env
-          set -a
-          . /etc/kcml/kcml.env
-          set +a
-          if [ -z "${PASS:-}" ]; then
-            echo "::error::Required GitHub secret PASS is missing. It is the only GitHub secret required for production deploy."
-            exit 1
-          fi
-          chmod +x deploy/scripts/*.sh
-          deploy/scripts/preflight.sh
-          install -m 0644 deploy/nginx/kcml.conf /etc/nginx/sites-available/kcml.conf
-          ln -sfn /etc/nginx/sites-available/kcml.conf /etc/nginx/sites-enabled/kcml.conf
-          kcml_uid="$(id -u kcml)"
-          install -m 0644 deploy/systemd/kcml.service /etc/systemd/system/kcml.service
-          install -m 0644 deploy/systemd/kcml-onboarding-worker.service /etc/systemd/system/kcml-onboarding-worker.service
-          install -m 0644 deploy/systemd/kcml-egress-proxy.service /etc/systemd/system/kcml-egress-proxy.service
-          install -d -m 0755 /etc/systemd/system/kcml-onboarding-worker.service.d
-          sed "s/@KCML_UID@/${kcml_uid}/g" deploy/systemd/kcml-onboarding-worker-runtime.conf.in \
-            > /etc/systemd/system/kcml-onboarding-worker.service.d/runtime-user.conf
-          chmod 0644 /etc/systemd/system/kcml-onboarding-worker.service.d/runtime-user.conf
-          loginctl enable-linger kcml
-          systemctl start "user@${kcml_uid}.service"
-          test -S "/run/user/${kcml_uid}/bus"
-          systemctl daemon-reload
-          systemctl enable kcml kcml-onboarding-worker kcml-egress-proxy
-          deploy/scripts/backup.sh
-          corepack enable
-          CI=true pnpm install --frozen-lockfile --prod=false
-          pnpm --filter @kcml/admin-ui build
-          pnpm --filter @kcml/server build
-          pnpm db:migrate
-          PASS="$PASS" pnpm admin:sync-password
-          release_id="${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          release_dir="/opt/kcml/releases/${release_id}"
-          previous_release="$(readlink -f /opt/kcml/current 2>/dev/null || true)"
-          install -d -m 0755 /opt/kcml/releases
-          test ! -e "$release_dir"
-          install -d -m 0755 "$release_dir"
-          rsync -a --exclude '.git' --exclude 'node_modules' "$GITHUB_WORKSPACE"/ "$release_dir"/
-          cd "$release_dir"
-          CI=true pnpm install --frozen-lockfile --prod
-          chown -R root:kcml "$release_dir"
-          chmod -R g=rX,o= "$release_dir"
-          if [ -d /opt/kcml/current ] && [ ! -L /opt/kcml/current ]; then
-            legacy_release="/opt/kcml/releases/legacy-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-            test ! -e "$legacy_release"
-            mv /opt/kcml/current "$legacy_release"
-            previous_release="$legacy_release"
-          fi
-          ln -sfn "$release_dir" /opt/kcml/current
-          systemctl restart kcml
-          systemctl restart kcml-egress-proxy
-          systemctl restart kcml-onboarding-worker
-          systemctl reload nginx
-          admin_host="${ADMIN_HOST:-${{ vars.ADMIN_HOST || 'admin.hcasc.cz' }}}"
-          for attempt in $(seq 1 30); do
-            if curl -fsS -H "Host: ${admin_host}" "http://127.0.0.1:${PORT}/health" >/dev/null \
-              && systemctl is-active --quiet kcml-egress-proxy \
-              && systemctl is-active --quiet kcml-onboarding-worker \
-              && test -S "${EGRESS_PROXY_SOCKET_PATH:-/var/lib/kcml/egress/proxy.sock}"; then
-              exit 0
-            fi
-            sleep 1
-          done
-          systemctl status kcml --no-pager -l
-          if [ -n "$previous_release" ] && [ -d "$previous_release" ]; then
-            ln -sfn "$previous_release" /opt/kcml/current
-            systemctl restart kcml kcml-egress-proxy kcml-onboarding-worker
-          fi
-          exit 1
+          echo "::add-mask::$PASS"
+          test -n "$PASS"
+          sudo --preserve-env=GH_TOKEN,PASS /usr/local/sbin/kcml-deploy-wrapper \
+            "${{ runner.temp }}/kcml-release/kcml-release.tar.zst" \
+            "${{ github.repository }}" \
+            "${{ github.sha }}" \
+            "${{ github.run_id }}" \
+            "${{ github.run_attempt }}"

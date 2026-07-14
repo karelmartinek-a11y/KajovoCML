@@ -12,15 +12,9 @@ permissions:
 jobs:
   preload:
     if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main'
-    runs-on: [self-hosted, kcml-production]
+    runs-on: [self-hosted, kcml-deploy]
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.workflow_run.head_sha }}
-          fetch-depth: 2
-          persist-credentials: false
-
       - name: Preload signed private image and release the onboarding worker
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -29,45 +23,5 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$GHCR_TOKEN"
-          [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
-          test -f /etc/kcml/kcml.env
-          set -a
-          . /etc/kcml/kcml.env
-          set +a
-
-          auth_file=/var/lib/kcml/podman/auth.json
-          docker_config=/var/lib/kcml/podman/.docker/config.json
-          cleanup() {
-            rm -f "$auth_file" "$docker_config"
-          }
-          trap cleanup EXIT
-
-          install -d -m 0700 -o kcml -g kcml /var/lib/kcml/podman /var/lib/kcml/podman/.docker
-          umask 077
-          encoded_auth="$(printf '%s:%s' "$GHCR_ACTOR" "$GHCR_TOKEN" | base64 -w0)"
-          printf '{"auths":{"ghcr.io":{"auth":"%s"}}}\n' "$encoded_auth" > "$auth_file"
-          unset encoded_auth
-          chown kcml:kcml "$auth_file"
-          chmod 0600 "$auth_file"
-          install -m 0600 -o kcml -g kcml "$auth_file" "$docker_config"
-
-          # The worker polls pending artifact jobs on its own. Restarting it
-          # here can terminate an in-flight Podman verification and turn an
-          # otherwise valid onboarding into command_failed:podman:SIGTERM.
-          systemctl is-active --quiet kcml-onboarding-worker
-          for _attempt in $(seq 1 120); do
-            state="$(psql "$DATABASE_URL" -Atq \
-              -c "select state from onboarding_job where source_commit='$SOURCE_COMMIT' order by created_at desc limit 1")"
-            case "$state" in
-              DEPLOYING|REGISTERED_DISABLED|TRIAL_TESTING|ACTIVE)
-                exit 0
-                ;;
-              FAILED|QUARANTINED|CANCELLED)
-                echo "::error::Onboarding reached terminal state $state while the private image credential was active."
-                exit 1
-                ;;
-            esac
-            sleep 5
-          done
-          echo "::error::The onboarding worker did not verify the private image before the bounded credential window expired."
-          exit 1
+          sudo --preserve-env=GHCR_TOKEN /usr/local/sbin/kcml-handler-preload-wrapper \
+            "$SOURCE_COMMIT" "$GHCR_ACTOR"

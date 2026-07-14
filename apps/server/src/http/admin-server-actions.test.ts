@@ -56,8 +56,16 @@ describe("admin server actions", () => {
         return { rowCount: 1, rows: [{ id: "session-id", account_id: "account-id", session_hash: sessionHash, username: "admin" }] };
       }
       if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") return { rowCount: 0, rows: [] };
+      if (sql.includes("select id,enabled,registration_state,operational_state") && sql.includes("from mcp_server where id=$1")) {
+        return { rowCount: 1, rows: [{ id: "server-id", enabled: true, registration_state: "ACTIVE", operational_state: "HEALTHY" }] };
+      }
       if (sql.includes("from mcp_server ms") && sql.includes("review_due_at")) {
-        return { rowCount: 1, rows: [{ id: "server-id", code: "KCML0001", enabled: true, registration_state: "ACTIVE", operational_state: "HEALTHY", review_due_at: "2027-01-01T00:00:00.000Z" }] };
+        return { rowCount: 1, rows: [{
+          id: "server-id", code: "KCML0001", enabled: true, registration_state: "ACTIVE", operational_state: "HEALTHY",
+          revision_id: "revision-id", validation_state: "VALID", approved_at: "2026-01-01T00:00:00.000Z",
+          review_due_at: "2027-01-01T00:00:00.000Z", review_interval_days: 365,
+          monitoring_enabled: true, profile_digest: "sha256:monitoring"
+        }] };
       }
       if (sql.includes("select id, code, enabled, registration_state")) {
         return { rowCount: 1, rows: [{ id: "server-id", code: "KCML0001", enabled: true, registration_state: "ACTIVE", operational_state: "HEALTHY" }] };
@@ -80,7 +88,7 @@ describe("admin server actions", () => {
       },
       payload: { enabled: false }
     });
-    expect(response.statusCode).toBe(200);
+    expect(response.statusCode, response.body).toBe(200);
     expect(response.json()).toMatchObject({ registrationState: "REGISTERED_DISABLED", operationalState: "DISABLED" });
     expect(query.mock.calls.some(([sql]) => String(sql).includes("update access_token set revoked_at"))).toBe(true);
   });
@@ -115,7 +123,14 @@ describe("admin server actions", () => {
               artifact_digest: "sha256:artifact",
               manifest_digest: "sha256:manifest",
               registration_revision: "rev-1",
+              active_revision_id: "revision-id",
+              registration_schema_version: "1.5",
+              registration_validation_state: "VALID",
+              review_approved_at: "2026-01-01T00:00:00.000Z",
               review_due_at: "2027-01-01T00:00:00.000Z",
+              review_interval_days: 365,
+              monitoring_enabled: true,
+              monitoring_profile_digest: "sha256:monitoring",
               image_reference: null,
               image_digest: "sha256:image",
               sbom_digest: null,
@@ -164,12 +179,13 @@ describe("admin server actions", () => {
       },
       payload: {}
     });
-    expect(response.statusCode).toBe(200);
+    expect(response.statusCode, response.body).toBe(200);
     expect(response.json()).toMatchObject({ ok: true });
   });
 
   it("reads and updates monitoring profile for a server", async () => {
     const sessionHash = await argon2.hash(sessionValue, { type: argon2.argon2id, memoryCost: 4096, timeCost: 2, parallelism: 1 });
+    let registrationState = "REGISTERED_DISABLED";
     const query = vi.fn(async (sql: string) => {
       if (sql.includes("from admin_session")) {
         return { rowCount: 1, rows: [{ id: "session-id", account_id: "account-id", session_hash: sessionHash, username: "admin" }] };
@@ -191,8 +207,8 @@ describe("admin server actions", () => {
           }]
         };
       }
-      if (sql.includes("select id, code from mcp_server")) {
-        return { rowCount: 1, rows: [{ id: "server-id", code: "KCML0001" }] };
+      if (sql.includes("select id,code,registration_state,active_revision_id from mcp_server")) {
+        return { rowCount: 1, rows: [{ id: "server-id", code: "KCML0001", registration_state: registrationState, active_revision_id: "revision-id" }] };
       }
       return { rowCount: 1, rows: [] };
     });
@@ -230,8 +246,28 @@ describe("admin server actions", () => {
         }
       }
     });
-    expect(write.statusCode).toBe(200);
+    expect(write.statusCode, write.body).toBe(200);
     expect(write.json()).toMatchObject({ enabled: false, profile: { runbookRef: "runbook" } });
+
+    registrationState = "ACTIVE";
+    const blocked = await app.inject({
+      method: "PUT",
+      url: "/api/mcp-servers/server-id/monitoring-profile",
+      headers: {
+        host: config.ADMIN_HOST,
+        cookie: `__Host-kcml_session=${sessionValue}; __Host-kcml_csrf=${csrfValue}`,
+        "x-csrf-token": csrfValue
+      },
+      payload: {
+        enabled: true,
+        profile: {
+          sloTargets: {}, probeIntervals: {}, alertRules: [], runbookRef: "runbook",
+          primaryAlertChannel: "primary", backupAlertChannel: "backup"
+        }
+      }
+    });
+    expect(blocked.statusCode).toBe(409);
+    expect(blocked.json()).toMatchObject({ error: "monitoring_revision_required" });
   });
 
   it("returns admin security overview with active sessions", async () => {
@@ -266,7 +302,7 @@ describe("admin server actions", () => {
       url: "/api/admin-security",
       headers: { host: config.ADMIN_HOST, cookie: `__Host-kcml_session=${sessionValue}` }
     });
-    expect(response.statusCode).toBe(200);
+    expect(response.statusCode, response.body).toBe(200);
     expect(response.json()).toMatchObject({
       username: "karel",
       passwordChangedAt: "2026-07-14T10:00:00.000Z",
@@ -280,12 +316,13 @@ describe("admin server actions", () => {
   it("changes admin password and revokes other sessions", async () => {
     const sessionHash = await argon2.hash(sessionValue, { type: argon2.argon2id, memoryCost: 4096, timeCost: 2, parallelism: 1 });
     const passwordHash = await argon2.hash("current-password", { type: argon2.argon2id, memoryCost: 4096, timeCost: 2, parallelism: 1 });
+    let accountUsername = "karel";
     const query = vi.fn(async (sql: string) => {
       if (sql.includes("from admin_session s")) {
         return { rowCount: 1, rows: [{ id: "session-id", account_id: "account-id", session_hash: sessionHash, username: "karel" }] };
       }
-      if (sql === "select password_hash from admin_account where id=$1") {
-        return { rowCount: 1, rows: [{ password_hash: passwordHash }] };
+      if (sql === "select username,password_hash from admin_account where id=$1") {
+        return { rowCount: 1, rows: [{ username: accountUsername, password_hash: passwordHash }] };
       }
       if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") return { rowCount: 0, rows: [] };
       return { rowCount: 1, rows: [] };
@@ -309,6 +346,20 @@ describe("admin server actions", () => {
     expect(response.statusCode).toBe(200);
     expect(query.mock.calls.some(([sql]) => String(sql).includes("update admin_account set password_hash"))).toBe(true);
     expect(query.mock.calls.some(([sql]) => String(sql).includes("update admin_session set revoked_at=now() where account_id=$1 and id<>$2"))).toBe(true);
+
+    accountUsername = "karmar78";
+    const deploymentManaged = await app.inject({
+      method: "POST",
+      url: "/api/admin-password",
+      headers: {
+        host: config.ADMIN_HOST,
+        cookie: `__Host-kcml_session=${sessionValue}; __Host-kcml_csrf=${csrfValue}`,
+        "x-csrf-token": csrfValue
+      },
+      payload: { currentPassword: "current-password", nextPassword: "another-strong-password" }
+    });
+    expect(deploymentManaged.statusCode).toBe(409);
+    expect(deploymentManaged.json()).toMatchObject({ error: "admin_password_deployment_managed" });
   });
 
   it("revokes other admin sessions on demand", async () => {
@@ -395,6 +446,9 @@ describe("admin server actions", () => {
       query: vi.fn(async (sql: string) => {
         if (sql.includes("from admin_session s")) {
           return { rowCount: 1, rows: [{ id: "session-id", account_id: "account-id", session_hash: sessionHash, username: "karel" }] };
+        }
+        if (sql === "select * from verify_audit_chain()") {
+          return { rowCount: 1, rows: [{ valid: true, event_count: 1, latest_event_id: 1, broken_event_id: null }] };
         }
         if (sql.includes("select id, event_type")) {
           return {
@@ -522,8 +576,8 @@ describe("admin server actions", () => {
         return {
           rowCount: 1,
           rows: [{
-            key: "publicBaseDomain",
-            value_json: "example.test",
+            key: "logLevel",
+            value_json: "debug",
             value_ciphertext: null,
             updated_at: "2026-07-14T10:00:00.000Z"
           }]
@@ -546,29 +600,25 @@ describe("admin server actions", () => {
     });
     expect(listed.statusCode).toBe(200);
     expect(listed.json().settings).toContainEqual(expect.objectContaining({
-      key: "publicBaseDomain",
-      value: "example.test",
+      key: "logLevel",
+      value: "debug",
       source: "database"
     }));
-    expect(listed.json().settings).toContainEqual(expect.objectContaining({
-      key: "sessionSecret",
-      value: null,
-      fingerprint: expect.any(String)
-    }));
+    expect(listed.json().settings).toHaveLength(3);
 
     const updated = await app.inject({
       method: "PUT",
-      url: "/api/operational-config/publicBaseDomain",
+      url: "/api/operational-config/logLevel",
       headers: {
         host: config.ADMIN_HOST,
         cookie: `__Host-kcml_session=${sessionValue}; __Host-kcml_csrf=${csrfValue}`,
         "x-csrf-token": csrfValue
       },
-      payload: { value: "new.example.test" }
+      payload: { value: "warn" }
     });
     expect(updated.statusCode).toBe(200);
     expect(query.mock.calls.some(([sql]) => String(sql).includes("insert into operational_config_setting"))).toBe(true);
-    expect(query.mock.calls.some(([sql]) => String(sql).includes("insert into audit_event"))).toBe(true);
+    expect(query.mock.calls.some(([sql]) => String(sql).includes("append_audit_event"))).toBe(true);
   });
 
   it("updates managed admin password, MFA and sessions", async () => {
@@ -584,7 +634,7 @@ describe("admin server actions", () => {
       if (sql.includes("update admin_account set mfa_enabled")) {
         return { rowCount: 1, rows: [{ username: "managed" }] };
       }
-      if (sql === "select username from admin_account where id=$1") {
+      if (sql.startsWith("select username from admin_account where id=$1")) {
         return { rowCount: 1, rows: [{ username: "managed" }] };
       }
       return { rowCount: 1, rows: [] };
@@ -605,7 +655,7 @@ describe("admin server actions", () => {
       },
       payload: { nextPassword: "another-very-strong-password" }
     });
-    expect(password.statusCode).toBe(200);
+    expect(password.statusCode, password.body).toBe(200);
 
     const mfa = await app.inject({
       method: "PUT",

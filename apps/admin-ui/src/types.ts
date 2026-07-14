@@ -27,7 +27,23 @@ export type Server = {
   lastFailureAt: string | null;
   lastUnauthorizedAt: string | null;
   registrationRevision: string | null;
+  activeRevisionId: string | null;
+  registrationSchemaVersion: string | null;
+  registrationValidationState: string | null;
+  reviewApprovedAt: string | null;
   reviewDueAt: string | null;
+  reviewIntervalDays: number | null;
+  monitoringEnabled: boolean;
+  monitoringProfileDigest: string | null;
+  recertification: {
+    phase: "VALID" | "WARNING" | "GRACE" | "SUSPENDED" | "INVALID";
+    canServeExisting: boolean;
+    canActivate: boolean;
+    shouldSuspend: boolean;
+    reason: string | null;
+    reviewDueAt: string | null;
+    secondsToBoundary: number | null;
+  };
   createdAt: string;
   updatedAt: string;
 };
@@ -126,7 +142,55 @@ export type OnboardingJob = {
   gates?: OnboardingGate[];
   events?: OnboardingEvent[];
 };
-export type MonitoringProbe = { id: number; server_id: string; code: string; hostname: string; probe_type: string; status: string; latency_ms: number | null; correlation_id: string; checked_at: string };
+export type MonitoringProbe = { id: number; server_id: string; code: string; hostname: string; probe_type: string; status: string; latency_ms: number | null; evidence?: Record<string, unknown>; correlation_id: string; checked_at: string };
+export type OperationalAlert = {
+  id: string;
+  server_id: string | null;
+  code: string | null;
+  hostname: string | null;
+  severity: "WARNING" | "HIGH" | "CRITICAL";
+  alert_type: string;
+  status: "OPEN" | "ACKNOWLEDGED" | "SUPPRESSED" | "CLOSED";
+  title: string;
+  detail: Record<string, unknown>;
+  correlation_id: string;
+  first_seen_at: string;
+  last_seen_at: string;
+  suppressed_until: string | null;
+};
+export type AlertDelivery = {
+  id: string;
+  alert_id: string;
+  code: string | null;
+  severity: string;
+  alert_type: string;
+  channel: "PRIMARY" | "BACKUP";
+  idempotency_key: string;
+  attempt_count: number;
+  state: "PENDING" | "DELIVERED" | "RETRY" | "DEAD_LETTER";
+  last_http_status: number | null;
+  last_error: string | null;
+  next_attempt_at: string;
+  delivered_at: string | null;
+  created_at: string;
+};
+export type ServerStateHistory = {
+  id: number;
+  server_id: string;
+  code: string;
+  registration_state: string;
+  operational_state: string;
+  recertification_phase: string;
+  reason: string;
+  correlation_id: string;
+  recorded_at: string;
+};
+export type MonitoringOverview = {
+  alerts: OperationalAlert[];
+  deliveries: AlertDelivery[];
+  stateHistory: ServerStateHistory[];
+  scheduler: { worker_id: string; last_started_at: string; last_completed_at: string | null; last_error: string | null } | null;
+};
 export type AuditResponse = { events: AuditEvent[]; nextCursor: string | null };
 export type AuditIntegrity = {
   valid: boolean;
@@ -169,12 +233,12 @@ export type OperationalConfigSetting = {
   key: string;
   envKey: string;
   label: string;
-  kind: "string" | "number" | "boolean" | "secret";
+  kind: "string" | "number";
   restartRequired: boolean;
   bootstrapOnly: boolean;
   source: "database" | "bootstrap";
-  value: string | number | boolean | null;
-  fingerprint: string | null;
+  value: string | number;
+  fingerprint: null;
   updatedAt: string | null;
 };
 export type OnboardingDescriptor = {

@@ -42,24 +42,8 @@ export function hashAuditEvent(prevHashHex: string | null, payload: AuditHashPay
 async function appendAuditWithClient(client: pg.PoolClient, event: AuditInput): Promise<void> {
   const before = redact(event.before ?? null);
   const after = redact(event.after ?? null);
-  const previous = await client.query(
-    "select event_hash from audit_event order by id desc limit 1 for update"
-  );
-  const prevHash = previous.rows[0]?.event_hash ? previous.rows[0].event_hash as Buffer : null;
-  const eventHash = hashAuditEvent(prevHash ? prevHash.toString("hex") : null, {
-    eventType: event.eventType,
-    actorType: event.actorType,
-    actorId: event.actorId ?? null,
-    objectType: event.objectType ?? null,
-    objectId: event.objectId ?? null,
-    before,
-    after,
-    correlationId: event.correlationId
-  });
   await client.query(
-    `insert into audit_event
-      (event_type, actor_type, actor_id, object_type, object_id, before_json, after_json, correlation_id, prev_hash, event_hash)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+    "select append_audit_event($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8::uuid)",
     [
       event.eventType,
       event.actorType,
@@ -68,9 +52,7 @@ async function appendAuditWithClient(client: pg.PoolClient, event: AuditInput): 
       event.objectId ?? null,
       JSON.stringify(before),
       JSON.stringify(after),
-      event.correlationId,
-      prevHash,
-      eventHash
+      event.correlationId
     ]
   );
 }
@@ -89,35 +71,13 @@ export async function verifyAuditChain(db: Db): Promise<{
   latestEventId: number | null;
   brokenEventId: number | null;
 }> {
-  const result = await db.query(
-    `select id, event_type, actor_type, actor_id, object_type, object_id, before_json, after_json, correlation_id, prev_hash, event_hash
-       from audit_event
-      order by id asc`
-  );
-  const eventCount = Number(result.rowCount ?? result.rows.length);
-  let prevHashHex: string | null = null;
-  let latestEventId: number | null = null;
-  for (const row of result.rows) {
-    latestEventId = Number(row.id);
-    const actualPrevHash = row.prev_hash ? (row.prev_hash as Buffer).toString("hex") : null;
-    if (actualPrevHash !== prevHashHex) {
-      return { valid: false, eventCount, latestEventId, brokenEventId: latestEventId };
-    }
-    const expectedHash = hashAuditEvent(prevHashHex, {
-      eventType: String(row.event_type),
-      actorType: String(row.actor_type),
-      actorId: row.actor_id ? String(row.actor_id) : null,
-      objectType: row.object_type ? String(row.object_type) : null,
-      objectId: row.object_id ? String(row.object_id) : null,
-      before: row.before_json ?? null,
-      after: row.after_json ?? null,
-      correlationId: String(row.correlation_id)
-    }).toString("hex");
-    const actualHash = (row.event_hash as Buffer).toString("hex");
-    if (actualHash !== expectedHash) {
-      return { valid: false, eventCount, latestEventId, brokenEventId: latestEventId };
-    }
-    prevHashHex = actualHash;
-  }
-  return { valid: true, eventCount, latestEventId, brokenEventId: null };
+  const result = await db.query("select * from verify_audit_chain()");
+  const row = result.rows[0];
+  if (!row) return { valid: false, eventCount: 0, latestEventId: null, brokenEventId: null };
+  return {
+    valid: Boolean(row.valid),
+    eventCount: Number(row.event_count),
+    latestEventId: row.latest_event_id === null ? null : Number(row.latest_event_id),
+    brokenEventId: row.broken_event_id === null ? null : Number(row.broken_event_id)
+  };
 }

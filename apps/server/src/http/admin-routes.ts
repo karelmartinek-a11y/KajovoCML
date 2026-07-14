@@ -7,6 +7,7 @@ import type { AppConfig } from "../config.js";
 import type { Db } from "../db.js";
 import { tx } from "../db.js";
 import { appendAudit, verifyAuditChain } from "../domain/audit.js";
+import { raiseAlert } from "../domain/alerts.js";
 import {
   createKajaCredential,
   deleteKajaCredential,
@@ -18,6 +19,10 @@ import {
 } from "../domain/auth.js";
 import { getServerById, listServers } from "../domain/catalog.js";
 import { listOperationalConfig, updateOperationalConfig } from "../domain/operational-config.js";
+import { buildReadinessReport } from "../domain/readiness.js";
+import { evaluateRecertification } from "../domain/recertification.js";
+import { digestCanonicalJson } from "../domain/registration.js";
+import { transitionServerState } from "../domain/server-state.js";
 import { matchesExpectedResult } from "../onboarding/activation.js";
 import { decryptMfaSecret, encryptMfaSecret, hmacToken } from "../security/secrets.js";
 import { getHandler } from "../handlers/registry.js";
@@ -56,15 +61,13 @@ const adminAccountMfaSchema = z.object({
   enabled: z.boolean(),
   secret: z.string().trim().min(16).optional().or(z.literal(""))
 });
-const bootstrapSetupSchema = z.object({
-  username: z.string().trim().min(3).max(120),
-  password: z.string().min(12),
-  mfaSecret: z.string().trim().min(16).optional().or(z.literal(""))
-});
 const operationalConfigUpdateSchema = z.object({
   value: z.union([z.string(), z.number(), z.boolean()])
 });
-const loginAttempts = new Map<string, { count: number; lastFailedAt: number; lockedUntil: number }>();
+const alertSuppressSchema = z.object({
+  reason: z.string().trim().min(5).max(500),
+  until: z.string().datetime({ offset: true })
+}).strict();
 
 type AdminSession = {
   accountId: string;
@@ -115,89 +118,57 @@ export function requireCsrf(request: FastifyRequest): boolean {
   return Boolean(cookie && header && cookie === header);
 }
 
-function loginAttemptKey(request: FastifyRequest, username: string): string {
-  const forwarded = request.headers["x-forwarded-for"];
-  const ip = typeof forwarded === "string" ? forwarded.split(",")[0]?.trim() : request.ip;
-  return `${String(ip ?? "unknown").toLowerCase()}:${username.trim().toLowerCase()}`;
+function loginAttemptKey(request: FastifyRequest, username: string, config: AppConfig): Buffer {
+  return hmacToken(`${request.ip.toLowerCase()}:${username.trim().toLowerCase()}`, config.SESSION_SECRET_BASE64);
 }
 
-function getLoginLockState(request: FastifyRequest, username: string): { blocked: boolean; retryAfterSeconds: number } {
-  const key = loginAttemptKey(request, username);
-  const state = loginAttempts.get(key);
-  if (!state) return { blocked: false, retryAfterSeconds: 0 };
-  const now = Date.now();
-  if (state.lastFailedAt < now - LOGIN_ATTEMPT_WINDOW_MS && state.lockedUntil <= now) {
-    loginAttempts.delete(key);
-    return { blocked: false, retryAfterSeconds: 0 };
-  }
-  if (state.lockedUntil > now) {
-    return { blocked: true, retryAfterSeconds: Math.ceil((state.lockedUntil - now) / 1000) };
-  }
-  return { blocked: false, retryAfterSeconds: 0 };
+async function getLoginLockState(db: Db, request: FastifyRequest, username: string, config: AppConfig): Promise<{ blocked: boolean; retryAfterSeconds: number }> {
+  const key = loginAttemptKey(request, username, config);
+  const result = await db.query(
+    `select greatest(0, ceil(extract(epoch from (locked_until-now()))))::int as retry_after_seconds
+       from admin_login_throttle
+      where attempt_key=$1 and locked_until > now()`,
+    [key]
+  );
+  const retryAfterSeconds = Number(result.rows[0]?.retry_after_seconds ?? 0);
+  return { blocked: retryAfterSeconds > 0, retryAfterSeconds };
 }
 
-function recordLoginFailure(request: FastifyRequest, username: string): void {
-  const key = loginAttemptKey(request, username);
-  const current = loginAttempts.get(key);
-  const now = Date.now();
-  const count = !current || current.lastFailedAt < now - LOGIN_ATTEMPT_WINDOW_MS ? 1 : current.count + 1;
-  const lockSteps = Math.max(0, count - 3);
-  loginAttempts.set(key, {
-    count,
-    lastFailedAt: now,
-    lockedUntil: lockSteps > 0 ? now + LOGIN_LOCK_BASE_MS * 2 ** (lockSteps - 1) : 0
+async function recordLoginFailure(db: Db, request: FastifyRequest, username: string, config: AppConfig): Promise<void> {
+  const key = loginAttemptKey(request, username, config);
+  await tx(db, async (client) => {
+    await client.query("select pg_advisory_xact_lock(hashtextextended(encode($1::bytea,'hex'),0))", [key]);
+    const result = await client.query(
+      "select failure_count,last_failed_at from admin_login_throttle where attempt_key=$1 for update",
+      [key]
+    );
+    const now = Date.now();
+    const lastFailedAt = result.rows[0]?.last_failed_at ? new Date(result.rows[0].last_failed_at).getTime() : 0;
+    const count = !result.rowCount || lastFailedAt < now - LOGIN_ATTEMPT_WINDOW_MS
+      ? 1
+      : Number(result.rows[0].failure_count) + 1;
+    const lockSteps = Math.max(0, count - 3);
+    const lockDurationMs = lockSteps > 0 ? Math.min(24 * 60 * 60 * 1000, LOGIN_LOCK_BASE_MS * 2 ** (lockSteps - 1)) : 0;
+    await client.query(
+      `insert into admin_login_throttle(attempt_key,failure_count,first_failed_at,last_failed_at,locked_until)
+       values ($1,$2,now(),now(),$3)
+       on conflict (attempt_key) do update
+         set failure_count=excluded.failure_count,
+             first_failed_at=case when admin_login_throttle.last_failed_at < now()-interval '15 minutes' then now() else admin_login_throttle.first_failed_at end,
+             last_failed_at=now(),
+             locked_until=excluded.locked_until,
+             updated_at=now()`,
+      [key, count, lockDurationMs ? new Date(now + lockDurationMs) : null]
+    );
   });
 }
 
-function clearLoginFailures(request: FastifyRequest, username: string): void {
-  loginAttempts.delete(loginAttemptKey(request, username));
-}
-
-async function bootstrapRequired(db: Db): Promise<boolean> {
-  const result = await db.query("select count(*)::int as count from admin_account where password_hash is not null");
-  return Number(result.rows[0]?.count ?? 0) === 0;
+async function clearLoginFailures(db: Db, request: FastifyRequest, username: string, config: AppConfig): Promise<void> {
+  await db.query("delete from admin_login_throttle where attempt_key=$1", [loginAttemptKey(request, username, config)]);
 }
 
 function generateRecoveryCode(): string {
   return `${randomBytes(3).toString("hex")}-${randomBytes(3).toString("hex")}-${randomBytes(3).toString("hex")}`.toUpperCase();
-}
-
-async function bootstrapAdminAccount(
-  db: Db,
-  correlationId: string,
-  input: unknown,
-  encryptionKey: Buffer
-): Promise<{ username: string; recoveryCodes: string[] }> {
-  const parsed = bootstrapSetupSchema.parse(input);
-  const passwordHash = await argon2.hash(parsed.password, { type: argon2.argon2id, memoryCost: 65536, timeCost: 3, parallelism: 1 });
-  const storedMfaSecret = parsed.mfaSecret?.trim() ? encryptMfaSecret(parsed.mfaSecret.trim(), encryptionKey) : null;
-  const recoveryCodes = Array.from({ length: 8 }, generateRecoveryCode);
-  const recoveryHashes = await Promise.all(recoveryCodes.map((code) => argon2.hash(code, { type: argon2.argon2id, memoryCost: 32768, timeCost: 2, parallelism: 1 })));
-  return tx(db, async (client) => {
-    const existing = await client.query("select count(*)::int as count from admin_account where password_hash is not null");
-    if (Number(existing.rows[0]?.count ?? 0) > 0) throw Object.assign(new Error("bootstrap_closed"), { statusCode: 409 });
-    const inserted = await client.query(
-      `insert into admin_account(username, password_hash, password_changed_at, mfa_enabled, mfa_secret)
-       values ($1,$2,now(),$3,$4)
-       returning id, username`,
-      [parsed.username, passwordHash, Boolean(storedMfaSecret), storedMfaSecret]
-    );
-    for (const hash of recoveryHashes) {
-      await client.query(
-        "insert into admin_recovery_code(account_id, code_hash) values ($1,$2)",
-        [inserted.rows[0].id, hash]
-      );
-    }
-    await appendAudit(client, {
-      eventType: "admin.bootstrap.completed",
-      actorType: "bootstrap",
-      objectType: "admin_account",
-      objectId: String(inserted.rows[0].id),
-      after: { username: inserted.rows[0].username, recoveryCodeCount: recoveryCodes.length, mfaEnabled: Boolean(storedMfaSecret) },
-      correlationId
-    });
-    return { username: String(inserted.rows[0].username), recoveryCodes };
-  });
 }
 
 async function consumeRecoveryCode(db: Db, accountId: string, code: string): Promise<boolean> {
@@ -224,83 +195,30 @@ async function setServerEnabled(
 ): Promise<{ registrationState: string; operationalState: string }> {
   return tx(db, async (client) => {
     const current = await client.query(
-      `select ms.id, ms.code, ms.enabled, ms.registration_state, ms.operational_state, rr.manifest->'change'->>'reviewDueAt' as review_due_at
-         from mcp_server ms
-         left join lateral (
-           select manifest
-             from registration_revision
-            where server_id=ms.id
-            order by created_at desc
-            limit 1
-         ) rr on true
-        where ms.id=$1 for update`,
+      `select id,enabled,registration_state,operational_state
+         from mcp_server where id=$1`,
       [serverId]
     );
     if (!current.rowCount) throw Object.assign(new Error("not_found"), { statusCode: 404 });
     const row = current.rows[0];
     const currentEnabled = Boolean(row.enabled);
-    const reviewDueAt = typeof row.review_due_at === "string" ? new Date(row.review_due_at) : null;
-    const reviewOverdue = Boolean(reviewDueAt && reviewDueAt.getTime() <= Date.now());
     if (currentEnabled === enabled) {
-      if (enabled && reviewOverdue) {
-        await appendAudit(client, {
-          eventType: "mcp_server.enable_blocked",
-          actorType: "admin",
-          actorId,
-          objectType: "mcp_server",
-          objectId: serverId,
-          after: { code: row.code, reason: "review_due_overdue", reviewDueAt: row.review_due_at },
-          correlationId
-        });
-        throw Object.assign(new Error("recertification_overdue"), { statusCode: 409 });
-      }
       return {
         registrationState: String(row.registration_state),
         operationalState: String(row.operational_state)
       };
     }
-    if (enabled && reviewOverdue) {
-      await appendAudit(client, {
-        eventType: "mcp_server.enable_blocked",
-        actorType: "admin",
-        actorId,
-        objectType: "mcp_server",
-        objectId: serverId,
-        after: { code: row.code, reason: "review_due_overdue", reviewDueAt: row.review_due_at },
-        correlationId
-      });
-      throw Object.assign(new Error("recertification_overdue"), { statusCode: 409 });
-    }
-    const nextRegistrationState = enabled
-      ? (String(row.registration_state) === "REGISTERED_DISABLED" ? "ACTIVE" : String(row.registration_state))
-      : (["ACTIVE", "TRIAL"].includes(String(row.registration_state)) ? "REGISTERED_DISABLED" : String(row.registration_state));
-    const nextOperationalState = enabled ? "UNKNOWN" : "DISABLED";
-    await client.query(
-      `update mcp_server
-          set enabled=$2,
-              registration_state=$3,
-              operational_state=$4,
-              revocation_epoch=gen_random_uuid(),
-              lock_version=lock_version+1,
-              updated_at=now()
-        where id=$1`,
-      [serverId, enabled, nextRegistrationState, nextOperationalState]
-    );
-    if (!enabled) {
-      await client.query("update access_token set revoked_at=coalesce(revoked_at, now()) where server_id=$1", [serverId]);
-    }
-    await appendAudit(client, {
-      eventType: enabled ? "mcp_server.enabled" : "mcp_server.disabled",
+    const transition = await transitionServerState(client, {
+      serverId,
+      to: enabled ? "TRIAL" : "REGISTERED_DISABLED",
       actorType: "admin",
       actorId,
-      objectType: "mcp_server",
-      objectId: serverId,
-      after: { code: row.code, registrationState: nextRegistrationState, operationalState: nextOperationalState },
+      reason: enabled ? "manual_trial_started" : "manual_disable",
       correlationId
     });
     return {
-      registrationState: nextRegistrationState,
-      operationalState: nextOperationalState
+      registrationState: transition.to,
+      operationalState: transition.operationalState
     };
   });
 }
@@ -312,10 +230,15 @@ async function runServerTest(db: Db, serverId: string, correlationId: string, ac
 }> {
   const server = await getServerById(db, serverId);
   if (!server) throw Object.assign(new Error("not_found"), { statusCode: 404 });
-  const reviewDueAt = server.reviewDueAt ? new Date(server.reviewDueAt) : null;
-  if (reviewDueAt && reviewDueAt.getTime() <= Date.now()) {
-    throw Object.assign(new Error("recertification_overdue"), { statusCode: 409 });
-  }
+  const recertification = evaluateRecertification({
+    activeRevisionId: server.activeRevisionId,
+    validationState: server.registrationValidationState,
+    approvedAt: server.reviewApprovedAt,
+    reviewDueAt: server.reviewDueAt,
+    reviewIntervalDays: server.reviewIntervalDays
+  });
+  if (!recertification.canActivate) throw Object.assign(new Error(recertification.reason ?? "recertification_blocks_test"), { statusCode: 409 });
+  if (!server.monitoringEnabled || !server.monitoringProfileDigest) throw Object.assign(new Error("active_monitoring_profile_required"), { statusCode: 409 });
   const manifestResult = await db.query(
     `select manifest
        from registration_revision
@@ -366,6 +289,25 @@ async function runServerTest(db: Db, serverId: string, correlationId: string, ac
     after: { latencyMs, correlationId, ok },
     correlationId
   });
+  if (ok && server.registrationState === "TRIAL") {
+    await tx(db, async (client) => {
+      await transitionServerState(client, {
+        serverId,
+        to: "ACTIVE",
+        actorType: "admin",
+        actorId,
+        reason: "manual_test_passed",
+        correlationId,
+        activationEvidence: {
+          contractVersion: server.contractVersion,
+          handlerVersion: server.handlerVersion,
+          manifestDigest: server.manifestDigest,
+          artifactDigest: server.artifactDigest,
+          latencyMs
+        }
+      });
+    });
+  }
   return { ok, latencyMs, output };
 }
 
@@ -409,16 +351,22 @@ async function saveMonitoringProfile(
 ): Promise<{ enabled: boolean; profile: Record<string, unknown> }> {
   const parsed = monitoringProfileSchema.parse(input);
   return tx(db, async (client) => {
-    const server = await client.query("select id, code from mcp_server where id=$1 for update", [serverId]);
+    const server = await client.query("select id,code,registration_state,active_revision_id from mcp_server where id=$1 for update", [serverId]);
     if (!server.rowCount) throw Object.assign(new Error("not_found"), { statusCode: 404 });
+    if (["ACTIVE", "TRIAL"].includes(String(server.rows[0].registration_state))) {
+      throw Object.assign(new Error("monitoring_revision_required"), { statusCode: 409 });
+    }
     await client.query(
-      `insert into monitoring_profile(server_id, profile, enabled)
-       values ($1, $2, $3)
+      `insert into monitoring_profile(server_id, profile, enabled, registration_revision_id, profile_digest, next_probe_at)
+       values ($1, $2, $3, $4, $5, now())
        on conflict (server_id) do update
          set profile=excluded.profile,
              enabled=excluded.enabled,
+             registration_revision_id=excluded.registration_revision_id,
+             profile_digest=excluded.profile_digest,
+             next_probe_at=now(),
              updated_at=now()`,
-      [serverId, parsed.profile, parsed.enabled]
+      [serverId, parsed.profile, parsed.enabled, server.rows[0].active_revision_id, digestCanonicalJson(parsed.profile)]
     );
     await appendAudit(client, {
       eventType: "monitoring_profile.updated",
@@ -459,10 +407,14 @@ async function changeAdminPassword(
   session: AdminSession,
   correlationId: string,
   currentPassword: string,
-  nextPassword: string
+  nextPassword: string,
+  deploymentManagedUsername: string
 ): Promise<void> {
-  const account = await db.query("select password_hash from admin_account where id=$1", [session.accountId]);
+  const account = await db.query("select username,password_hash from admin_account where id=$1", [session.accountId]);
   if (!account.rowCount) throw Object.assign(new Error("not_found"), { statusCode: 404 });
+  if (String(account.rows[0].username) === deploymentManagedUsername) {
+    throw Object.assign(new Error("admin_password_deployment_managed"), { statusCode: 409 });
+  }
   const currentHash = String(account.rows[0].password_hash ?? "");
   if (!currentHash || !await argon2.verify(currentHash, currentPassword)) {
     throw Object.assign(new Error("invalid_login"), { statusCode: 401 });
@@ -563,10 +515,15 @@ async function createAdminAccount(
   });
 }
 
-async function setManagedAdminPassword(db: Db, actorId: string, correlationId: string, accountId: string, nextPassword: string): Promise<void> {
+async function setManagedAdminPassword(db: Db, actorId: string, correlationId: string, accountId: string, nextPassword: string, deploymentManagedUsername: string): Promise<void> {
   if (nextPassword.length < 12) throw Object.assign(new Error("weak_password"), { statusCode: 400 });
   const nextHash = await argon2.hash(nextPassword, { type: argon2.argon2id, memoryCost: 65536, timeCost: 3, parallelism: 1 });
   await tx(db, async (client) => {
+    const account = await client.query("select username from admin_account where id=$1 for update", [accountId]);
+    if (!account.rowCount) throw Object.assign(new Error("not_found"), { statusCode: 404 });
+    if (String(account.rows[0].username) === deploymentManagedUsername) {
+      throw Object.assign(new Error("admin_password_deployment_managed"), { statusCode: 409 });
+    }
     const updated = await client.query(
       "update admin_account set password_hash=$2, password_changed_at=now() where id=$1 returning username",
       [accountId, nextHash]
@@ -585,12 +542,17 @@ async function setManagedAdminPassword(db: Db, actorId: string, correlationId: s
   });
 }
 
-async function setManagedAdminMfa(db: Db, actorId: string, correlationId: string, accountId: string, input: unknown, encryptionKey: Buffer): Promise<void> {
+async function setManagedAdminMfa(db: Db, actorId: string, correlationId: string, accountId: string, input: unknown, encryptionKey: Buffer, deploymentManagedUsername: string): Promise<void> {
   const parsed = adminAccountMfaSchema.parse(input);
   const trimmed = parsed.secret?.trim() ?? "";
   if (parsed.enabled && !trimmed) throw Object.assign(new Error("invalid_mfa_secret"), { statusCode: 400 });
   const storedSecret = parsed.enabled ? encryptMfaSecret(trimmed, encryptionKey) : null;
   await tx(db, async (client) => {
+    const account = await client.query("select username from admin_account where id=$1 for update", [accountId]);
+    if (!account.rowCount) throw Object.assign(new Error("not_found"), { statusCode: 404 });
+    if (String(account.rows[0].username) === deploymentManagedUsername) {
+      throw Object.assign(new Error("admin_mfa_deployment_managed"), { statusCode: 409 });
+    }
     const updated = await client.query(
       "update admin_account set mfa_enabled=$2, mfa_secret=$3 where id=$1 returning username",
       [accountId, parsed.enabled, storedSecret]
@@ -650,24 +612,15 @@ async function rotateAdminRecoveryCodes(db: Db, actorId: string, correlationId: 
 }
 
 export function registerAdminRoutes(app: FastifyInstance, db: Db, config: AppConfig): void {
+  const dummyPasswordHash = argon2.hash(randomBytes(32), { type: argon2.argon2id, memoryCost: 65536, timeCost: 3, parallelism: 1 });
   app.get("/api/session", async (request, reply) => {
     if (hostOf(request.headers.host) !== config.ADMIN_HOST) return sendError(reply, 404, "not_found");
     const session = await sessionAccount(db, request, config);
     return {
       authenticated: Boolean(session),
       account: session?.accountName ?? null,
-      bootstrapRequired: await bootstrapRequired(db)
+      bootstrapRequired: false
     };
-  });
-
-  app.post("/api/bootstrap/setup", async (request, reply) => {
-    const correlationId = randomUUID();
-    if (hostOf(request.headers.host) !== config.ADMIN_HOST) return sendError(reply, 404, "not_found", undefined, correlationId);
-    try {
-      return await bootstrapAdminAccount(db, correlationId, request.body, config.MFA_ENCRYPTION_KEY_BASE64);
-    } catch (error) {
-      return sendError(reply, Number((error as { statusCode?: number }).statusCode ?? 500), error instanceof Error ? error.message : "operation_failed", undefined, correlationId);
-    }
   });
 
   app.get("/api/admin-security", async (request, reply) => {
@@ -716,7 +669,7 @@ export function registerAdminRoutes(app: FastifyInstance, db: Db, config: AppCon
     const { key } = request.params as { key: string };
     try {
       const parsed = operationalConfigUpdateSchema.parse(request.body);
-      await updateOperationalConfig(db, config, session.accountId, correlationId, key, parsed.value);
+      await updateOperationalConfig(db, session.accountId, correlationId, key, parsed.value);
       return { ok: true };
     } catch (error) {
       return sendError(reply, Number((error as { statusCode?: number }).statusCode ?? 500), error instanceof Error ? error.message : "operation_failed", undefined, correlationId);
@@ -727,34 +680,35 @@ export function registerAdminRoutes(app: FastifyInstance, db: Db, config: AppCon
     const correlationId = randomUUID();
     if (hostOf(request.headers.host) !== config.ADMIN_HOST) return sendError(reply, 404, "not_found", undefined, correlationId);
     const body = request.body as { username?: string; password?: string; totp?: string; recoveryCode?: string };
-    const throttle = getLoginLockState(request, body.username ?? "");
+    const throttle = await getLoginLockState(db, request, body.username ?? "", config);
     if (throttle.blocked) {
       reply.header("retry-after", String(throttle.retryAfterSeconds));
       await appendAudit(db, { eventType: "admin.login.rate_limited", actorType: "admin", actorId: body.username ?? null, correlationId });
       return sendError(reply, 429, "login_rate_limited", "Too many login attempts", correlationId);
     }
     const result = await db.query("select * from admin_account where username=$1", [body.username ?? ""]);
-    if (!result.rowCount || !result.rows[0].password_hash) {
-      recordLoginFailure(request, body.username ?? "");
+    const account = result.rows[0] as Record<string, unknown> | undefined;
+    const passwordHash = typeof account?.password_hash === "string" ? account.password_hash : await dummyPasswordHash;
+    const passwordOk = await argon2.verify(passwordHash, body.password ?? "");
+    if (!account || !account.password_hash) {
+      await recordLoginFailure(db, request, body.username ?? "", config);
       await appendAudit(db, { eventType: "admin.login.failed", actorType: "admin", actorId: body.username ?? null, correlationId });
       return sendError(reply, 401, "invalid_login", "Invalid credentials", correlationId);
     }
-    const account = result.rows[0];
-    const passwordOk = await argon2.verify(String(account.password_hash), body.password ?? "");
     const decryptedMfaSecret = account.mfa_enabled && account.mfa_secret
-      ? decryptMfaSecret(String(account.mfa_secret), config.MFA_ENCRYPTION_KEY_BASE64)
+      ? decryptMfaSecret(typeof account.mfa_secret === "string" ? account.mfa_secret : "", config.MFA_ENCRYPTION_KEY_BASE64)
       : null;
-    const totpOk = account.mfa_enabled ? authenticator.check(body.totp ?? "", decryptedMfaSecret ?? "") : true;
-    const recoveryOk = account.mfa_enabled && !totpOk
+    const totpOk = passwordOk && account.mfa_enabled ? authenticator.check(body.totp ?? "", decryptedMfaSecret ?? "") : !account.mfa_enabled;
+    const recoveryOk = passwordOk && account.mfa_enabled && !totpOk
       ? await consumeRecoveryCode(db, String(account.id), body.recoveryCode ?? body.totp ?? "")
       : false;
     const mfaOk = account.mfa_enabled ? totpOk || recoveryOk : true;
     if (!passwordOk || !mfaOk) {
-      recordLoginFailure(request, body.username ?? "");
+      await recordLoginFailure(db, request, body.username ?? "", config);
       await appendAudit(db, { eventType: "admin.login.failed", actorType: "admin", actorId: body.username ?? null, correlationId });
       return sendError(reply, 401, "invalid_login", "Invalid credentials", correlationId);
     }
-    clearLoginFailures(request, body.username ?? "");
+    await clearLoginFailures(db, request, body.username ?? "", config);
     const session = randomBytes(64).toString("base64url");
     const csrf = randomBytes(32).toString("base64url");
     const sessionHash = await argon2.hash(session, { type: argon2.argon2id, memoryCost: 32768, timeCost: 2, parallelism: 1 });
@@ -765,9 +719,9 @@ export function registerAdminRoutes(app: FastifyInstance, db: Db, config: AppCon
     );
     reply.setCookie(SESSION_COOKIE, session, { httpOnly: true, secure: true, sameSite: "strict", path: "/" });
     reply.setCookie(CSRF_COOKIE, csrf, { httpOnly: false, secure: true, sameSite: "strict", path: "/" });
-    await appendAudit(db, { eventType: "admin.login.succeeded", actorType: "admin", actorId: account.id, correlationId });
+    await appendAudit(db, { eventType: "admin.login.succeeded", actorType: "admin", actorId: String(account.id), correlationId });
     if (recoveryOk) {
-      await appendAudit(db, { eventType: "admin.login.recovery_code_used", actorType: "admin", actorId: account.id, objectType: "admin_account", objectId: account.id, correlationId });
+      await appendAudit(db, { eventType: "admin.login.recovery_code_used", actorType: "admin", actorId: String(account.id), objectType: "admin_account", objectId: String(account.id), correlationId });
     }
     return { ok: true, csrfToken: csrf };
   });
@@ -794,7 +748,8 @@ export function registerAdminRoutes(app: FastifyInstance, db: Db, config: AppCon
         session,
         correlationId,
         typeof body.currentPassword === "string" ? body.currentPassword : "",
-        typeof body.nextPassword === "string" ? body.nextPassword : ""
+        typeof body.nextPassword === "string" ? body.nextPassword : "",
+        config.ADMIN_BOOTSTRAP_USERNAME
       );
       return { ok: true };
     } catch (error) {
@@ -835,7 +790,7 @@ export function registerAdminRoutes(app: FastifyInstance, db: Db, config: AppCon
     const { id } = request.params as { id: string };
     try {
       const parsed = adminAccountPasswordSchema.parse(request.body);
-      await setManagedAdminPassword(db, session.accountId, correlationId, id, parsed.nextPassword);
+      await setManagedAdminPassword(db, session.accountId, correlationId, id, parsed.nextPassword, config.ADMIN_BOOTSTRAP_USERNAME);
       return { ok: true };
     } catch (error) {
       return sendError(reply, Number((error as { statusCode?: number }).statusCode ?? 500), error instanceof Error ? error.message : "operation_failed", undefined, correlationId);
@@ -850,7 +805,7 @@ export function registerAdminRoutes(app: FastifyInstance, db: Db, config: AppCon
     if (!requireCsrf(request)) return sendError(reply, 403, "csrf_failed", undefined, correlationId);
     const { id } = request.params as { id: string };
     try {
-      await setManagedAdminMfa(db, session.accountId, correlationId, id, request.body, config.MFA_ENCRYPTION_KEY_BASE64);
+      await setManagedAdminMfa(db, session.accountId, correlationId, id, request.body, config.MFA_ENCRYPTION_KEY_BASE64, config.ADMIN_BOOTSTRAP_USERNAME);
       return { ok: true };
     } catch (error) {
       return sendError(reply, Number((error as { statusCode?: number }).statusCode ?? 500), error instanceof Error ? error.message : "operation_failed", undefined, correlationId);
@@ -890,7 +845,19 @@ export function registerAdminRoutes(app: FastifyInstance, db: Db, config: AppCon
     if (hostOf(request.headers.host) !== config.ADMIN_HOST) return sendError(reply, 404, "not_found");
     const session = await sessionAccount(db, request, config);
     if (!session) return sendError(reply, 401, "unauthorized");
-    return { servers: await listServers(db) };
+    const servers = await listServers(db);
+    return {
+      servers: servers.map((server) => ({
+        ...server,
+        recertification: evaluateRecertification({
+          activeRevisionId: server.activeRevisionId,
+          validationState: server.registrationValidationState,
+          approvedAt: server.reviewApprovedAt,
+          reviewDueAt: server.reviewDueAt,
+          reviewIntervalDays: server.reviewIntervalDays
+        })
+      }))
+    };
   });
 
   app.post("/api/mcp-servers/:id/enabled", async (request, reply) => {
@@ -1143,10 +1110,134 @@ export function registerAdminRoutes(app: FastifyInstance, db: Db, config: AppCon
     return { probes: result.rows };
   });
 
+  app.get("/api/monitoring-overview", async (request, reply) => {
+    if (hostOf(request.headers.host) !== config.ADMIN_HOST) return sendError(reply, 404, "not_found");
+    const session = await sessionAccount(db, request, config);
+    if (!session) return sendError(reply, 401, "unauthorized");
+    const [alerts, deliveries, history, heartbeat] = await Promise.all([
+      db.query(
+        `select alert.*,server.code,server.hostname
+           from operational_alert alert
+           left join mcp_server server on server.id=alert.server_id
+          order by case alert.status when 'OPEN' then 1 when 'ACKNOWLEDGED' then 2 when 'SUPPRESSED' then 3 else 4 end,
+                   case alert.severity when 'CRITICAL' then 1 when 'HIGH' then 2 else 3 end,
+                   alert.last_seen_at desc
+          limit 500`
+      ),
+      db.query(
+        `select delivery.*,alert.severity,alert.alert_type,server.code
+           from alert_webhook_delivery delivery
+           join operational_alert alert on alert.id=delivery.alert_id
+           left join mcp_server server on server.id=alert.server_id
+          order by delivery.created_at desc limit 500`
+      ),
+      db.query(
+        `select history.*,server.code
+           from server_state_history history
+           join mcp_server server on server.id=history.server_id
+          order by history.recorded_at desc limit 500`
+      ),
+      db.query("select * from monitoring_scheduler_heartbeat where singleton=true")
+    ]);
+    return { alerts: alerts.rows, deliveries: deliveries.rows, stateHistory: history.rows, scheduler: heartbeat.rows[0] ?? null };
+  });
+
+  app.post("/api/alerts/test", async (request, reply) => {
+    const correlationId = randomUUID();
+    if (hostOf(request.headers.host) !== config.ADMIN_HOST) return sendError(reply, 404, "not_found", undefined, correlationId);
+    const session = await sessionAccount(db, request, config);
+    if (!session) return sendError(reply, 401, "unauthorized", undefined, correlationId);
+    if (!requireCsrf(request)) return sendError(reply, 403, "csrf_failed", undefined, correlationId);
+    const result = await tx(db, async (client) => raiseAlert(client, {
+      serverId: null,
+      severity: "WARNING",
+      alertType: `webhook.test.${correlationId}`,
+      title: "KCML webhook test",
+      detail: { requestedBy: session.accountName, buildId: config.BUILD_ID },
+      correlationId
+    }));
+    return { ok: true, alertId: result.id };
+  });
+
+  app.post("/api/alerts/:id/acknowledge", async (request, reply) => {
+    const correlationId = randomUUID();
+    if (hostOf(request.headers.host) !== config.ADMIN_HOST) return sendError(reply, 404, "not_found", undefined, correlationId);
+    const session = await sessionAccount(db, request, config);
+    if (!session) return sendError(reply, 401, "unauthorized", undefined, correlationId);
+    if (!requireCsrf(request)) return sendError(reply, 403, "csrf_failed", undefined, correlationId);
+    const { id } = request.params as { id: string };
+    await tx(db, async (client) => {
+      const result = await client.query(
+        "update operational_alert set status='ACKNOWLEDGED',acknowledged_by=$2,acknowledged_at=now() where id=$1 and status='OPEN' returning id",
+        [id, session.accountId]
+      );
+      if (!result.rowCount) throw Object.assign(new Error("alert_not_open"), { statusCode: 409 });
+      await appendAudit(client, { eventType: "alert.acknowledged", actorType: "admin", actorId: session.accountId, objectType: "operational_alert", objectId: id, correlationId });
+    });
+    return { ok: true };
+  });
+
+  app.post("/api/alerts/:id/suppress", async (request, reply) => {
+    const correlationId = randomUUID();
+    if (hostOf(request.headers.host) !== config.ADMIN_HOST) return sendError(reply, 404, "not_found", undefined, correlationId);
+    const session = await sessionAccount(db, request, config);
+    if (!session) return sendError(reply, 401, "unauthorized", undefined, correlationId);
+    if (!requireCsrf(request)) return sendError(reply, 403, "csrf_failed", undefined, correlationId);
+    const { id } = request.params as { id: string };
+    try {
+      const body = alertSuppressSchema.parse(request.body);
+      if (new Date(body.until).getTime() <= Date.now()) throw Object.assign(new Error("suppression_must_be_future"), { statusCode: 400 });
+      await tx(db, async (client) => {
+        const result = await client.query(
+          `update operational_alert
+              set status='SUPPRESSED',suppression_reason=$2,suppression_owner=$3,suppressed_until=$4
+            where id=$1 and status in ('OPEN','ACKNOWLEDGED') returning id`,
+          [id, body.reason, session.accountId, body.until]
+        );
+        if (!result.rowCount) throw Object.assign(new Error("alert_not_suppressible"), { statusCode: 409 });
+        await appendAudit(client, { eventType: "alert.suppressed", actorType: "admin", actorId: session.accountId, objectType: "operational_alert", objectId: id, after: body, correlationId });
+      });
+      return { ok: true };
+    } catch (error) {
+      return sendError(reply, Number((error as { statusCode?: number }).statusCode ?? 400), error instanceof Error ? error.message : "invalid_suppression", undefined, correlationId);
+    }
+  });
+
+  app.post("/api/alert-deliveries/:id/retry", async (request, reply) => {
+    const correlationId = randomUUID();
+    if (hostOf(request.headers.host) !== config.ADMIN_HOST) return sendError(reply, 404, "not_found", undefined, correlationId);
+    const session = await sessionAccount(db, request, config);
+    if (!session) return sendError(reply, 401, "unauthorized", undefined, correlationId);
+    if (!requireCsrf(request)) return sendError(reply, 403, "csrf_failed", undefined, correlationId);
+    const { id } = request.params as { id: string };
+    await tx(db, async (client) => {
+      const result = await client.query(
+        "update alert_webhook_delivery set state='RETRY',next_attempt_at=now(),last_error=null,updated_at=now() where id=$1 and state in ('RETRY','DEAD_LETTER') returning alert_id",
+        [id]
+      );
+      if (!result.rowCount) throw Object.assign(new Error("delivery_not_retryable"), { statusCode: 409 });
+      await appendAudit(client, { eventType: "alert.delivery.manual_retry", actorType: "admin", actorId: session.accountId, objectType: "operational_alert", objectId: String(result.rows[0].alert_id), after: { deliveryId: id }, correlationId });
+    });
+    return { ok: true };
+  });
+
+  app.get("/api/readiness", async (request, reply) => {
+    const correlationId = randomUUID();
+    if (hostOf(request.headers.host) !== config.ADMIN_HOST) return sendError(reply, 404, "not_found", undefined, correlationId);
+    const session = await sessionAccount(db, request, config);
+    if (!session) return sendError(reply, 401, "unauthorized", undefined, correlationId);
+    try {
+      const report = await buildReadinessReport(db, config);
+      return reply.code(report.ready ? 200 : 503).send(report);
+    } catch {
+      return reply.code(503).send({ ready: false, buildId: config.BUILD_ID, checkedAt: new Date().toISOString() });
+    }
+  });
+
   app.get("/health", async (_request, reply) => {
     try {
-      await db.query("select 1");
-      return { status: "ok", buildId: process.env.GITHUB_SHA ?? "local" };
+      const report = await buildReadinessReport(db, config);
+      return reply.code(report.ready ? 200 : 503).send({ status: report.ready ? "ok" : "unready" });
     } catch {
       return reply.code(503).send({ status: "unready" });
     }

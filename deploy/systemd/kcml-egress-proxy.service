@@ -8,7 +8,12 @@ Type=simple
 User=kcml
 Group=kcml
 WorkingDirectory=/opt/kcml/current
-EnvironmentFile=/etc/kcml/kcml.env
+EnvironmentFile=/etc/kcml/egress.env
+Environment=KCML_PROCESS_ROLE=egress
+Environment=DATABASE_URL_FILE=%d/database_url
+Environment=EGRESS_CAPABILITY_HMAC_KEY_BASE64_FILE=%d/egress_capability_hmac
+LoadCredential=database_url:/etc/kcml/credentials/egress/database_url
+LoadCredential=egress_capability_hmac:/etc/kcml/credentials/egress/egress_capability_hmac
 ExecStart=/usr/bin/node apps/server/dist/cli/egress-proxy.js
 Restart=on-failure
 RestartSec=5

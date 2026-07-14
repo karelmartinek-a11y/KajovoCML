@@ -20,6 +20,7 @@ export function describeApiError(code: string): string {
     invalid_permissions: "Oprávnění nejsou v platném formátu.",
     invalid_label: "Zadané označení není platné.",
     invalid_expiration: "Datum expirace musí být v budoucnosti.",
+    suppression_must_be_future: "Konec potlačení musí být v budoucnosti.",
     handler_unavailable: "Server v této verzi aplikace nemá dostupný handler.",
     manifest_test_contract_missing: "Server nemá zaregistrovaný testovací kontrakt pro bezpečný test.",
     rate_limit_exceeded: "Byl překročen povolený limit volání. Zkuste to znovu později.",
@@ -41,6 +42,10 @@ export function formatDate(value: string | null): string {
       timeZone: "Europe/Prague"
     }).format(new Date(value))
     : "-";
+}
+
+export function formatLocalDateTimeInput(value: Date): string {
+  return new Date(value.getTime() - value.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
 }
 
 export function prettyJson(value: unknown): string {

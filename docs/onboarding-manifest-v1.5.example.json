@@ -1,0 +1,308 @@
+{
+  "schemaVersion": "1.5",
+  "registrationRevision": "2026-07-14.1",
+  "environment": "production",
+  "handlerKey": "example-handler",
+  "handlerVersion": "1.0.0",
+  "displayName": "Example MCP",
+  "businessPurpose": "Provides one bounded read-only example function for the approved production workflow.",
+  "owners": {
+    "service": "Example Service Owner",
+    "technical": "Example Technical Owner",
+    "security": "Example Security Owner",
+    "operations": "Example Operations Owner"
+  },
+  "contacts": {
+    "serviceEmail": "service@example.com",
+    "technicalEmail": "technical@example.com",
+    "securityEmail": "security@example.com",
+    "operationsOnCall": "https://oncall.example.com/example-mcp"
+  },
+  "criticality": "MEDIUM",
+  "review": {
+    "intervalDays": 365,
+    "approvedAt": "2026-07-14T00:00:00.000Z",
+    "reviewDueAt": "2027-07-14T00:00:00.000Z"
+  },
+  "source": {
+    "runtime": "nodejs22-typescript",
+    "entrypoint": "src/index.ts",
+    "testCommand": "pnpm test"
+  },
+  "runtime": {
+    "memoryMb": 128,
+    "cpuCores": 0.5,
+    "pidsLimit": 32,
+    "egressAllowlist": [
+      "api.example.com:443"
+    ]
+  },
+  "tool": {
+    "title": "Example lookup",
+    "description": "Returns one approved example record without changing any external or local state.",
+    "inputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "query"
+      ],
+      "properties": {
+        "query": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        }
+      }
+    },
+    "outputSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "value"
+      ],
+      "properties": {
+        "value": {
+          "type": "string"
+        }
+      }
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "taskSupport": "forbidden"
+    }
+  },
+  "contractDigests": {
+    "inputSchema": "sha256:1bbc710ecbd9b5b1c11963360c4e3703b15c4c8ac4cf7409ecc3cc42b5391308",
+    "outputSchema": "sha256:5bc3ca087f4965b9b3dc504ca7b9c6823527d734d89d5ef88861b2702eb603f8"
+  },
+  "behavior": {
+    "effectClass": "READ_ONLY",
+    "timeoutMs": 10000,
+    "maxConcurrency": 4,
+    "requestMaxBytes": 65536,
+    "responseMaxBytes": 262144,
+    "rateLimit": {
+      "windowSeconds": 60,
+      "maxRequests": 30
+    },
+    "shutdownPolicy": "COMPLETE_IN_FLIGHT",
+    "idempotencyPolicy": "The read-only operation is safe to repeat with the same validated input.",
+    "compensationPolicy": "No compensation is required because the operation has no side effects.",
+    "retryPolicy": {
+      "automaticRetry": false
+    }
+  },
+  "testContract": {
+    "safeInput": {
+      "query": "health-check"
+    },
+    "expectedResult": {
+      "value": "ok"
+    },
+    "cleanupOrCompensation": "No cleanup is required for this read-only operation.",
+    "positiveEvidenceRef": "evidence/tests/positive.json",
+    "negativeTests": [
+      {
+        "name": "Reject empty query",
+        "input": {
+          "query": ""
+        },
+        "expectedErrorCode": "INVALID_INPUT",
+        "evidenceRef": "evidence/tests/negative-empty-query.json"
+      }
+    ],
+    "failureScenarios": [
+      {
+        "dependency": "api.example.com",
+        "expectedFailureClass": "DEPENDENCY",
+        "evidenceRef": "evidence/tests/dependency-failure.json"
+      }
+    ],
+    "loadProfile": {
+      "expectedConcurrency": 4,
+      "expectedDurationMinutes": 30,
+      "stressMultiplier": 2,
+      "stressDurationMinutes": 10,
+      "maxP95LatencyMs": 1500,
+      "maxErrorRatePercent": 1,
+      "evidenceRef": "evidence/tests/load.json"
+    }
+  },
+  "protocol": {
+    "protocolVersion": "2025-11-25",
+    "transport": "streamable-http",
+    "capabilities": [
+      "tools"
+    ],
+    "errorCatalog": [
+      {
+        "code": "INVALID_INPUT",
+        "description": "The supplied tool arguments do not satisfy the approved input schema.",
+        "classification": "VALIDATION",
+        "retryable": false
+      },
+      {
+        "code": "DEPENDENCY_FAILED",
+        "description": "The declared required upstream dependency did not complete successfully.",
+        "classification": "DEPENDENCY",
+        "retryable": false
+      }
+    ]
+  },
+  "dependencies": {
+    "runtime": [
+      {
+        "name": "node",
+        "version": "22.17.0",
+        "checksum": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "evidenceRef": "evidence/dependencies/node.json"
+      }
+    ],
+    "externalServices": [
+      {
+        "name": "Example API",
+        "endpoint": "https://api.example.com/health",
+        "criticality": "REQUIRED",
+        "timeoutMs": 3000,
+        "contractRef": "evidence/contracts/example-api.json"
+      }
+    ],
+    "secretReferences": [],
+    "networkPolicy": {
+      "outboundAllowlist": [
+        "api.example.com:443"
+      ],
+      "dnsPolicy": "strict",
+      "databaseRole": "kcml_handler_none",
+      "filesystemPolicy": "read-only",
+      "evidenceRef": "evidence/policies/network.json"
+    }
+  },
+  "dataGovernance": {
+    "classification": "INTERNAL",
+    "containsPersonalData": false,
+    "residencyCountries": [
+      "CZ"
+    ],
+    "exportAllowed": false,
+    "exportDestinations": [],
+    "loggingPolicy": "Log only identifiers, outcome, latency and the shared correlation identifier.",
+    "redactionFields": [],
+    "retentionDays": 365,
+    "evidenceRef": "evidence/data/data-governance.json"
+  },
+  "monitoringProfile": {
+    "sloTargets": {
+      "availabilityPercent": 99.5,
+      "p95LatencyMs": 1500,
+      "maxErrorRatePercent": 1
+    },
+    "probeIntervals": {
+      "readinessSeconds": 60,
+      "tlsSeconds": 3600,
+      "routingSeconds": 60,
+      "oauthMcpSeconds": 60,
+      "syntheticCallSeconds": 300,
+      "integritySeconds": 300,
+      "dependenciesSeconds": 300
+    },
+    "staleAfterSeconds": 3600,
+    "alertRules": [
+      {
+        "probeType": "synthetic_call",
+        "severity": "CRITICAL",
+        "consecutiveFailures": 2
+      },
+      {
+        "probeType": "integrity",
+        "severity": "CRITICAL",
+        "consecutiveFailures": 1
+      }
+    ],
+    "runbookRef": "evidence/runbooks/operations.md",
+    "primaryAlertChannel": "PRIMARY_WEBHOOK",
+    "backupAlertChannel": "BACKUP_WEBHOOK"
+  },
+  "maintenance": {
+    "window": "Sunday 01:00-02:00 Europe/Prague",
+    "runbookRef": "evidence/runbooks/maintenance.md",
+    "rollbackRef": "evidence/runbooks/rollback.md",
+    "recoveryTimeObjectiveMinutes": 60,
+    "recoveryPointObjectiveMinutes": 15
+  },
+  "autoQuarantine": {
+    "enabled": true,
+    "rules": [
+      "CROSS_HOST",
+      "AUDIENCE_MISMATCH",
+      "ARTIFACT_DRIFT",
+      "CONTRACT_DRIFT",
+      "ROUTING_DRIFT"
+    ]
+  },
+  "errorCatalog": [
+    {
+      "code": "INVALID_INPUT",
+      "description": "The supplied tool arguments do not satisfy the approved input schema.",
+      "classification": "VALIDATION",
+      "retryable": false
+    },
+    {
+      "code": "DEPENDENCY_FAILED",
+      "description": "The declared required upstream dependency did not complete successfully.",
+      "classification": "DEPENDENCY",
+      "retryable": false
+    }
+  ],
+  "evidence": {
+    "architectureRef": "evidence/architecture/decision.md",
+    "threatModelRef": "evidence/security/threat-model.md",
+    "sastRef": "evidence/scans/sast.json",
+    "scaRef": "evidence/scans/sca.json",
+    "secretScanRef": "evidence/scans/secrets.json",
+    "containerScanRef": "evidence/scans/container.json",
+    "sbomRef": "evidence/build/sbom.spdx.json",
+    "provenanceRef": "evidence/build/provenance.json",
+    "rollbackTestRef": "evidence/tests/rollback.json",
+    "compatibilityWindowEndsAt": "2027-07-14T00:00:00.000Z"
+  },
+  "approvals": {
+    "architecture": {
+      "approver": "Architecture Approval Board",
+      "approvedAt": "2026-07-14T00:00:00.000Z",
+      "evidenceRef": "evidence/approvals/architecture.json"
+    },
+    "security": {
+      "approver": "Security Approval Board",
+      "approvedAt": "2026-07-14T00:00:00.000Z",
+      "evidenceRef": "evidence/approvals/security.json"
+    },
+    "operations": {
+      "approver": "Operations Approval Board",
+      "approvedAt": "2026-07-14T00:00:00.000Z",
+      "evidenceRef": "evidence/approvals/operations.json"
+    },
+    "dataOwner": {
+      "approver": "Data Owner Approval Board",
+      "approvedAt": "2026-07-14T00:00:00.000Z",
+      "evidenceRef": "evidence/approvals/data-owner.json"
+    },
+    "changeManagement": {
+      "approver": "Change Approval Board",
+      "approvedAt": "2026-07-14T00:00:00.000Z",
+      "evidenceRef": "evidence/approvals/change-management.json"
+    }
+  },
+  "change": {
+    "changeClass": "INITIAL",
+    "migrationRef": "evidence/change/migration.md",
+    "rollbackRef": "evidence/change/rollback.md",
+    "decommissionRef": "evidence/change/decommission.md",
+    "previousApprovedRevision": null
+  }
+}

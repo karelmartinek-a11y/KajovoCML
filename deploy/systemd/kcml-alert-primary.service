@@ -1,0 +1,28 @@
+[Unit]
+Description=KCML primary signed alert sink
+After=network.target
+
+[Service]
+Type=simple
+User=kcml
+Group=kcml
+EnvironmentFile=/etc/kcml/alert-primary-sink.env
+Environment=ALERT_SINK_HMAC_KEY_BASE64_FILE=%d/alert_hmac
+LoadCredential=alert_hmac:/etc/kcml/credentials/alert-primary-sink/alert_hmac
+ExecStart=/usr/bin/node /opt/kcml/alert-sink/receiver.mjs
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/var/lib/kcml/alert-primary-sink
+
+[Install]
+WantedBy=multi-user.target

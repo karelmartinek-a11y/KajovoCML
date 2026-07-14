@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { loadConfig, type AppConfig } from "../config.js";
 import { createDb, type Db } from "../db.js";
@@ -25,37 +26,10 @@ const descriptor = {
 };
 
 const manifestInput = {
-  schemaVersion: "1.4",
-  registrationRevision: "db-test-1",
-  environment: "staging",
-  handlerKey: "db-test",
-  handlerVersion: "1.0.0",
-  displayName: "Database test",
-  businessPurpose: "Validate transactional automated onboarding.",
-  owners: { service: "test", technical: "test", security: "test", operations: "test" },
-  source: { runtime: "nodejs22-typescript", entrypoint: "src/index.ts", testCommand: "pnpm test" },
-  runtime: { memoryMb: 64, cpuCores: 0.1, pidsLimit: 16, egressAllowlist: [] },
-  tool: { title: "DB test", description: "Database contract test", inputSchema: { type: "object", additionalProperties: false }, outputSchema: { type: "object", additionalProperties: false }, annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false, taskSupport: "forbidden" } },
-  behavior: { effectClass: "READ_ONLY", timeoutMs: 1000, maxConcurrency: 1, requestMaxBytes: 1024, responseMaxBytes: 1024, rateLimit: { windowSeconds: 60, maxRequests: 5 }, shutdownPolicy: "COMPLETE_IN_FLIGHT", idempotencyPolicy: "read only", retryPolicy: { automaticRetry: false } },
-  testContract: { safeInput: {}, expectedResult: {}, cleanupOrCompensation: "none" },
-  protocol: { protocolVersion: "2025-11-25", transport: "streamable-http", capabilities: ["tools"], errorCatalog: [{ code: "E_DB", description: "Database test" }] },
-  dependencies: {
-    runtime: [{ name: "nodejs22", version: "22.0.0" }],
-    externalServices: ["auth"],
-    secretRefs: ["vault://kcml/db-test"],
-    networkPolicy: { outboundAllowlist: ["auth.example.com"], dnsPolicy: "strict", databaseRole: "kcml_reader", filesystemPolicy: "read-only" },
-    dataClassification: { input: "internal", output: "internal", containsPersonalData: false, loggingPolicy: "redacted", redactionFields: ["token"], retentionPolicy: "30 days" }
-  },
-  monitoringProfile: { sloTargets: {}, probeIntervals: {}, alertRules: [{ severity: "critical" }], runbookRef: "test", primaryAlertChannel: "test", backupAlertChannel: "test" },
-  errorCatalog: [{ code: "E_DB", description: "Database test" }],
-  change: {
-    changeClass: "MINOR",
-    migrationRef: "migrations/001.sql",
-    rollbackRef: "test",
-    decommissionRef: "test",
-    previousApprovedRevision: null,
-    reviewDueAt: "2027-01-01T00:00:00.000Z"
-  }
+  ...(JSON.parse(
+    readFileSync(new URL("../../../../docs/onboarding-manifest-v1.5.example.json", import.meta.url), "utf8")
+  ) as Record<string, unknown>),
+  registrationRevision: "db-test-1"
 };
 
 describe.skipIf(!enabled)("onboarding PostgreSQL transactions", () => {
@@ -76,6 +50,8 @@ describe.skipIf(!enabled)("onboarding PostgreSQL transactions", () => {
 
   beforeEach(async () => {
     await db.query("truncate table onboarding_gate,onboarding_event,onboarding_source_revision,egress_capability,onboarding_job,integration_token,registration_revision,function_statistics,mcp_server,audit_event restart identity cascade");
+    await db.query("select setval('kcml_number_seq', 1, false)");
+    await db.query("update audit_head set last_sequence=0,event_hash=null,updated_at=now() where singleton=true");
   });
 
   afterAll(async () => db.end());
@@ -163,7 +139,12 @@ describe.skipIf(!enabled)("onboarding PostgreSQL transactions", () => {
     const revisedManifest = {
       ...manifest,
       registrationRevision: "db-test-2",
-      handlerVersion: "2.0.0"
+      handlerVersion: "2.0.0",
+      change: {
+        ...manifest.change,
+        changeClass: "MAJOR" as const,
+        previousApprovedRevision: manifest.registrationRevision
+      }
     };
     const second: ActivationJob = {
       ...first,

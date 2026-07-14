@@ -31,6 +31,7 @@ export function SecurityPage({
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const deploymentManaged = security?.username === "karmar78";
 
   async function submitPassword(event: React.FormEvent) {
     event.preventDefault();
@@ -87,7 +88,7 @@ export function SecurityPage({
               <div><dt>Uživatel</dt><dd>{security?.username ?? "Načítám…"}</dd></div>
               <div><dt>Heslo změněno</dt><dd>{security ? formatDate(security.passwordChangedAt) : "Načítám…"}</dd></div>
             </dl>
-            <form className="security-form" onSubmit={(event) => { void submitPassword(event); }}>
+            {deploymentManaged ? <div className="notice"><LockKeyhole size={18} /><span>Heslo a MFA účtu karmar78 synchronizuje výhradně produkční deployment z chráněného PASS.</span></div> : <form className="security-form" onSubmit={(event) => { void submitPassword(event); }}>
               <label>Současné heslo<input type="password" autoComplete="current-password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} /></label>
               <label>Nové heslo<input type="password" autoComplete="new-password" value={nextPassword} onChange={(event) => setNextPassword(event.target.value)} /></label>
               <label>Potvrzení nového hesla<input type="password" autoComplete="new-password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} /></label>
@@ -96,7 +97,7 @@ export function SecurityPage({
               <div className="modal-actions">
                 <button type="submit" disabled={busy}><Save size={16} /> Změnit heslo</button>
               </div>
-            </form>
+            </form>}
           </div>
         </article>
         <article className="panel security-panel">
@@ -196,12 +197,14 @@ export function AdminAccountsPage({
             <div><h2>Existující účty</h2><p>Reset hesla, zapnutí nebo vypnutí MFA a revokace všech relací účtu.</p></div>
           </div>
           <div className="admin-account-list">
-            {accounts.map((account) => (
-              <article key={account.id} className="admin-account-card">
+            {accounts.map((account) => {
+              const deploymentManaged = account.username === "karmar78";
+              return <article key={account.id} className="admin-account-card">
                 <div className="admin-account-head">
                   <div><strong>{account.username}</strong><small>{account.current ? "Aktuální účet" : "Administrátor"}</small></div>
                   <div className="row-actions">
                     <span className={`badge ${account.mfaEnabled ? "ok" : "warn"}`}>{account.mfaEnabled ? "MFA zapnuto" : "Bez MFA"}</span>
+                    {deploymentManaged ? <span className="badge ok">Řízeno deploymentem</span> : null}
                     <span className="badge neutral">{account.activeSessionCount} relací</span>
                     <span className="badge neutral">{account.recoveryCodeCount} recovery</span>
                   </div>
@@ -211,20 +214,22 @@ export function AdminAccountsPage({
                   <div><dt>Heslo změněno</dt><dd>{formatDate(account.passwordChangedAt)}</dd></div>
                 </dl>
                 <div className="security-stack">
-                  <label>Nové heslo účtu<input type="password" value={passwordDrafts[account.id] ?? ""} onChange={(event) => setPasswordDrafts((current) => ({ ...current, [account.id]: event.target.value }))} /></label>
+                  {deploymentManaged ? <div className="notice"><LockKeyhole size={18} /><span>Heslo a MFA spravuje deployment; v UI je nelze přepsat.</span></div> : <><label>Nové heslo účtu<input type="password" value={passwordDrafts[account.id] ?? ""} onChange={(event) => setPasswordDrafts((current) => ({ ...current, [account.id]: event.target.value }))} /></label>
                   <div className="row-actions">
                     <button className="secondary" onClick={() => { void onSetPassword(account.id, passwordDrafts[account.id] ?? ""); }}>Nastavit heslo</button>
-                    <button className="secondary" onClick={() => { void onRevokeSessions(account.id); }}>Revokovat relace</button>
-                    <button className="secondary" onClick={() => { void onRotateRecovery(account.id).then((codes) => setRecoveryCodes({ username: account.username, codes })); }}>Rotovat recovery kódy</button>
                   </div>
                   <label>MFA seed<input value={mfaDrafts[account.id] ?? ""} onChange={(event) => setMfaDrafts((current) => ({ ...current, [account.id]: event.target.value }))} placeholder="Vyplňte pro zapnutí nebo rotaci MFA" /></label>
                   <div className="row-actions">
                     <button className="secondary" onClick={() => { void onSetMfa(account.id, true, mfaDrafts[account.id] ?? ""); }}>Zapnout/rotovat MFA</button>
                     <button className="secondary danger-link" onClick={() => { void onSetMfa(account.id, false, ""); }}>Vypnout MFA</button>
+                  </div></>}
+                  <div className="row-actions">
+                    <button className="secondary" onClick={() => { void onRevokeSessions(account.id); }}>Revokovat relace</button>
+                    <button className="secondary" onClick={() => { void onRotateRecovery(account.id).then((codes) => setRecoveryCodes({ username: account.username, codes })); }}>Rotovat recovery kódy</button>
                   </div>
                 </div>
               </article>
-            ))}
+            })}
           </div>
         </article>
       </section>
@@ -259,11 +264,7 @@ export function OperationalConfigPage({
 
   async function save(setting: OperationalConfigSetting) {
     const raw = drafts[setting.key] ?? (setting.value === null ? "" : String(setting.value));
-    const value = setting.kind === "number"
-      ? Number(raw)
-      : setting.kind === "boolean"
-        ? raw === "true"
-        : raw;
+    const value = setting.kind === "number" ? Number(raw) : raw;
     setSavingKey(setting.key);
     setError("");
     setMessage("");
@@ -288,7 +289,7 @@ export function OperationalConfigPage({
       {error ? <div className="notice error"><AlertTriangle size={18} /><span>{error}</span></div> : null}
       <section className="config-grid">
         {filtered.map((setting) => {
-          const draft = drafts[setting.key] ?? (setting.kind === "secret" ? "" : String(setting.value ?? ""));
+          const draft = drafts[setting.key] ?? String(setting.value ?? "");
           return (
             <article key={setting.key} className={`panel config-card ${setting.bootstrapOnly ? "locked" : ""}`}>
               <div className="panel-head">
@@ -303,19 +304,14 @@ export function OperationalConfigPage({
                 </div>
               </div>
               <div className="config-card-body">
-                {setting.kind === "boolean" ? (
-                  <label>Hodnota<select disabled={setting.bootstrapOnly} value={draft === "true" ? "true" : "false"} onChange={(event) => setDrafts((current) => ({ ...current, [setting.key]: event.target.value }))}><option value="true">Zapnuto</option><option value="false">Vypnuto</option></select></label>
-                ) : (
-                  <label>{setting.kind === "secret" ? "Nová tajná hodnota" : "Hodnota"}<input disabled={setting.bootstrapOnly} type={setting.kind === "secret" ? "password" : setting.kind === "number" ? "number" : "text"} value={draft} placeholder={setting.kind === "secret" ? "Ponechte prázdné pro beze změny" : ""} onChange={(event) => setDrafts((current) => ({ ...current, [setting.key]: event.target.value }))} /></label>
-                )}
+                <label>Hodnota<input disabled={setting.bootstrapOnly} type={setting.kind === "number" ? "number" : "text"} value={draft} onChange={(event) => setDrafts((current) => ({ ...current, [setting.key]: event.target.value }))} /></label>
                 <dl className="config-meta">
                   <div><dt>Klíč</dt><dd><code>{setting.key}</code></dd></div>
                   <div><dt>Typ</dt><dd>{setting.kind}</dd></div>
-                  <div><dt>Fingerprint</dt><dd>{setting.fingerprint ?? "-"}</dd></div>
                   <div><dt>Upraveno</dt><dd>{formatDate(setting.updatedAt)}</dd></div>
                 </dl>
                 <footer className="modal-actions">
-                  <button disabled={setting.bootstrapOnly || savingKey === setting.key || (setting.kind === "secret" && !draft.trim())} onClick={() => { void save(setting); }}><Save size={16} /> Uložit</button>
+                  <button disabled={setting.bootstrapOnly || savingKey === setting.key} onClick={() => { void save(setting); }}><Save size={16} /> Uložit</button>
                 </footer>
               </div>
             </article>

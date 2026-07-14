@@ -6,7 +6,8 @@ import type { AppConfig } from "../config.js";
 import type { Db } from "../db.js";
 import { tx } from "../db.js";
 import { appendAudit } from "../domain/audit.js";
-import type { OnboardingManifest } from "../domain/registration.js";
+import { digestCanonicalJson, reviewMetadataForManifest, type OnboardingManifest } from "../domain/registration.js";
+import { transitionServerState } from "../domain/server-state.js";
 import { hashPasswordLikeSecret, issueOpaqueSecret } from "../security/secrets.js";
 
 export type ActivationJob = {
@@ -81,7 +82,58 @@ export async function registerDisabledServer(db: Db, job: ActivationJob, socketP
       [job.id]
     );
     if (!authorization.rowCount) throw new Error("integration_token_inactive");
-    const server = await client.query(
+    const existingServer = await client.query(
+      "select id,registration_state from mcp_server where code=$1 for update",
+      [job.code]
+    );
+    const server = existingServer.rowCount ? await client.query(
+      `update mcp_server
+          set kcml_number=identity.kcml_number,
+              hostname=identity.hostname,
+              tool_name=identity.tool_name,
+              display_name=$2,
+              description=$3,
+              input_schema=$4,
+              output_schema=$5,
+              handler_key=$6,
+              handler_version=$7,
+              contract_version=$8,
+              artifact_digest=$9,
+              manifest_digest=$10,
+              image_reference=$11,
+              image_digest=$12,
+              sbom_digest=$13,
+              provenance_digest=$14,
+              runtime_socket=$15,
+              timeout_ms=$16,
+              max_concurrency=$17,
+              request_max_bytes=$18,
+              response_max_bytes=$19,
+              rate_window_seconds=$20,
+              rate_max_requests=$21,
+              read_only_hint=$22,
+              destructive_hint=$23,
+              idempotent_hint=$24,
+              open_world_hint=$25,
+              effect_class=$26,
+              shutdown_policy=$27,
+              idempotency_policy=$28,
+              retired_at=null,
+              lock_version=mcp_server.lock_version+1,
+              updated_at=now()
+         from onboarding_job identity
+        where mcp_server.id=$29 and identity.id=$1
+        returning mcp_server.id`,
+      [job.id, job.manifest.displayName, job.manifest.businessPurpose, job.manifest.tool.inputSchema, job.manifest.tool.outputSchema,
+        job.manifest.handlerKey, job.manifest.handlerVersion, job.manifest.registrationRevision, job.imageDigest, job.manifestDigest,
+        job.imageReference, job.imageDigest, job.sbomDigest, job.provenanceDigest, socketPath, job.manifest.behavior.timeoutMs,
+        job.manifest.behavior.maxConcurrency, job.manifest.behavior.requestMaxBytes, job.manifest.behavior.responseMaxBytes,
+        job.manifest.behavior.rateLimit.windowSeconds, job.manifest.behavior.rateLimit.maxRequests,
+        job.manifest.tool.annotations.readOnlyHint, job.manifest.tool.annotations.destructiveHint,
+        job.manifest.tool.annotations.idempotentHint, job.manifest.tool.annotations.openWorldHint,
+        job.manifest.behavior.effectClass, job.manifest.behavior.shutdownPolicy, job.manifest.behavior.idempotencyPolicy,
+        existingServer.rows[0].id]
+    ) : await client.query(
       `insert into mcp_server
         (kcml_number,code,hostname,tool_name,display_name,description,enabled,registration_state,operational_state,
          input_schema,output_schema,handler_key,handler_version,contract_version,artifact_digest,manifest_digest,
@@ -89,37 +141,6 @@ export async function registerDisabledServer(db: Db, job: ActivationJob, socketP
          rate_window_seconds,rate_max_requests,read_only_hint,destructive_hint,idempotent_hint,open_world_hint,effect_class,shutdown_policy,idempotency_policy)
        select kcml_number,code,hostname,tool_name,$2,$3,false,'REGISTERED_DISABLED','DISABLED',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28
          from onboarding_job where id=$1
-       on conflict (code) do update set
-         kcml_number=excluded.kcml_number,
-         hostname=excluded.hostname,
-         tool_name=excluded.tool_name,
-         display_name=excluded.display_name,
-         description=excluded.description,
-         enabled=false,
-         registration_state='REGISTERED_DISABLED',
-         operational_state='DISABLED',
-         input_schema=excluded.input_schema,
-         output_schema=excluded.output_schema,
-         handler_key=excluded.handler_key,
-         handler_version=excluded.handler_version,
-         contract_version=excluded.contract_version,
-         artifact_digest=excluded.artifact_digest,
-         manifest_digest=excluded.manifest_digest,
-         image_reference=excluded.image_reference,
-         image_digest=excluded.image_digest,
-         sbom_digest=excluded.sbom_digest,
-         provenance_digest=excluded.provenance_digest,
-         runtime_socket=excluded.runtime_socket,
-         timeout_ms=excluded.timeout_ms,
-         max_concurrency=excluded.max_concurrency,
-         request_max_bytes=excluded.request_max_bytes,
-         response_max_bytes=excluded.response_max_bytes,
-         rate_window_seconds=excluded.rate_window_seconds,
-         rate_max_requests=excluded.rate_max_requests,
-         retired_at=null,
-         revocation_epoch=gen_random_uuid(),
-         lock_version=mcp_server.lock_version+1,
-         updated_at=now()
        returning id`,
       [job.id, job.manifest.displayName, job.manifest.businessPurpose, job.manifest.tool.inputSchema, job.manifest.tool.outputSchema,
         job.manifest.handlerKey, job.manifest.handlerVersion, job.manifest.registrationRevision, job.imageDigest, job.manifestDigest,
@@ -132,20 +153,71 @@ export async function registerDisabledServer(db: Db, job: ActivationJob, socketP
     );
     if (!server.rowCount) throw new Error("onboarding_identity_missing");
     const serverId = String(server.rows[0].id);
-    await client.query(
-      `insert into registration_revision(server_id,revision,state,manifest,manifest_digest,artifact_digest,evidence)
-       values ($1,$2,'REGISTERED_DISABLED',$3,$4,$5,$6)`,
-      [serverId, job.manifest.registrationRevision, job.manifest, job.manifestDigest, job.imageDigest,
-        JSON.stringify({ sourceDigest: job.sourceDigest, sourceCommit: job.sourceCommit, buildId: job.buildId, imageReference: job.imageReference, imageDigest: job.imageDigest, sbomDigest: job.sbomDigest, provenanceDigest: job.provenanceDigest })]
+    const review = reviewMetadataForManifest(job.manifest);
+    const existingRevision = await client.query(
+      `select id,manifest_digest,artifact_digest
+         from registration_revision
+        where server_id=$1 and revision=$2
+        for update`,
+      [serverId, job.manifest.registrationRevision]
     );
+    if (existingRevision.rowCount
+      && (String(existingRevision.rows[0].manifest_digest) !== job.manifestDigest
+        || String(existingRevision.rows[0].artifact_digest) !== job.imageDigest)) {
+      throw new Error("registration_revision_immutable_conflict");
+    }
+    await client.query(
+      "update registration_revision set active=false,superseded_at=coalesce(superseded_at,now()) where server_id=$1 and active=true and id is distinct from $2",
+      [serverId, existingRevision.rows[0]?.id ?? null]
+    );
+    const revision = existingRevision.rowCount ? await client.query(
+      `update registration_revision
+          set active=true,superseded_at=null
+        where id=$1
+        returning id`,
+      [existingRevision.rows[0].id]
+    ) : await client.query(
+      `insert into registration_revision(
+         server_id,revision,state,manifest,manifest_digest,artifact_digest,evidence,
+         schema_version,approved_at,review_due_at,review_interval_days,certification_digest,validation_state,active
+       ) values ($1,$2,'REGISTERED_DISABLED',$3,$4,$5,$6,$7,$8,$9,$10,$11,'VALID',true)
+       returning id`,
+      [serverId, job.manifest.registrationRevision, job.manifest, job.manifestDigest, job.imageDigest,
+        JSON.stringify({ sourceDigest: job.sourceDigest, sourceCommit: job.sourceCommit, buildId: job.buildId, imageReference: job.imageReference, imageDigest: job.imageDigest, sbomDigest: job.sbomDigest, provenanceDigest: job.provenanceDigest }),
+        review.schemaVersion, review.approvedAt, review.reviewDueAt, review.intervalDays, job.manifestDigest]
+    );
+    const revisionId = String(revision.rows[0].id);
+    await client.query("update mcp_server set active_revision_id=$2 where id=$1", [serverId, revisionId]);
     await client.query("insert into function_statistics(server_id) values ($1) on conflict do nothing", [serverId]);
     await client.query(
-      "insert into monitoring_profile(server_id,profile,enabled) values ($1,$2,false) on conflict (server_id) do update set profile=excluded.profile",
-      [serverId, job.manifest.monitoringProfile]
+      `insert into monitoring_profile(server_id,profile,enabled,registration_revision_id,profile_digest,next_probe_at)
+       values ($1,$2,true,$3,$4,now())
+       on conflict (server_id) do update set
+         profile=excluded.profile,
+         enabled=true,
+         registration_revision_id=excluded.registration_revision_id,
+         profile_digest=excluded.profile_digest,
+         next_probe_at=now(),
+         updated_at=now()`,
+      [serverId, job.manifest.monitoringProfile, revisionId, digestCanonicalJson(job.manifest.monitoringProfile)]
     );
+    const previousState = existingServer.rowCount ? String(existingServer.rows[0].registration_state) : "REGISTERED_DISABLED";
+    if (previousState !== "REGISTERED_DISABLED") {
+      if (!["ACTIVE", "TRIAL", "TEST_FAILED", "SUSPENDED", "QUARANTINED"].includes(previousState)) {
+        throw new Error(`registration_revision_state_invalid:${previousState}`);
+      }
+      await transitionServerState(client, {
+        serverId,
+        to: "REGISTERED_DISABLED",
+        actorType: "system",
+        reason: "new_registration_revision_staged",
+        correlationId,
+        recoveryApproved: ["SUSPENDED", "QUARANTINED"].includes(previousState)
+      });
+    }
     await appendAudit(client, {
-      eventType: "mcp_server.registered_disabled", actorType: "system", objectType: "mcp_server", objectId: serverId,
-      after: { code: job.code, hostname: job.hostname, imageDigest: job.imageDigest, manifestDigest: job.manifestDigest }, correlationId
+      eventType: "registration_revision.staged", actorType: "system", objectType: "mcp_server", objectId: serverId,
+      after: { code: job.code, hostname: job.hostname, revisionId, registrationRevision: job.manifest.registrationRevision, imageDigest: job.imageDigest, manifestDigest: job.manifestDigest }, correlationId
     });
     return serverId;
   });
@@ -214,20 +286,33 @@ async function setAuthorizedServerState(
       [jobId, serverId]
     );
     if (!authorization.rowCount) throw new Error("integration_token_inactive");
-    const updated = await client.query(
-      `update mcp_server
-          set enabled=true,registration_state=$2,operational_state=$3,
-              lock_version=lock_version+1,updated_at=now()
-        where id=$1 returning id`,
-      [serverId, registrationState, operationalState]
-    );
-    if (!updated.rowCount) throw new Error("trial_server_missing");
-    if (audit) {
-      await appendAudit(client, {
-        eventType: "mcp_server.activated", actorType: "system", objectType: "mcp_server", objectId: serverId,
-        after: { code: audit.code, hostname: audit.hostname, imageDigest: audit.imageDigest, gates: "PASS" }, correlationId
-      });
-    }
+    await transitionServerState(client, {
+      serverId,
+      to: registrationState,
+      actorType: "system",
+      reason: registrationState === "TRIAL" ? "onboarding_trial_started" : "onboarding_gates_passed",
+      correlationId,
+      operationalState,
+      activationEvidence: audit ? { ...audit, gates: "PASS" } : undefined
+    });
+  });
+}
+
+export async function beginTrial(db: Db, jobId: string, serverId: string, correlationId: string): Promise<void> {
+  await setAuthorizedServerState(db, jobId, serverId, "TRIAL", "UNKNOWN", correlationId);
+}
+
+export async function rollbackTrial(db: Db, serverId: string, correlationId: string, reason: string): Promise<void> {
+  await tx(db, async (client) => {
+    const current = await client.query("select registration_state from mcp_server where id=$1 for update", [serverId]);
+    if (!current.rowCount || String(current.rows[0].registration_state) !== "TRIAL") return;
+    await transitionServerState(client, {
+      serverId,
+      to: "REGISTERED_DISABLED",
+      actorType: "system",
+      reason,
+      correlationId
+    });
   });
 }
 
@@ -242,7 +327,6 @@ async function rpc(hostname: string, token: string | null, method: string, param
 }
 
 export async function runTrialAndActivate(db: Db, config: AppConfig, serverId: string, job: ActivationJob, correlationId: string): Promise<Record<string, unknown>> {
-  await setAuthorizedServerState(db, job.id, serverId, "TRIAL", "UNKNOWN", correlationId);
   const credential = await createSystemCredential(db, serverId);
   let accessToken = "";
   try {
@@ -373,18 +457,12 @@ export async function runSyntheticMonitoringProbe(
 export async function disableAfterFailure(db: Db, serverId: string | null, quarantine: boolean, correlationId: string, reason: string): Promise<void> {
   if (!serverId) return;
   await tx(db, async (client) => {
-    await client.query(
-      `update mcp_server
-          set enabled=false, registration_state=$2, operational_state=$3,
-              revocation_epoch=gen_random_uuid(), lock_version=lock_version+1, updated_at=now()
-        where id=$1`,
-      [serverId, quarantine ? "QUARANTINED" : "TEST_FAILED", quarantine ? "QUARANTINED" : "DISABLED"]
-    );
-    await client.query("update access_token set revoked_at=coalesce(revoked_at,now()) where server_id=$1", [serverId]);
-    await client.query("update monitoring_profile set enabled=false where server_id=$1", [serverId]);
-    await appendAudit(client, {
-      eventType: quarantine ? "mcp_server.quarantined" : "mcp_server.test_failed", actorType: "system",
-      objectType: "mcp_server", objectId: serverId, after: { reason }, correlationId
+    await transitionServerState(client, {
+      serverId,
+      to: quarantine ? "QUARANTINED" : "TEST_FAILED",
+      actorType: "system",
+      reason,
+      correlationId
     });
   });
 }

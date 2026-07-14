@@ -19,7 +19,7 @@ export async function buildApp(config: AppConfig, db: Db) {
   const app = Fastify({
     logger: { level: config.LOG_LEVEL },
     bodyLimit: 1024 * 1024,
-    trustProxy: true
+    trustProxy: config.TRUSTED_PROXY_CIDRS
   });
   await app.register(helmet, {
     global: true,
