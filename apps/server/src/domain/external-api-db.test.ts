@@ -1,9 +1,11 @@
+import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import https from "node:https";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
+import { promisify } from "node:util";
 import Fastify, { type FastifyInstance } from "fastify";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { loadConfig, type AppConfig } from "../config.js";
@@ -27,55 +29,35 @@ import { registerAuthRoutes } from "../http/auth-routes.js";
 import { registerExternalApiRoutes } from "../http/external-api-routes.js";
 
 const enabled = process.env.KCML_TEST_DATABASE === "1";
+const execFileAsync = promisify(execFile);
 
-const certPem = `-----BEGIN CERTIFICATE-----
-MIIDCTCCAfGgAwIBAgIUOKc9k+VP2wvPnJgjUMcc1sNDazswDQYJKoZIhvcNAQEL
-BQAwFDESMBAGA1UEAwwJMTI3LjAuMC4xMB4XDTI2MDcxNDIzMDc0N1oXDTI3MDcx
-NDIzMDc0N1owFDESMBAGA1UEAwwJMTI3LjAuMC4xMIIBIjANBgkqhkiG9w0BAQEF
-AAOCAQ8AMIIBCgKCAQEA4TYLFZKcyPmBWBtRBKK/9ItPArh/ewYpp2JcEkt64jFA
-QbdxKwjAjKkAG6lnCfmDxHmQNMfBXuc1W9R0dYBzOEwWBM64ctSS4UjAMVqCKsEm
-4gpc22kiLuq8tzt8Pxp2npwpXwrkZKxLoSaYvx8gwaOdrW4zkGKf/GRd26XeiWkj
-hsW9TaOhp+wOwwmBviiFWKsRXYjVwIrs7B1ysUyOQ0D6mtepaSwmMZE1vBorK9Ew
-lrvUOKSrCf8e7ansV3oXLTWbkMxB3pPYU53E/6IC9OgeHAx6yiGyZHTMiY8NWvfL
-OPm7UEfr/0gQEmEjWdqzE887U659J53ZJX8F3Obv9QIDAQABo1MwUTAdBgNVHQ4E
-FgQUnhADj/7ebFngjuhG9HHWFenHetEwHwYDVR0jBBgwFoAUnhADj/7ebFngjuhG
-9HHWFenHetEwDwYDVR0TAQH/BAUwAwEB/zANBgkqhkiG9w0BAQsFAAOCAQEAn+l0
-NDxGGerDe9uRnwsWHQ+SmuRAm8A7SSjjFFxqjE4inAjVV6Ykx2dBnd8OfUx9jV/5
-iJnzDaxqiFW2eX4ZM5Z9hl83f3j5FYVXOg/HH1AuzZvN3drs4DyytP5dYaxmqNob
-KpIIIYRmOOz0c04hgHZAIBoFctL2IQDZyhStENcj+ouLy2kZDeBknuPysdlsom2p
-3bvdRqSDa7nCWMPkAtTUm3ShA/qckdLhI7WbviP38tNI6A06+j2cI+Da4sTtOi3E
-5FU/QY3dQmYh4EaHIolXvbpwDo8CP1QuqxMAON7GpGmZLOgzjViYxvfdndikquum
-nRDu2icpjGHdVxKfPQ==
------END CERTIFICATE-----`;
-
-const keyPem = `-----BEGIN PRIVATE KEY-----
-MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDhNgsVkpzI+YFY
-G1EEor/0i08CuH97BimnYlwSS3riMUBBt3ErCMCMqQAbqWcJ+YPEeZA0x8Fe5zVb
-1HR1gHM4TBYEzrhy1JLhSMAxWoIqwSbiClzbaSIu6ry3O3w/GnaenClfCuRkrEuh
-Jpi/HyDBo52tbjOQYp/8ZF3bpd6JaSOGxb1No6Gn7A7DCYG+KIVYqxFdiNXAiuzs
-HXKxTI5DQPqa16lpLCYxkTW8Gisr0TCWu9Q4pKsJ/x7tqexXehctNZuQzEHek9hT
-ncT/ogL06B4cDHrKIbJkdMyJjw1a98s4+btQR+v/SBASYSNZ2rMTzztTrn0nndkl
-fwXc5u/1AgMBAAECggEAFrtUvRWyW5rLknAXamdfBrj0/apPu8QweiO0dWhG/APK
-n5d7hcN5Y/k++IvNybT0tuUqSBmNjB28RguYwa94cctEQbH37idEuBaWx6SCFPyw
-BwrSupbPC3tIFxqa/OeX54SNrHk1+m9lptt1eX0T2lfAd5vy+nTp/xjGXIBOiQHy
-SB1k2v/uTAKY+T3QR7KVzW65msIe5IwKTg2Bu66qpv3qsfAue/LTQF0KuprZSktv
-wk69rm0w9LCbFKr6Y8ci2e92zIv+rL3JJnhKUxSpx0BHnevHcPxqcTij/Cz1WDaT
-ghvd0JZdtY98SKZsbZnGgFaDeOsPH/Qd+fGKPh5g1QKBgQD0dNlqIkTTz4fW3sgG
-WP8hgTDw6hGenBf8tU2XnCHJ5iwqcYYkZvrHzOVM2VVfOMSsr+iwipCHHRHlYkGL
-VGJw+bVyBTLW8silskNX1K17vbLzbKzpCB8QUW5r2HrjqcsI/GO550m7TXcShJyi
-lOUlAq46QD0rCdw2aL5r9l6ygwKBgQDr2IswcLqWvSab0jDv3LYBlPhdTqw1h6O0
-uo3DvUOZdWbKq+9573M6bwggyDynhvh3cz9YREcrtXKrxrGY06okjbyVSRUEQqhB
-hRXRxfLogrWANEDnrkdi5DHeUZu1ZGWydZOSA6F+Dv+Nb1JziHadgPib2+NAbgyj
-jDPhjBrqJwKBgDA+l2Hw3XCH9qEbWpKWIdP08Tm6mDubRsii52tSbwCvomvF99lb
-UYb5Ew/1nHmsdHQ4S038KsXfoNaKa7EZuEvfnEWibQQq6hp5cfz1hj9zksuj2QQs
-jCTmTUqPcMFZky500SGxWcXTZfqLnXYguJBzVPs+DlReH83FIj+gYdQNAoGBANOA
-OjKSpYIQ1tLeSGySrdX1VlW2+9B1d2XX9tIWpMy18BzI29Wp2tgIQm3DpEFIVQIq
-JCBv+rND4TYS1amMCAUH5pqqE2LitCktxEd/ETtaHJKAScR7EiGpKt+Ip+6fvmOv
-9Ur4XpbBtION1Y8uTdEpm8mKA93/0u3ICa63Clv5AoGBALsWfFpYcJfNj2JR8BUO
-X+s4dhJ8SLM7F47l9DAbrkLIEe4b4x7oIOWtTZOAnT//vtbSzMVYETpu77Mpzv41
-46lfYd14Wue9Ljp1P03lVI1R12dOilVvjr8+t/uwKKlwr8or0knr0+v80k++EC94
-Zi2Z8/XUXgp+MsenM1baTQ0V
------END PRIVATE KEY-----`;
+async function createSelfSignedCertificate(): Promise<{ certPem: string; keyPem: string; dir: string }> {
+  const dir = await mkdtemp(join(tmpdir(), "kcml-cert-"));
+  const keyPath = join(dir, "key.pem");
+  const certPath = join(dir, "cert.pem");
+  await execFileAsync("openssl", [
+    "req",
+    "-x509",
+    "-newkey",
+    "rsa:2048",
+    "-nodes",
+    "-keyout",
+    keyPath,
+    "-out",
+    certPath,
+    "-days",
+    "1",
+    "-subj",
+    "/CN=127.0.0.1",
+    "-addext",
+    "subjectAltName=IP:127.0.0.1"
+  ]);
+  const [certPem, keyPem] = await Promise.all([
+    readFile(certPath, "utf8"),
+    readFile(keyPath, "utf8")
+  ]);
+  return { certPem, keyPem, dir };
+}
 
 function manifestFor(baseUrl: string): Record<string, unknown> {
   return {
@@ -273,11 +255,13 @@ function sendJson(response: import("node:http").ServerResponse, status: number, 
 }
 
 async function startReferenceBackend(): Promise<{
+  certDir: string;
   server: https.Server;
   port: number;
   state: { ready: boolean; recentRequests: Array<Record<string, unknown>> };
 }> {
   const state = { ready: true, recentRequests: [] as Array<Record<string, unknown>> };
+  const { certPem, keyPem, dir } = await createSelfSignedCertificate();
   const server = https.createServer({ cert: certPem, key: keyPem }, (request, response) => {
     void (async () => {
     const url = new URL(request.url ?? "/", "https://127.0.0.1");
@@ -404,7 +388,7 @@ async function startReferenceBackend(): Promise<{
     });
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
-  return { server, port: (server.address() as AddressInfo).port, state };
+  return { certDir: dir, server, port: (server.address() as AddressInfo).port, state };
 }
 
 describe.skipIf(!enabled)("EXTERNAL_API PostgreSQL integration", () => {
@@ -455,6 +439,7 @@ describe.skipIf(!enabled)("EXTERNAL_API PostgreSQL integration", () => {
     await new Promise<void>((resolve, reject) => egressServer.close((error) => error ? reject(error) : resolve()));
     await new Promise<void>((resolve, reject) => backend.server.close((error) => error ? reject(error) : resolve()));
     await db.end();
+    await rm(backend.certDir, { recursive: true, force: true });
     await rm(socketDir, { recursive: true, force: true });
   });
 
