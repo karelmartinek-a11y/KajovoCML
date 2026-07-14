@@ -28,7 +28,7 @@ describe("programmer onboarding API authorization", () => {
     const sessionHash = await argon2.hash(sessionValue, { type: argon2.argon2id, memoryCost: 4096, timeCost: 2, parallelism: 1 });
     const db = {
       query: async (sql: string) => sql.includes("from admin_session")
-        ? { rowCount: 1, rows: [{ id: "session-id", account_id: "account-id", session_hash: sessionHash }] }
+        ? { rowCount: 1, rows: [{ id: "session-id", account_id: "account-id", session_hash: sessionHash, username: "admin" }] }
         : { rowCount: 0, rows: [] }
     } as unknown as Db;
     app = Fastify();

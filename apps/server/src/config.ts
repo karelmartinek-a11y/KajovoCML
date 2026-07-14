@@ -22,6 +22,7 @@ const envSchema = z.object({
   SESSION_SECRET_BASE64: base64Secret,
   CSRF_SECRET_BASE64: base64Secret,
   MFA_ENCRYPTION_KEY_BASE64: base64Secret,
+  ADMIN_BOOTSTRAP_USERNAME: z.string().min(1).default("admin"),
   ADMIN_TOTP_SECRET: z.string().min(16).optional(),
   ADMIN_HOST: z.string().default("admin.hcasc.cz"),
   AUTH_HOST: z.string().default("auth.hcasc.cz"),

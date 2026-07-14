@@ -69,21 +69,21 @@ jobs:
       - name: Create trusted provenance predicate
         env:
           IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+          PUBLIC_BASE_DOMAIN: ${{ vars.PUBLIC_BASE_DOMAIN || 'hcasc.cz' }}
         run: |
           jq -n \
             --arg commit "$GITHUB_SHA" \
             --arg builder "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/onboarding-build.yml@refs/heads/main" \
             --arg source "git+https://github.com/${GITHUB_REPOSITORY}@${GITHUB_SHA}" \
             --arg handler "${{ matrix.handler }}" \
-            '{builder:{id:$builder},buildType:"https://hcasc.cz/kcml/handler-build/v1",invocation:{configSource:{uri:$source,digest:{sha1:$commit},entryPoint:".github/workflows/onboarding-build.yml"},parameters:{handler:$handler},environment:{}},metadata:{buildInvocationID:env.GITHUB_RUN_ID,completeness:{parameters:true,environment:true,materials:false},reproducible:false},materials:[{uri:$source,digest:{sha1:$commit}}]}' \
+            --arg digest "$IMAGE_DIGEST" \
+            --arg base "$PUBLIC_BASE_DOMAIN" \
+            '{builder:{id:$builder},buildType:("https://" + $base + "/kcml/handler-build/v1"),invocation:{configSource:{uri:$source,digest:{sha1:$commit},entryPoint:".github/workflows/onboarding-build.yml"},parameters:{handler:$handler},environment:{}},metadata:{buildInvocationID:env.GITHUB_RUN_ID,completeness:{parameters:true,environment:true,materials:true},reproducible:false},materials:[{uri:$source,digest:{sha1:$commit}}],subject:[{name:$handler,digest:{sha256:($digest|sub("^sha256:";""))}}]}' \
             > /tmp/provenance.json
-      - name: Sign image, SBOM and provenance
+      - name: Keyless-sign image, SBOM and provenance
         env:
-          COSIGN_PRIVATE_KEY: ${{ secrets.KCML_COSIGN_PRIVATE_KEY }}
-          COSIGN_PASSWORD: ${{ secrets.KCML_COSIGN_PASSWORD }}
           IMAGE: ${{ steps.names.outputs.image }}@${{ steps.build.outputs.digest }}
         run: |
-          test -n "$COSIGN_PRIVATE_KEY"
-          cosign sign --yes --key env://COSIGN_PRIVATE_KEY "$IMAGE"
-          cosign attest --yes --key env://COSIGN_PRIVATE_KEY --type spdxjson --predicate /tmp/handler.spdx.json "$IMAGE"
-          cosign attest --yes --key env://COSIGN_PRIVATE_KEY --type slsaprovenance --predicate /tmp/provenance.json "$IMAGE"
+          cosign sign --yes "$IMAGE"
+          cosign attest --yes --type spdxjson --predicate /tmp/handler.spdx.json "$IMAGE"
+          cosign attest --yes --type slsaprovenance --predicate /tmp/provenance.json "$IMAGE"

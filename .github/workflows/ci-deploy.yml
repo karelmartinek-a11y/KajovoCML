@@ -125,8 +125,9 @@ jobs:
           systemctl restart kcml-egress-proxy
           systemctl restart kcml-onboarding-worker
           systemctl reload nginx
+          admin_host="${ADMIN_HOST:-${{ vars.ADMIN_HOST || 'admin.hcasc.cz' }}}"
           for attempt in $(seq 1 30); do
-            if curl -fsS -H 'Host: admin.hcasc.cz' "http://127.0.0.1:${PORT}/health" >/dev/null \
+            if curl -fsS -H "Host: ${admin_host}" "http://127.0.0.1:${PORT}/health" >/dev/null \
               && systemctl is-active --quiet kcml-egress-proxy \
               && systemctl is-active --quiet kcml-onboarding-worker \
               && test -S "${EGRESS_PROXY_SOCKET_PATH:-/var/lib/kcml/egress/proxy.sock}"; then

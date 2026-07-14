@@ -3,6 +3,31 @@ import { digestCanonicalJson, validateManifest, validateOnboardingManifest } fro
 
 const inputSchema = { type: "object", additionalProperties: false, properties: {} };
 const outputSchema = { type: "object", additionalProperties: false, properties: {} };
+const protocol = {
+  protocolVersion: "2025-11-25",
+  transport: "streamable-http",
+  capabilities: ["tools"],
+  errorCatalog: [{ code: "E_TEST", description: "Test error" }]
+};
+const dependencies = {
+  runtime: [{ name: "nodejs22", version: "22.0.0" }],
+  externalServices: ["auth"],
+  secretRefs: ["vault://kcml/test"],
+  networkPolicy: {
+    outboundAllowlist: ["auth.example.com"],
+    dnsPolicy: "strict",
+    databaseRole: "kcml_reader",
+    filesystemPolicy: "read-only"
+  },
+  dataClassification: {
+    input: "internal",
+    output: "internal",
+    containsPersonalData: false,
+    loggingPolicy: "redacted",
+    redactionFields: ["token"],
+    retentionPolicy: "30 days"
+  }
+};
 
 const validManifest = {
   schemaVersion: "1.3",
@@ -35,6 +60,8 @@ const validManifest = {
     retryPolicy: { automaticRetry: false }
   },
   testContract: { safeInput: {}, expectedResult: {}, cleanupOrCompensation: "none required" },
+  protocol,
+  dependencies,
   monitoringProfile: {
     sloTargets: {},
     probeIntervals: {},
@@ -43,30 +70,40 @@ const validManifest = {
     primaryAlertChannel: "primary",
     backupAlertChannel: "backup"
   },
+  errorCatalog: [{ code: "E_TEST", description: "Test error" }],
   approvals: { architecture: "approved", security: "approved", operations: "approved" },
   artifact: {
+    sourceCommit: "abc123",
+    buildId: "build-1",
     digest: `sha256:${"a".repeat(64)}`,
     sbomDigest: `sha256:${"b".repeat(64)}`
   },
-  change: { rollbackRef: "rollback", decommissionRef: "decommission", reviewDueAt: "2027-01-01T00:00:00.000Z" }
+  change: {
+    changeClass: "MINOR",
+    migrationRef: "migrations/001.sql",
+    rollbackRef: "rollback",
+    decommissionRef: "decommission",
+    previousApprovedRevision: null,
+    reviewDueAt: "2027-01-01T00:00:00.000Z"
+  }
 };
 
 describe("registration manifest", () => {
   it("accepts strict complete manifests", () => {
-    expect(validateManifest(validManifest).digest).toMatch(/^sha256:/);
+    expect(validateManifest(validManifest, "hcasc.cz").digest).toMatch(/^sha256:/);
   });
 
   it("rejects unknown fields and automatic retry", () => {
-    expect(() => validateManifest({ ...validManifest, extra: true })).toThrow();
-    expect(() => validateManifest({ ...validManifest, behavior: { ...validManifest.behavior, retryPolicy: { automaticRetry: true } } })).toThrow();
+    expect(() => validateManifest({ ...validManifest, extra: true }, "hcasc.cz")).toThrow();
+    expect(() => validateManifest({ ...validManifest, behavior: { ...validManifest.behavior, retryPolicy: { automaticRetry: true } } }, "hcasc.cz")).toThrow();
   });
 
   it("binds the digest to nested contract values", () => {
-    const original = validateManifest(validManifest).digest;
+    const original = validateManifest(validManifest, "hcasc.cz").digest;
     const changed = validateManifest({
       ...validManifest,
       behavior: { ...validManifest.behavior, timeoutMs: validManifest.behavior.timeoutMs + 1 }
-    }).digest;
+    }, "hcasc.cz").digest;
     expect(changed).not.toBe(original);
   });
 });
@@ -94,8 +131,18 @@ const onboardingManifest = {
     rateLimit: { windowSeconds: 60, maxRequests: 10 }, shutdownPolicy: "COMPLETE_IN_FLIGHT", idempotencyPolicy: "read only", retryPolicy: { automaticRetry: false }
   },
   testContract: { safeInput: {}, expectedResult: {}, cleanupOrCompensation: "none required" },
+  protocol,
+  dependencies,
   monitoringProfile: { sloTargets: {}, probeIntervals: {}, alertRules: [{ severity: "critical" }], runbookRef: "docs/runbooks/example.md", primaryAlertChannel: "primary", backupAlertChannel: "backup" },
-  change: { rollbackRef: "rollback", decommissionRef: "decommission", reviewDueAt: "2027-01-01T00:00:00.000Z" }
+  errorCatalog: [{ code: "E_TEST", description: "Test error" }],
+  change: {
+    changeClass: "MINOR",
+    migrationRef: "migrations/001.sql",
+    rollbackRef: "rollback",
+    decommissionRef: "decommission",
+    previousApprovedRevision: null,
+    reviewDueAt: "2027-01-01T00:00:00.000Z"
+  }
 };
 
 describe("automated onboarding manifest", () => {

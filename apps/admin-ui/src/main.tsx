@@ -24,178 +24,42 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   Terminal,
-  Workflow,
-  X
+  Workflow
 } from "lucide-react";
 import "./styles.css";
+import { AdminAccountsPage, OperationalConfigPage, SecurityPage } from "./admin-pages.js";
+import { IconButton, MetricCard, Modal, PageHeader } from "./common.js";
 import { onboardingHandoffText } from "./onboarding-handoff.js";
 import { formatMinuteSecondCountdown, getIntegrationTokenLifecycle } from "./integration-token-lifecycle.js";
-import { isExpiredAdminSession, SESSION_EXPIRED_EVENT } from "./session-auth.js";
-
-type Page = "monitoring" | "integration" | "tokens" | "permissions" | "audit";
-type Session = { authenticated: boolean; account: string | null };
-type Server = {
-  id: string;
-  code: string;
-  hostname: string;
-  displayName: string;
-  description: string;
-  toolName: string;
-  registrationState: string;
-  operationalState: string;
-  enabled: boolean;
-  handlerKey: string;
-  handlerVersion: string;
-  contractVersion: string;
-  inputSchema: unknown;
-  outputSchema: unknown;
-  artifactDigest: string;
-  manifestDigest: string;
-  successCount: number;
-  unauthorizedCount: number;
-  failureCount: number;
-  lastLatencyMs: number | null;
-  averageLatencyMs: number | null;
-  p95LatencyMs: number | null;
-  lastSuccessAt: string | null;
-  lastFailureAt: string | null;
-  lastUnauthorizedAt: string | null;
-  createdAt: string;
-  updatedAt: string;
-};
-type KajaCredential = {
-  id: string;
-  publicId: string;
-  label: string;
-  fingerprint: string;
-  active: boolean;
-  revokedAt: string | null;
-  deletedAt: string | null;
-  createdAt: string;
-  updatedAt: string;
-  expiresAt: string | null;
-  permissionCount: number;
-  activeAccessTokenCount: number;
-  lastTokenIssuedAt: string | null;
-  lastTokenExpiresAt: string | null;
-};
-type AccessLevel = "READ" | "EXECUTE" | "MANAGE";
-type KajaPermission = {
-  serverId: string;
-  code: string;
-  hostname: string;
-  displayName: string;
-  granted: boolean;
-  accessLevel: AccessLevel | null;
-  grantedAt: string | null;
-};
-type AuditEvent = { id: number; event_type: string; actor_type: string; object_type: string; object_id: string; correlation_id: string; created_at: string };
-type SecretResult = { publicId: string; label: string; clientSecret: string; fingerprint: string; expiresAt: string | null };
-type IntegrationToken = {
-  id: string;
-  label: string;
-  fingerprint: string;
-  jobId: string | null;
-  issuedAt: string;
-  initialExpiresAt: string;
-  expiresAt: string;
-  maxExpiresAt: string;
-  lastUsedAt: string | null;
-  revokedAt: string | null;
-  active: boolean;
-  jobState: string | null;
-  code: string | null;
-  hostname: string | null;
-  heartbeatAt: string | null;
-  tokenExtendedAt: string | null;
-};
-type IntegrationSecret = IntegrationToken & {
-  token: string;
-  onboardingCatalogUrl: string;
-  onboardingCatalogFileName: string;
-  programmerApiUrl: string;
-};
-type OnboardingGate = { gate_name: string; stage: string; status: string; evidence: Record<string, unknown>; correlation_id: string; started_at: string | null; completed_at: string | null };
-type OnboardingEvent = { id: number; from_state: string | null; to_state: string; event_type: string; detail: Record<string, unknown>; correlation_id: string; created_at: string };
-type OnboardingJob = {
-  id: string;
-  state: string;
-  correlationId: string;
-  lockVersion: number;
-  sourceRevision: number;
-  code: string | null;
-  hostname: string | null;
-  resource: string | null;
-  toolName: string | null;
-  serverId: string | null;
-  githubPrUrl: string | null;
-  imageDigest: string | null;
-  sbomDigest: string | null;
-  blockingErrorCode: string | null;
-  blockingErrorDetail: string | null;
-  createdAt: string | null;
-  updatedAt: string | null;
-  completedAt: string | null;
-  gates?: OnboardingGate[];
-  events?: OnboardingEvent[];
-};
-type MonitoringProbe = { id: number; server_id: string; code: string; hostname: string; probe_type: string; status: string; latency_ms: number | null; correlation_id: string; checked_at: string };
-const pageNames: Record<Page, string> = {
-  monitoring: "Monitoring MCP",
-  integration: "Implementační tokeny",
-  tokens: "Tokeny",
-  permissions: "Správa oprávnění",
-  audit: "Audit"
-};
+import { SESSION_EXPIRED_EVENT } from "./session-auth.js";
+import {
+  accessLabels,
+  pageNames,
+  type AdminAccount,
+  type AdminSecurity,
+  type AuditEvent,
+  type AuditIntegrity,
+  type AuditResponse,
+  type IntegrationSecret,
+  type IntegrationToken,
+  type KajaCredential,
+  type KajaPermission,
+  type MonitoringProbe,
+  type MonitoringProfile,
+  type OnboardingDescriptor,
+  type OnboardingJob,
+  type OperationalConfigSetting,
+  type Page,
+  type SecretResult,
+  type Server,
+  type Session
+} from "./types.js";
+import { api, csrf, formatDate, prettyJson, recertificationState, statusClass } from "./ui-helpers.js";
 
 const integrationTokenActionLabel = "Vygenerovat Integrační token";
 
-const accessLabels: Record<AccessLevel, string> = {
-  READ: "Čtení",
-  EXECUTE: "Spouštění",
-  MANAGE: "Správa"
-};
-
-async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, { ...init, credentials: "include", headers: { "content-type": "application/json", ...(init?.headers ?? {}) } });
-  if (!res.ok) {
-    const body = await res.json().catch((): { error?: string } => ({ error: res.statusText })) as { error?: string };
-    if (isExpiredAdminSession(res.status, body.error)) window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
-    throw new Error(body.error ?? res.statusText);
-  }
-  return res.json() as Promise<T>;
-}
-
-function csrf(): string {
-  return document.cookie.split("; ").find((row) => row.startsWith("__Host-kcml_csrf="))?.split("=")[1] ?? "";
-}
-
-function formatDate(value: string | null): string {
-  return value ? new Date(value).toLocaleString() : "-";
-}
-
-function statusClass(credential: KajaCredential): string {
-  if (credential.revokedAt || !credential.active) return "danger";
-  if (credential.expiresAt && new Date(credential.expiresAt).getTime() - Date.now() < 7 * 24 * 3600 * 1000) return "warn";
-  return "ok";
-}
-
-function Modal({ title, children, onClose }: { title: string; children: React.ReactNode; onClose: () => void }) {
-  return (
-    <div className="modal-backdrop" role="presentation">
-      <section className="modal" role="dialog" aria-modal="true" aria-label={title}>
-        <header className="modal-head">
-          <h2>{title}</h2>
-          <button className="icon-button" onClick={onClose} aria-label="Zavřít"><X size={18} /></button>
-        </header>
-        {children}
-      </section>
-    </div>
-  );
-}
-
 function Login({ notice, onLogin }: { notice?: string; onLogin: () => void }) {
-  const [username, setUsername] = useState("karmar78");
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [totp, setTotp] = useState("");
   const [error, setError] = useState("");
@@ -218,10 +82,52 @@ function Login({ notice, onLogin }: { notice?: string; onLogin: () => void }) {
         <form onSubmit={(event) => { void submit(event); }}>
           <label>Uživatel<input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" /></label>
           <label>Heslo<input value={password} onChange={(e) => setPassword(e.target.value)} type="password" autoComplete="current-password" /></label>
-          <label>MFA kód<input value={totp} onChange={(e) => setTotp(e.target.value)} inputMode="numeric" autoComplete="one-time-code" /></label>
+          <label>MFA nebo recovery kód<input value={totp} onChange={(e) => setTotp(e.target.value)} inputMode="text" autoComplete="one-time-code" /></label>
           {error && <p className="error">{error}</p>}
           <button type="submit"><KeyRound size={18} /> Přihlásit</button>
         </form>
+      </section>
+    </main>
+  );
+}
+
+function BootstrapSetup({ onCompleted }: { onCompleted: (session: Session) => void }) {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [mfaSecret, setMfaSecret] = useState("");
+  const [recoveryCodes, setRecoveryCodes] = useState<string[] | null>(null);
+  const [error, setError] = useState("");
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    setError("");
+    try {
+      const result = await api<{ username: string; recoveryCodes: string[] }>("/api/bootstrap/setup", {
+        method: "POST",
+        body: JSON.stringify({ username, password, mfaSecret })
+      });
+      setRecoveryCodes(result.recoveryCodes);
+      const next = await api<Session>("/api/session").catch(() => ({ authenticated: false, account: null, bootstrapRequired: false }));
+      onCompleted(next);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Bootstrap se nepodařilo dokončit.");
+    }
+  }
+
+  return (
+    <main className="login-shell">
+      <section className="login-panel">
+        <div className="brand-row"><ShieldCheck size={28} /><strong>KCML</strong></div>
+        <h1>První spuštění</h1>
+        <p className="field-hint">Založte prvního administrátora a uzavřete bootstrap režim.</p>
+        <form onSubmit={(event) => { void submit(event); }}>
+          <label>Uživatelské jméno<input value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" /></label>
+          <label>Heslo<input value={password} onChange={(e) => setPassword(e.target.value)} type="password" autoComplete="new-password" /></label>
+          <label>MFA tajemství (volitelné)<textarea value={mfaSecret} onChange={(e) => setMfaSecret(e.target.value)} rows={3} placeholder="Base32 seed pro TOTP" /></label>
+          {error && <p className="error">{error}</p>}
+          <button type="submit"><ShieldCheck size={18} /> Dokončit bootstrap</button>
+        </form>
+        {recoveryCodes ? <div className="permission-preview"><strong>Recovery kódy</strong><span>Uložte je bezpečně. Zobrazují se pouze při bootstrapu.</span><code>{recoveryCodes.join("\n")}</code></div> : null}
       </section>
     </main>
   );
@@ -255,20 +161,20 @@ function CreateTokenModal({ serverCount, onClose, onCreated }: { serverCount: nu
     }
   }
   return (
-    <Modal title="Založit Kaja token" onClose={onClose}>
+      <Modal title="Založit klientské pověření Kaja" onClose={onClose}>
       <form className="modal-form" onSubmit={(event) => { void submit(event); }}>
         <div className="form-intro"><span className="modal-icon"><KeyRound size={20} /></span><p>Vytvoř nové pověření pro aplikaci nebo integrační službu. Přístup k serverům nastavíš hned poté ve správě oprávnění.</p></div>
-        <label>Označení tokenu<span className="field-hint">Srozumitelný název podle účelu nebo aplikace</span><input name="label" autoFocus value={label} onChange={(event) => setLabel(event.target.value)} maxLength={120} placeholder="Např. CI/CD pipeline" /></label>
+        <label>Označení pověření<span className="field-hint">Srozumitelný název podle účelu nebo aplikace</span><input name="label" autoFocus value={label} onChange={(event) => setLabel(event.target.value)} maxLength={120} placeholder="Např. CI/CD pipeline" /></label>
         <label>Expirace pověření<span className="field-hint">Nepovinné, bez data zůstane pověření bez časového omezení</span><div className="input-with-icon"><CalendarDays size={16} /><input name="expiresAt" value={expiresAt} onChange={(event) => setExpiresAt(event.target.value)} type="datetime-local" /></div></label>
         <div className="permission-preview">
           <div className="preview-title"><LockKeyhole size={16} /><strong>Přehled oprávnění</strong></div>
-          <span>Nový token vznikne bezpečně bez přístupu. Oprávnění mu přiřadíš na samostatné stránce.</span>
+          <span>Nové pověření vznikne bezpečně bez přístupu. Oprávnění mu přiřadíš na samostatné stránce.</span>
           <dl><dt>Dostupné MCP servery</dt><dd>{serverCount}</dd><dt>Výchozí přístup</dt><dd>Bez oprávnění</dd></dl>
         </div>
         {error && <p className="error">{error}</p>}
         <footer className="modal-actions">
           <button type="button" className="secondary" onClick={onClose}>Zrušit</button>
-          <button type="submit"><KeyRound size={16} /> Vygenerovat token</button>
+          <button type="submit"><KeyRound size={16} /> Vygenerovat pověření</button>
         </footer>
       </form>
     </Modal>
@@ -282,13 +188,13 @@ function SecretModal({ secret, onClose }: { secret: SecretResult; onClose: () =>
     setCopied(true);
   }
   return (
-    <Modal title="Token byl vytvořen" onClose={onClose}>
+      <Modal title="Pověření bylo vytvořeno" onClose={onClose}>
       <div className="secret-dialog">
         <p>Hodnota secretu se zobrazuje pouze jednou. Po zavření už ji nepůjde znovu zobrazit.</p>
         <div className="secret-once"><strong>{secret.label} · {secret.publicId}</strong><code>{secret.clientSecret}</code><span>Fingerprint {secret.fingerprint}. Expirace {secret.expiresAt ? formatDate(secret.expiresAt) : "bez omezení"}.</span></div>
         <footer className="modal-actions">
           <button className="secondary" onClick={onClose}>Zavřít</button>
-          <button onClick={() => { void copy(); }}><ClipboardCopy size={16} /> {copied ? "Zkopírováno" : "Zkopírovat token"}</button>
+          <button onClick={() => { void copy(); }}><ClipboardCopy size={16} /> {copied ? "Zkopírováno" : "Zkopírovat secret"}</button>
         </footer>
       </div>
     </Modal>
@@ -296,19 +202,38 @@ function SecretModal({ secret, onClose }: { secret: SecretResult; onClose: () =>
 }
 
 function CreateIntegrationTokenModal({ resumeJobId, onClose, onCreated }: { resumeJobId?: string; onClose: () => void; onCreated: (secret: IntegrationSecret) => void }) {
-  const [note, setNote] = useState(resumeJobId ? `Pokračování integrace ${resumeJobId.slice(0, 8)}` : "");
+  const [label, setLabel] = useState(resumeJobId ? `Pokračování integrace ${resumeJobId.slice(0, 8)}` : "");
+  const [summary, setSummary] = useState("");
+  const [businessPurpose, setBusinessPurpose] = useState("");
+  const [serviceOwner, setServiceOwner] = useState("");
+  const [technicalOwner, setTechnicalOwner] = useState("");
+  const [criticality, setCriticality] = useState<OnboardingDescriptor["criticality"]>("MEDIUM");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   async function submit(event: React.FormEvent) {
     event.preventDefault();
-    if (!note.trim()) { setError("Napište krátkou poznámku, podle které nový server později poznáte."); return; }
+    if (!label.trim()) { setError("Zadej označení tokenu."); return; }
+    if (!summary.trim() || !businessPurpose.trim() || !serviceOwner.trim() || !technicalOwner.trim()) {
+      setError("Vyplň shrnutí, účel i oba vlastníky serveru.");
+      return;
+    }
     setBusy(true);
     setError("");
     try {
       const result = await api<IntegrationSecret>("/api/integration-tokens", {
         method: "POST",
         headers: { "x-csrf-token": csrf() },
-        body: JSON.stringify({ note: note.trim(), resumeJobId })
+        body: JSON.stringify({
+          label: label.trim(),
+          descriptor: {
+            summary: summary.trim(),
+            businessPurpose: businessPurpose.trim(),
+            serviceOwner: serviceOwner.trim(),
+            technicalOwner: technicalOwner.trim(),
+            criticality
+          },
+          resumeJobId
+        })
       });
       onCreated(result);
     } catch (err) {
@@ -321,7 +246,14 @@ function CreateIntegrationTokenModal({ resumeJobId, onClose, onCreated }: { resu
     <Modal title={resumeJobId ? "Navazující implementační token" : integrationTokenActionLabel} onClose={onClose}>
       <form className="modal-form" onSubmit={(event) => { void submit(event); }}>
         <div className="form-intro"><span className="modal-icon"><Workflow size={20} /></span><p>Po vygenerování předáte programátorovi Connect in Catalog v1.4 a jednorázově zobrazený token. Na první upload má 2 hodiny; potom sám sleduje stav, opravuje případné vratné chyby a systém automaticky dokončí registraci, HTTPS, testy, autorizaci, logging, monitoring a aktivaci.</p></div>
-        <label>Poznámka k novému serveru<span className="field-hint">Pouze vaše interní označení, například účel serveru nebo dodavatel. Do konfigurace serveru se nepřenáší.</span><textarea autoFocus value={note} onChange={(event) => setNote(event.target.value)} maxLength={120} rows={3} placeholder="Např. Fakturační MCP – dodavatel ABC" /></label>
+        <label>Označení tokenu<span className="field-hint">Krátký interní název pro pozdější dohledání tokenu.</span><input autoFocus value={label} onChange={(event) => setLabel(event.target.value)} maxLength={120} placeholder="Např. Fakturační onboarding" /></label>
+        <div className="descriptor-grid">
+          <label>Shrnutí serveru<span className="field-hint">Jednovětý popis integračního záměru.</span><textarea value={summary} onChange={(event) => setSummary(event.target.value)} maxLength={120} rows={3} placeholder="Např. Zpracování fakturačních podkladů" /></label>
+          <label>Účel serveru<span className="field-hint">Formální business purpose, který se předá dál.</span><textarea value={businessPurpose} onChange={(event) => setBusinessPurpose(event.target.value)} maxLength={400} rows={3} placeholder="Např. Automatizace fakturačního workflow" /></label>
+          <label>Vlastník služby<input value={serviceOwner} onChange={(event) => setServiceOwner(event.target.value)} maxLength={160} placeholder="Např. Finance Ops" /></label>
+          <label>Technický vlastník<input value={technicalOwner} onChange={(event) => setTechnicalOwner(event.target.value)} maxLength={160} placeholder="Např. Platform Engineering" /></label>
+          <label>Kritičnost<select value={criticality} onChange={(event) => setCriticality(event.target.value as OnboardingDescriptor["criticality"])}><option value="LOW">Low</option><option value="MEDIUM">Medium</option><option value="HIGH">High</option><option value="CRITICAL">Critical</option></select></label>
+        </div>
         {resumeJobId ? <div className="permission-preview"><strong>Pokračování existujícího jobu</strong><code>{resumeJobId}</code><span>Předchozí token bude revokován. KCML identita zůstane zachována.</span></div> : null}
         {error && <p className="error">{error}</p>}
         <footer className="modal-actions"><button type="button" className="secondary" onClick={onClose} disabled={busy}>Zrušit</button><button type="submit" disabled={busy}><Rocket size={16} /> {busy ? "Generuji…" : integrationTokenActionLabel}</button></footer>
@@ -339,6 +271,7 @@ function IntegrationSecretModal({ secret, onClose }: { secret: IntegrationSecret
   async function copyInstructions() {
     await navigator.clipboard.writeText(onboardingHandoffText({
       note: secret.label,
+      descriptor: secret.descriptor,
       token: secret.token,
       initialExpiresAt: secret.initialExpiresAt,
       programmerApiUrl: secret.programmerApiUrl
@@ -350,7 +283,8 @@ function IntegrationSecretModal({ secret, onClose }: { secret: IntegrationSecret
       <div className="secret-dialog">
         <div className="notice success"><CheckCircle2 size={18} /><span><strong>Vaše práce tímto končí.</strong><br />Programátorovi předejte onboarding katalog a token. Stav, opravitelné chyby i nahrání nové revize obslouží sám přes programátorské API až do zeleného výsledku.</span></div>
         <div className="handoff-step"><span>1</span><div><strong>Onboarding katalog</strong><p>Závazný realizovatelný dokument Connect in Catalog v1.4 včetně samoobslužného opravného cyklu.</p><a className="button-link secondary" href={secret.onboardingCatalogUrl} download={secret.onboardingCatalogFileName}><Download size={16} /> Stáhnout onboarding katalog</a></div></div>
-        <div className="handoff-step"><span>2</span><div><strong>Jednorázový integrační token</strong><p>Zobrazuje se pouze nyní. První upload musí programátor provést do {formatDate(secret.initialExpiresAt)}.</p><div className="secret-once"><code>{secret.token}</code><small>Fingerprint {secret.fingerprint}</small></div><button type="button" className="secondary" onClick={() => { void copyToken(); }}><ClipboardCopy size={16} /> {copied === "token" ? "Token zkopírován" : "Zkopírovat token"}</button></div></div>
+        <div className="handoff-step"><span>2</span><div><strong>Server descriptor</strong><p>{secret.descriptor.summary}</p><dl className="descriptor-dl"><dt>Účel</dt><dd>{secret.descriptor.businessPurpose}</dd><dt>Vlastník služby</dt><dd>{secret.descriptor.serviceOwner}</dd><dt>Technický vlastník</dt><dd>{secret.descriptor.technicalOwner}</dd><dt>Kritičnost</dt><dd>{secret.descriptor.criticality}</dd></dl></div></div>
+        <div className="handoff-step"><span>3</span><div><strong>Jednorázový integrační token</strong><p>Zobrazuje se pouze nyní. První upload musí programátor provést do {formatDate(secret.initialExpiresAt)}.</p><div className="secret-once"><code>{secret.token}</code><small>Fingerprint {secret.fingerprint}</small></div><button type="button" className="secondary" onClick={() => { void copyToken(); }}><ClipboardCopy size={16} /> {copied === "token" ? "Token zkopírován" : "Zkopírovat token"}</button></div></div>
         <div className="permission-preview"><strong>Co proběhne po uploadu</strong><span>Systém přidělí KCML identitu a vlastní HTTPS adresu a provede PR/CI, podepsaný OCI build, izolované nasazení, katalog, autorizaci, logging, audit, monitoring, veřejné testy a aktivaci. Opravitelnou chybu API vrátí programátorovi jako <code>UPLOAD_REVISION</code>; po nové revizi pipeline sama pokračuje.</span></div>
         <footer className="modal-actions"><button className="secondary" onClick={onClose}>Zavřít</button><button onClick={() => { void copyInstructions(); }}><ClipboardCopy size={16} /> {copied === "instructions" ? "Pokyny zkopírovány" : "Zkopírovat pokyny i token"}</button></footer>
       </div>
@@ -402,24 +336,64 @@ function ConfirmModal({ credential, action, onClose, onConfirm }: { credential: 
   );
 }
 
-function PageHeader({ title, description, children }: { title: string; description: string; children?: React.ReactNode }) {
-  return (
-    <header className="page-header">
-      <div><h1>{title}</h1><p>{description}</p></div>
-      <div className="actions">{children}</div>
-    </header>
-  );
-}
-
-function IconButton({ label, children, onClick }: { label: string; children: React.ReactNode; onClick?: () => void }) {
-  return <button className="icon-button" type="button" title={label} aria-label={label} onClick={onClick}>{children}</button>;
-}
-
-function MetricCard({ tone, icon, value, label }: { tone: "neutral" | "success" | "warning" | "danger"; icon: React.ReactNode; value: number; label: string }) {
-  return <article className={`metric-card ${tone}`}><span className="metric-icon">{icon}</span><strong>{value}</strong><span>{label}</span></article>;
-}
-
-function ServerDetailModal({ server, onClose }: { server: Server; onClose: () => void }) {
+function ServerDetailModal({
+  server,
+  onClose,
+  onToggleEnabled,
+  onRunTest,
+  onLoadMonitoringProfile,
+  onSaveMonitoringProfile
+}: {
+  server: Server;
+  onClose: () => void;
+  onToggleEnabled: (server: Server, enabled: boolean) => Promise<void>;
+  onRunTest: (server: Server) => Promise<{ ok: boolean; latencyMs: number }>;
+  onLoadMonitoringProfile: (server: Server) => Promise<MonitoringProfile>;
+  onSaveMonitoringProfile: (server: Server, profile: MonitoringProfile) => Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [testStatus, setTestStatus] = useState<{ ok: boolean; latencyMs: number } | null>(null);
+  const [error, setError] = useState("");
+  const [monitoring, setMonitoring] = useState<MonitoringProfile | null>(null);
+  useEffect(() => {
+    void onLoadMonitoringProfile(server)
+      .then(setMonitoring)
+      .catch((err) => setError(err instanceof Error ? err.message : "Profil monitoringu se nepodařilo načíst"));
+  }, [onLoadMonitoringProfile, server]);
+  async function toggleEnabled() {
+    setBusy(true);
+    setError("");
+    try {
+      await onToggleEnabled(server, !server.enabled);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Změna stavu selhala");
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function runTest() {
+    setBusy(true);
+    setError("");
+    try {
+      setTestStatus(await onRunTest(server));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Test serveru selhal");
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function saveMonitoring() {
+    if (!monitoring) return;
+    setBusy(true);
+    setError("");
+    try {
+      await onSaveMonitoringProfile(server, monitoring);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Profil monitoringu se nepodařilo uložit");
+    } finally {
+      setBusy(false);
+    }
+  }
   return (
     <Modal title={server.displayName} onClose={onClose}>
       <div className="server-detail">
@@ -430,6 +404,8 @@ function ServerDetailModal({ server, onClose }: { server: Server; onClose: () =>
           <dt>Nástroj</dt><dd>{server.toolName}</dd>
           <dt>Handler</dt><dd>{server.handlerKey} · {server.handlerVersion}</dd>
           <dt>Contract</dt><dd>{server.contractVersion}</dd>
+          <dt>Registrační revize</dt><dd>{server.registrationRevision ?? "-"}</dd>
+          <dt>Recertifikace</dt><dd><span className={`badge ${recertificationState(server.reviewDueAt).tone === "danger" ? "danger" : recertificationState(server.reviewDueAt).tone === "warning" ? "warning" : "neutral"}`}>{recertificationState(server.reviewDueAt).label}</span>{server.reviewDueAt ? <span className="cell-subtitle">{formatDate(server.reviewDueAt)}</span> : null}</dd>
           <dt>Artifact digest</dt><dd><code>{server.artifactDigest}</code></dd>
           <dt>Manifest digest</dt><dd><code>{server.manifestDigest}</code></dd>
           <dt>Úspěšná volání</dt><dd>{server.successCount}</dd>
@@ -440,9 +416,44 @@ function ServerDetailModal({ server, onClose }: { server: Server; onClose: () =>
           <dt>Poslední chyba</dt><dd>{formatDate(server.lastFailureAt)}</dd>
         </dl>
         {server.description ? <p>{server.description}</p> : null}
+        {testStatus ? <div className={`notice ${testStatus.ok ? "success" : "error"}`}><span><strong>{testStatus.ok ? "Safe test prošel" : "Safe test neprošel"}</strong><br />Latence {testStatus.latencyMs} ms.</span></div> : null}
+        {error ? <p className="error">{error}</p> : null}
+        {monitoring ? <div className="monitoring-editor">
+          <label><input type="checkbox" checked={monitoring.enabled} onChange={(event) => setMonitoring({ ...monitoring, enabled: event.target.checked })} /> Monitoring aktivní</label>
+          <label>Runbook reference<input value={monitoring.profile.runbookRef} onChange={(event) => setMonitoring({ ...monitoring, profile: { ...monitoring.profile, runbookRef: event.target.value } })} /></label>
+          <label>Primární alert kanál<input value={monitoring.profile.primaryAlertChannel} onChange={(event) => setMonitoring({ ...monitoring, profile: { ...monitoring.profile, primaryAlertChannel: event.target.value } })} /></label>
+          <label>Záložní alert kanál<input value={monitoring.profile.backupAlertChannel} onChange={(event) => setMonitoring({ ...monitoring, profile: { ...monitoring.profile, backupAlertChannel: event.target.value } })} /></label>
+          <label>SLO targety (JSON)<textarea rows={5} value={prettyJson(monitoring.profile.sloTargets)} onChange={(event) => {
+            try {
+              setMonitoring({ ...monitoring, profile: { ...monitoring.profile, sloTargets: JSON.parse(event.target.value) as Record<string, unknown> } });
+              setError("");
+            } catch {
+              setError("SLO targety musí být platný JSON.");
+            }
+          }} /></label>
+          <label>Intervaly probe (JSON)<textarea rows={5} value={prettyJson(monitoring.profile.probeIntervals)} onChange={(event) => {
+            try {
+              setMonitoring({ ...monitoring, profile: { ...monitoring.profile, probeIntervals: JSON.parse(event.target.value) as Record<string, unknown> } });
+              setError("");
+            } catch {
+              setError("Intervaly probe musí být platný JSON.");
+            }
+          }} /></label>
+          <label>Alert pravidla (JSON pole)<textarea rows={6} value={prettyJson(monitoring.profile.alertRules)} onChange={(event) => {
+            try {
+              setMonitoring({ ...monitoring, profile: { ...monitoring.profile, alertRules: JSON.parse(event.target.value) as Array<Record<string, unknown>> } });
+              setError("");
+            } catch {
+              setError("Alert pravidla musí být platné JSON pole.");
+            }
+          }} /></label>
+        </div> : null}
         <details><summary>Vstupní JSON Schema</summary><pre className="test-output">{JSON.stringify(server.inputSchema, null, 2)}</pre></details>
         <details><summary>Výstupní JSON Schema</summary><pre className="test-output">{JSON.stringify(server.outputSchema, null, 2)}</pre></details>
         <footer className="modal-actions">
+          <button type="button" className="secondary" disabled={busy || !monitoring} onClick={() => { void saveMonitoring(); }}><Save size={16} /> Uložit monitoring</button>
+          <button type="button" className="secondary" disabled={busy} onClick={() => { void runTest(); }}><Terminal size={16} /> Otestovat server</button>
+          <button type="button" className="secondary" disabled={busy} onClick={() => { void toggleEnabled(); }}>{server.enabled ? "Vypnout server" : "Zapnout server"}</button>
           <button type="button" className="secondary" onClick={onClose}>Zavřít detail</button>
         </footer>
       </div>
@@ -454,19 +465,30 @@ function MonitoringPage({
   servers,
   probes,
   onRefresh,
-  onAutomatedOnboarding
+  onAutomatedOnboarding,
+  onToggleEnabled,
+  onRunTest,
+  onLoadMonitoringProfile,
+  onSaveMonitoringProfile
 }: {
   servers: Server[];
   probes: MonitoringProbe[];
   onRefresh: () => void;
   onAutomatedOnboarding: () => void;
+  onToggleEnabled: (server: Server, enabled: boolean) => Promise<void>;
+  onRunTest: (server: Server) => Promise<{ ok: boolean; latencyMs: number }>;
+  onLoadMonitoringProfile: (server: Server) => Promise<MonitoringProfile>;
+  onSaveMonitoringProfile: (server: Server, profile: MonitoringProfile) => Promise<void>;
 }) {
   const [query, setQuery] = useState("");
   const [timeRange, setTimeRange] = useState("24h");
   const [detailServer, setDetailServer] = useState<Server | null>(null);
-  const online = servers.filter((server) => server.enabled && ["ACTIVE", "TRIAL"].includes(server.registrationState)).length;
+  const online = servers.filter((server) => {
+    const recert = recertificationState(server.reviewDueAt);
+    return server.enabled && ["ACTIVE", "TRIAL"].includes(server.registrationState) && recert.tone !== "danger";
+  }).length;
   const degraded = servers.filter((server) => server.operationalState === "DEGRADED").length;
-  const offline = servers.filter((server) => !server.enabled || ["SUSPENDED", "QUARANTINED", "RETIRED"].includes(server.registrationState)).length;
+  const offline = servers.filter((server) => !server.enabled || ["SUSPENDED", "QUARANTINED", "RETIRED"].includes(server.registrationState) || recertificationState(server.reviewDueAt).tone === "danger").length;
   const filtered = servers.filter((server) => `${server.displayName} ${server.hostname} ${server.code}`.toLowerCase().includes(query.toLowerCase()));
   const rangeMs = timeRange === "30d" ? 30 * 86400000 : timeRange === "7d" ? 7 * 86400000 : 86400000;
   const visibleProbes = probes.filter((probe) => new Date(probe.checked_at).getTime() > Date.now() - rangeMs).slice(0, 80).reverse();
@@ -501,11 +523,14 @@ function MonitoringPage({
             <p>Spusť automatickou integraci. Server se objeví až po ověření zdrojů, CI, podepsaném OCI deployi a veřejných aktivačních testech.</p>
           </div>
         ) : (
-          <table><thead><tr><th>Server</th><th>Hostname</th><th>Registrace</th><th>Provoz</th><th>Volání</th><th>Auth chyby</th><th>Poslední kontrola</th><th>Akce</th></tr></thead>
-            <tbody>{filtered.map((server) => <tr key={server.id}><td><strong>{server.displayName}</strong><span className="cell-subtitle">{server.code}</span></td><td>{server.hostname}</td><td><span className="badge neutral">{server.registrationState}</span></td><td><span className="badge ok">{server.operationalState}</span></td><td>{server.successCount}/{server.failureCount}</td><td>{server.unauthorizedCount}</td><td>{formatDate(server.updatedAt)}</td><td><IconButton label={`Detail serveru ${server.displayName}`} onClick={() => setDetailServer(server)}><MoreHorizontal size={17} /></IconButton></td></tr>)}</tbody></table>
+          <table><thead><tr><th>Server</th><th>Hostname</th><th>Registrace</th><th>Recertifikace</th><th>Provoz</th><th>Volání</th><th>Auth chyby</th><th>Poslední kontrola</th><th>Akce</th></tr></thead>
+            <tbody>{filtered.map((server) => {
+              const recert = recertificationState(server.reviewDueAt);
+              return <tr key={server.id}><td><strong>{server.displayName}</strong><span className="cell-subtitle">{server.code}</span></td><td>{server.hostname}</td><td><span className="badge neutral">{server.registrationState}</span></td><td><span className={`badge ${recert.tone}`}>{recert.label}</span></td><td><span className="badge ok">{server.operationalState}</span></td><td>{server.successCount}/{server.failureCount}</td><td>{server.unauthorizedCount}</td><td>{formatDate(server.updatedAt)}</td><td><IconButton label={`Detail serveru ${server.displayName}`} onClick={() => setDetailServer(server)}><MoreHorizontal size={17} /></IconButton></td></tr>;
+            })}</tbody></table>
         )}
       </section>
-      {detailServer ? <ServerDetailModal server={servers.find((server) => server.id === detailServer.id) ?? detailServer} onClose={() => setDetailServer(null)} /> : null}
+      {detailServer ? <ServerDetailModal server={servers.find((server) => server.id === detailServer.id) ?? detailServer} onClose={() => setDetailServer(null)} onToggleEnabled={onToggleEnabled} onRunTest={onRunTest} onLoadMonitoringProfile={onLoadMonitoringProfile} onSaveMonitoringProfile={onSaveMonitoringProfile} /> : null}
     </>
   );
 }
@@ -618,7 +643,7 @@ function IntegrationTokensPage({ tokens, jobs, onCreate, onOpenJob, onResume, on
       window.clearInterval(refreshTimer);
     };
   }, [onRefresh]);
-  const filtered = tokens.filter((token) => `${token.label} ${token.fingerprint} ${token.code ?? ""}`.toLowerCase().includes(query.toLowerCase()));
+  const filtered = tokens.filter((token) => `${token.label} ${token.descriptor.summary} ${token.fingerprint} ${token.code ?? ""}`.toLowerCase().includes(query.toLowerCase()));
   return (
     <>
       <PageHeader title="Implementační tokeny" description="Poznámka, onboarding katalog a jednorázový token pro automatickou integraci jednoho MCP serveru.">
@@ -626,7 +651,7 @@ function IntegrationTokensPage({ tokens, jobs, onCreate, onOpenJob, onResume, on
         <button onClick={onCreate}><Plus size={17} /> {integrationTokenActionLabel}</button><IconButton label="Obnovit" onClick={onRefresh}><RefreshCw size={17} /></IconButton>
       </PageHeader>
       <section className="panel table-panel"><div className="panel-head"><div><h2>Vydané tokeny</h2><p>Hodnotu tokenu nelze měnit ani znovu zobrazit.</p></div><span className="panel-count">{filtered.length} záznamů</span></div>
-        {filtered.length === 0 ? <div className="empty-state"><Workflow size={34} /><strong>Žádné implementační tokeny</strong><p>Vygeneruj první token a předej jej programátorovi bezpečným kanálem.</p></div> : <div className="table-scroll"><table className="integration-token-table"><thead><tr><th>Token</th><th>KCML / job</th><th>Stav integrace / ochrana</th><th>Platnost a limit 24 hodin</th><th>Akce</th></tr></thead><tbody>{filtered.map((token) => <tr key={token.id}><td><strong>{token.label}</strong><span className="cell-subtitle">Vydán {formatDate(token.issuedAt)}</span><code className="cell-fingerprint">{token.fingerprint}</code></td><td>{token.code ?? "Čeká na upload"}<span className="cell-subtitle">{token.jobId ? token.jobId.slice(0, 8) : "Nevázaný"}</span></td><td><div className="integration-state-cell"><span className={`badge ${token.active ? "ok" : "danger"}`}>{token.jobState ?? (token.active ? "PŘIPRAVEN" : "NEPLATNÝ")}</span><IntegrationTokenRunIndicator token={token} nowMs={nowMs} /></div></td><td><div className="token-timing-cell"><IntegrationTokenExpiry token={token} nowMs={nowMs} /><IntegrationTokenMaximum token={token} nowMs={nowMs} /></div></td><td><div className="row-actions integration-row-actions">{token.jobId ? <button className="small-button" onClick={() => onOpenJob(token.jobId!)}>Detail</button> : null}{token.jobId && !["ACTIVE", "QUARANTINED", "CANCELLED"].includes(token.jobState ?? "") && !token.active ? <button className="small-button" onClick={() => onResume(token.jobId!)}>Navázat</button> : null}<button className="small-button" disabled={!token.active} onClick={() => onRevoke(token)}>Revokovat</button><button className="small-button danger-link" onClick={() => onDelete(token)}>Smazat</button></div></td></tr>)}</tbody></table></div>}
+        {filtered.length === 0 ? <div className="empty-state"><Workflow size={34} /><strong>Žádné implementační tokeny</strong><p>Vygeneruj první token a předej jej programátorovi bezpečným kanálem.</p></div> : <div className="table-scroll"><table className="integration-token-table"><thead><tr><th>Token</th><th>KCML / job</th><th>Stav integrace / ochrana</th><th>Platnost a limit 24 hodin</th><th>Akce</th></tr></thead><tbody>{filtered.map((token) => <tr key={token.id}><td><strong>{token.label}</strong><span className="cell-subtitle">{token.descriptor.summary}</span><span className="cell-subtitle">Vydán {formatDate(token.issuedAt)}</span><code className="cell-fingerprint">{token.fingerprint}</code></td><td>{token.code ?? "Čeká na upload"}<span className="cell-subtitle">{token.jobId ? token.jobId.slice(0, 8) : "Nevázaný"}</span></td><td><div className="integration-state-cell"><span className={`badge ${token.active ? "ok" : "danger"}`}>{token.jobState ?? (token.active ? "PŘIPRAVEN" : "NEPLATNÝ")}</span><IntegrationTokenRunIndicator token={token} nowMs={nowMs} /></div></td><td><div className="token-timing-cell"><IntegrationTokenExpiry token={token} nowMs={nowMs} /><IntegrationTokenMaximum token={token} nowMs={nowMs} /></div></td><td><div className="row-actions integration-row-actions">{token.jobId ? <button className="small-button" onClick={() => onOpenJob(token.jobId!)}>Detail</button> : null}{token.jobId && !["ACTIVE", "QUARANTINED", "CANCELLED"].includes(token.jobState ?? "") && !token.active ? <button className="small-button" onClick={() => onResume(token.jobId!)}>Navázat</button> : null}<button className="small-button" disabled={!token.active} onClick={() => onRevoke(token)}>Revokovat</button><button className="small-button danger-link" onClick={() => onDelete(token)}>Smazat</button></div></td></tr>)}</tbody></table></div>}
       </section>
       <section className="panel"><div className="panel-head"><h2>Onboardingové joby</h2><span className="panel-count">{jobs.length} jobů</span></div>{jobs.length === 0 ? <div className="empty-state server-empty"><Rocket size={32} /><strong>Zatím nebyl zahájen žádný upload</strong></div> : <div className="job-cards">{jobs.map((job) => <button key={job.id} onClick={() => onOpenJob(job.id)}><span className={`status-dot ${job.state === "ACTIVE" ? "ok" : ["FAILED", "QUARANTINED", "CANCELLED"].includes(job.state) ? "danger" : "warn"}`} /><span><strong>{job.code ?? "Čeká na identitu"}</strong><small>{job.state} · {formatDate(job.updatedAt)}</small></span><ChevronDown className="item-chevron" size={15} /></button>)}</div>}</section>
     </>
@@ -638,16 +663,16 @@ function TokensPage({ credentials, onOpenCreate, onEditPermissions, onConfirm, o
   const filtered = credentials.filter((credential) => `${credential.label} ${credential.publicId}`.toLowerCase().includes(query.toLowerCase()));
   return (
     <>
-      <PageHeader title="Tokeny" description="Správa Kaja tokenů pro přístup k MCP serverům.">
-        <label className="search-box"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Hledat tokeny..." aria-label="Hledat tokeny" /></label>
-        <button onClick={onOpenCreate}><Plus size={17} /> Založit token</button>
-        <IconButton label="Obnovit tokeny" onClick={onRefresh}><RefreshCw size={17} /></IconButton>
+      <PageHeader title="Klientská pověření Kaja" description="Správa dlouhodobých klientských pověření pro přístup k MCP serverům.">
+        <label className="search-box"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Hledat pověření..." aria-label="Hledat pověření" /></label>
+        <button onClick={onOpenCreate}><Plus size={17} /> Založit pověření</button>
+        <IconButton label="Obnovit pověření" onClick={onRefresh}><RefreshCw size={17} /></IconButton>
       </PageHeader>
       <section className="panel table-panel">
-        <div className="panel-head"><div className="heading-with-help"><h2>Přehled tokenů</h2><CircleHelp size={15} /></div><span className="panel-count">{filtered.length} záznamů</span></div>
-        {filtered.length === 0 ? <div className="empty-state"><KeyRound size={34} /><strong>Žádné tokeny k zobrazení</strong><p>Vytvoř první token přes primární akci nahoře.</p></div> : (
+        <div className="panel-head"><div className="heading-with-help"><h2>Přehled pověření</h2><CircleHelp size={15} /></div><span className="panel-count">{filtered.length} záznamů</span></div>
+        {filtered.length === 0 ? <div className="empty-state"><KeyRound size={34} /><strong>Žádná pověření k zobrazení</strong><p>Vytvoř první pověření přes primární akci nahoře.</p></div> : (
           <table><thead><tr><th>Označení</th><th>Kaja ID</th><th>Fingerprint</th><th>Stav</th><th>Oprávnění</th><th>Expirace</th><th>Poslední použití</th><th>Akce</th></tr></thead>
-            <tbody>{filtered.map((credential) => <tr key={credential.id}><td><strong>{credential.label}</strong></td><td>{credential.publicId}</td><td><code>{credential.fingerprint}</code></td><td><span className={`badge ${statusClass(credential)}`}>{credential.active && !credential.revokedAt ? "Aktivní" : "Revokováno"}</span></td><td>{credential.permissionCount}</td><td>{credential.expiresAt ? formatDate(credential.expiresAt) : "Bez omezení"}</td><td>{formatDate(credential.lastTokenIssuedAt)}</td><td><div className="row-actions"><button className="small-button" onClick={() => onEditPermissions(credential.id)}>Oprávnění</button><button className="small-button" disabled={!credential.active || Boolean(credential.revokedAt)} onClick={() => onConfirm(credential, "revoke")}>Revokovat</button><button className="small-button danger-link" onClick={() => onConfirm(credential, "delete")}>Smazat</button></div></td></tr>)}</tbody></table>
+            <tbody>{filtered.map((credential) => <tr key={credential.id}><td><strong>{credential.label}</strong></td><td>{credential.publicId}</td><td><code>{credential.fingerprint}</code></td><td><span className={`badge ${statusClass(credential)}`}>{credential.active && !credential.revokedAt ? "Aktivní" : "Revokováno"}</span></td><td>{credential.permissionCount}</td><td>{credential.expiresAt ? formatDate(credential.expiresAt) : "Bez omezení"}</td><td>{formatDate(credential.lastUsedAt)}</td><td><div className="row-actions"><button className="small-button" onClick={() => onEditPermissions(credential.id)}>Oprávnění</button><button className="small-button" disabled={!credential.active || Boolean(credential.revokedAt)} onClick={() => onConfirm(credential, "revoke")}>Revokovat</button><button className="small-button danger-link" onClick={() => onConfirm(credential, "delete")}>Smazat</button></div></td></tr>)}</tbody></table>
         )}
       </section>
     </>
@@ -666,52 +691,84 @@ function PermissionsPage({ credentials, servers, selectedId, permissions, saving
       </PageHeader>
       <section className="permissions-layout">
         <aside className="token-list-panel">
-          <div className="token-list-heading"><strong>Vyberte token</strong><span>{credentials.length}</span></div>
-          <label className="search-box full"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Hledat tokeny..." aria-label="Hledat tokeny" /></label>
+          <div className="token-list-heading"><strong>Vyberte pověření</strong><span>{credentials.length}</span></div>
+          <label className="search-box full"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Hledat pověření..." aria-label="Hledat pověření" /></label>
           <div className="token-list-scroll">
-            {filteredCredentials.length === 0 ? <p className="list-empty">Žádný token neodpovídá hledání.</p> : filteredCredentials.map((credential) => <button key={credential.id} className={`token-list-item ${credential.id === selectedId ? "active" : ""}`} onClick={() => onSelect(credential.id)}><span className={`status-dot ${statusClass(credential)}`} /><span className="token-list-copy"><strong>{credential.label}</strong><small>{credential.publicId} · {credential.active && !credential.revokedAt ? "Aktivní" : "Revokováno"}</small></span><ChevronDown className="item-chevron" size={15} /></button>)}
+            {filteredCredentials.length === 0 ? <p className="list-empty">Žádné pověření neodpovídá hledání.</p> : filteredCredentials.map((credential) => <button key={credential.id} className={`token-list-item ${credential.id === selectedId ? "active" : ""}`} onClick={() => onSelect(credential.id)}><span className={`status-dot ${statusClass(credential)}`} /><span className="token-list-copy"><strong>{credential.label}</strong><small>{credential.publicId} · {credential.active && !credential.revokedAt ? "Aktivní" : "Revokováno"}</small></span><ChevronDown className="item-chevron" size={15} /></button>)}
           </div>
         </aside>
         <section className="panel permissions-panel">
-          <div className="panel-head"><div><div className="heading-with-help"><h2>Oprávnění k MCP serverům</h2><CircleHelp size={15} /></div><p>{selected ? `${selected.label} má přístup k ${grantedCount} z ${servers.length} serverů.` : "Vyber token v levém panelu."}</p></div>{selected ? <span className="credential-reference">{selected.publicId}</span> : null}</div>
-          {!selected ? <div className="empty-state"><LockKeyhole size={34} /><strong>Vyber token pro úpravu práv</strong></div> : servers.length === 0 ? <div className="empty-state"><ServerIcon size={34} /><strong>Nejsou dostupné MCP servery pro přiřazení oprávnění</strong><p>Matice oprávnění je připravená a začne fungovat po registraci prvního serveru.</p></div> : (
-            <table><thead><tr><th>Přístup</th><th>MCP server</th><th>Hostname</th><th>Úroveň oprávnění</th><th>Uděleno</th></tr></thead>
-              <tbody>{permissions.map((permission) => <tr key={permission.serverId}><td><input type="checkbox" checked={permission.granted} onChange={(event) => onChange(permissions.map((item) => item.serverId === permission.serverId ? { ...item, granted: event.target.checked, accessLevel: event.target.checked ? item.accessLevel ?? "EXECUTE" : null } : item))} /></td><td>{permission.displayName}</td><td>{permission.hostname}</td><td><select disabled={!permission.granted} value={permission.accessLevel ?? "EXECUTE"} onChange={(event) => onChange(permissions.map((item) => item.serverId === permission.serverId ? { ...item, accessLevel: event.target.value as AccessLevel } : item))}>{Object.entries(accessLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></td><td>{formatDate(permission.grantedAt)}</td></tr>)}</tbody></table>
+          <div className="panel-head"><div><div className="heading-with-help"><h2>Oprávnění k MCP serverům</h2><CircleHelp size={15} /></div><p>{selected ? `${selected.label} má přístup k ${grantedCount} z ${servers.length} serverů.` : "Vyber pověření v levém panelu."}</p></div>{selected ? <span className="credential-reference">{selected.publicId}</span> : null}</div>
+          {!selected ? <div className="empty-state"><LockKeyhole size={34} /><strong>Vyber pověření pro úpravu práv</strong></div> : servers.length === 0 ? <div className="empty-state"><ServerIcon size={34} /><strong>Nejsou dostupné MCP servery pro přiřazení oprávnění</strong><p>Matice oprávnění je připravená a začne fungovat po registraci prvního serveru.</p></div> : (
+            <table><thead><tr><th>Přístup</th><th>MCP server</th><th>Hostname</th><th>Účinek</th><th>Uděleno</th></tr></thead>
+              <tbody>{permissions.map((permission) => <tr key={permission.serverId}><td><input type="checkbox" checked={permission.granted} onChange={(event) => onChange(permissions.map((item) => item.serverId === permission.serverId ? { ...item, granted: event.target.checked, accessLevel: event.target.checked ? "EXECUTE" : null } : item))} /></td><td>{permission.displayName}</td><td>{permission.hostname}</td><td><span className="badge neutral">{permission.granted ? accessLabels.EXECUTE : "Bez přístupu"}</span></td><td>{formatDate(permission.grantedAt)}</td></tr>)}</tbody></table>
           )}
-          <footer className="permissions-foot"><CircleHelp size={15} /><span>Změny oprávnění se projeví okamžitě po uložení.</span></footer>
+          <footer className="permissions-foot"><CircleHelp size={15} /><span>Změny oprávnění se projeví okamžitě po uložení. Systém aktuálně podporuje jedinou vynucovanou úroveň: spouštění nástroje.</span></footer>
         </section>
       </section>
     </>
   );
 }
 
-function AuditPage({ events }: { events: AuditEvent[] }) {
+function AuditPage({
+  events,
+  nextCursor,
+  integrity,
+  onLoadMore,
+  onRefresh,
+  onRefreshIntegrity
+}: {
+  events: AuditEvent[];
+  nextCursor: string | null;
+  integrity: AuditIntegrity | null;
+  onLoadMore: (params: { eventType: string; correlationId: string; objectId: string }) => Promise<void>;
+  onRefresh: (params: { eventType: string; correlationId: string; objectId: string }) => Promise<void>;
+  onRefreshIntegrity: () => Promise<void>;
+}) {
   const [query, setQuery] = useState("");
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [eventType, setEventType] = useState("all");
+  const [correlationId, setCorrelationId] = useState("");
+  const [objectId, setObjectId] = useState("");
+  const [selectedEvent, setSelectedEvent] = useState<AuditEvent | null>(null);
   const eventTypes = [...new Set(events.map((event) => event.event_type))];
-  const filtered = events.filter((event) => (eventType === "all" || event.event_type === eventType) && `${event.event_type} ${event.actor_type} ${event.object_type} ${event.correlation_id}`.toLowerCase().includes(query.toLowerCase()));
+  const filtered = events.filter((event) =>
+    (eventType === "all" || event.event_type === eventType)
+    && (!correlationId || event.correlation_id.includes(correlationId))
+    && (!objectId || (event.object_id ?? "").includes(objectId))
+    && `${event.event_type} ${event.actor_type} ${event.object_type} ${event.correlation_id}`.toLowerCase().includes(query.toLowerCase()));
   return (
     <>
       <PageHeader title="Audit" description="Záznam systémových, tokenových a bezpečnostních událostí.">
         <label className="search-box"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Hledat v auditu..." aria-label="Hledat v auditu" /></label>
+        <button className="secondary" onClick={() => { void onRefresh({ eventType, correlationId, objectId }); }}><RefreshCw size={16} /> Obnovit</button>
+        <button className="secondary" onClick={() => { void onRefreshIntegrity(); }}><ShieldCheck size={16} /> Ověřit integritu</button>
+        <button className="secondary" onClick={() => { window.location.href = "/api/audit/export"; }}><Download size={16} /> Export</button>
         <button className="secondary" aria-expanded={filtersOpen} onClick={() => setFiltersOpen((current) => !current)}><SlidersHorizontal size={16} /> Filtry</button>
       </PageHeader>
-      {filtersOpen ? <section className="filter-bar"><label>Typ události<select value={eventType} onChange={(event) => setEventType(event.target.value)}><option value="all">Všechny události</option>{eventTypes.map((type) => <option key={type} value={type}>{type}</option>)}</select></label><button className="secondary" onClick={() => { setQuery(""); setEventType("all"); }}>Vymazat filtry</button></section> : null}
+      {integrity ? <div className={`notice ${integrity.valid ? "success" : "error"}`}><span><strong>{integrity.valid ? "Hash-chain auditu je v pořádku" : "Integrita auditu je porušená"}</strong><br />Událostí: {integrity.eventCount}. Poslední ID: {integrity.latestEventId ?? "-"}. {integrity.brokenEventId ? `První chybná událost: ${integrity.brokenEventId}.` : "Řetězec je souvislý."}</span></div> : null}
+      {filtersOpen ? <section className="filter-bar"><label>Typ události<select value={eventType} onChange={(event) => setEventType(event.target.value)}><option value="all">Všechny události</option>{eventTypes.map((type) => <option key={type} value={type}>{type}</option>)}</select></label><label>Correlation ID<input value={correlationId} onChange={(event) => setCorrelationId(event.target.value)} placeholder="Filtrovat podle correlation ID" /></label><label>Objekt<input value={objectId} onChange={(event) => setObjectId(event.target.value)} placeholder="Filtrovat podle object_id" /></label><button className="secondary" onClick={() => { setQuery(""); setEventType("all"); setCorrelationId(""); setObjectId(""); }}>Vymazat filtry</button><button className="secondary" onClick={() => { void onRefresh({ eventType, correlationId, objectId }); }}>Použít</button></section> : null}
       <section className="panel table-panel">
         <table><thead><tr><th>Čas</th><th>Uživatel</th><th>Akce</th><th>Objekt</th><th>Correlation ID</th></tr></thead>
-          <tbody>{filtered.map((event) => <tr key={event.id}><td>{formatDate(event.created_at)}</td><td>{event.actor_type}</td><td><span className="badge neutral">{event.event_type}</span></td><td>{event.object_type ?? ""}</td><td><code>{event.correlation_id}</code></td></tr>)}</tbody></table>
+          <tbody>{filtered.map((event) => <tr key={event.id} onClick={() => setSelectedEvent(event)}><td>{formatDate(event.created_at)}</td><td>{event.actor_type}</td><td><span className="badge neutral">{event.event_type}</span></td><td>{event.object_type ?? ""}</td><td><code>{event.correlation_id}</code></td></tr>)}</tbody></table>
+        {nextCursor ? <div className="modal-actions"><button className="secondary" onClick={() => { void onLoadMore({ eventType, correlationId, objectId }); }}>Načíst další</button></div> : null}
         {filtered.length === 0 ? <div className="empty-state"><Terminal size={34} /><strong>Žádné auditní události k zobrazení</strong></div> : null}
       </section>
+      {selectedEvent ? <Modal title="Detail auditní události" onClose={() => setSelectedEvent(null)}><div className="server-detail"><dl><dt>Čas</dt><dd>{formatDate(selectedEvent.created_at)}</dd><dt>Uživatel</dt><dd>{selectedEvent.actor_type}{selectedEvent.actor_id ? ` · ${selectedEvent.actor_id}` : ""}</dd><dt>Akce</dt><dd>{selectedEvent.event_type}</dd><dt>Objekt</dt><dd>{selectedEvent.object_type ?? "-"} · {selectedEvent.object_id ?? "-"}</dd><dt>Correlation ID</dt><dd><code>{selectedEvent.correlation_id}</code></dd></dl><details><summary>Before</summary><pre className="test-output">{JSON.stringify(selectedEvent.before_json ?? null, null, 2)}</pre></details><details><summary>After</summary><pre className="test-output">{JSON.stringify(selectedEvent.after_json ?? null, null, 2)}</pre></details></div></Modal> : null}
     </>
   );
 }
 
-function Dashboard({ onLogout }: { onLogout: () => void }) {
+function Dashboard({ accountName, onLogout }: { accountName: string | null; onLogout: () => void }) {
   const [page, setPage] = useState<Page>("monitoring");
   const [servers, setServers] = useState<Server[]>([]);
   const [credentials, setCredentials] = useState<KajaCredential[]>([]);
   const [events, setEvents] = useState<AuditEvent[]>([]);
+  const [auditNextCursor, setAuditNextCursor] = useState<string | null>(null);
+  const [auditIntegrity, setAuditIntegrity] = useState<AuditIntegrity | null>(null);
+  const [security, setSecurity] = useState<AdminSecurity | null>(null);
+  const [adminAccounts, setAdminAccounts] = useState<AdminAccount[]>([]);
+  const [operationalConfig, setOperationalConfig] = useState<OperationalConfigSetting[]>([]);
   const [integrationTokens, setIntegrationTokens] = useState<IntegrationToken[]>([]);
   const [onboardingJobs, setOnboardingJobs] = useState<OnboardingJob[]>([]);
   const [probes, setProbes] = useState<MonitoringProbe[]>([]);
@@ -730,20 +787,29 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
   async function load() {
     setError("");
     try {
-      const [serverRes, credentialRes, auditRes, integrationRes, jobsRes, probesRes] = await Promise.all([
+      const [serverRes, credentialRes, auditRes, integrationRes, jobsRes, probesRes, securityRes, integrityRes, adminAccountsRes, configRes] = await Promise.all([
         api<{ servers: Server[] }>("/api/mcp-servers"),
         api<{ credentials: KajaCredential[] }>("/api/kaja"),
-        api<{ events: AuditEvent[] }>("/api/audit"),
+        api<AuditResponse>("/api/audit"),
         api<{ tokens: IntegrationToken[] }>("/api/integration-tokens"),
         api<{ jobs: OnboardingJob[] }>("/api/onboarding-jobs"),
-        api<{ probes: MonitoringProbe[] }>("/api/monitoring-probes")
+        api<{ probes: MonitoringProbe[] }>("/api/monitoring-probes"),
+        api<AdminSecurity>("/api/admin-security"),
+        api<AuditIntegrity>("/api/audit/integrity"),
+        api<{ accounts: AdminAccount[] }>("/api/admin-accounts"),
+        api<{ settings: OperationalConfigSetting[] }>("/api/operational-config")
       ]);
       setServers(serverRes.servers);
       setCredentials(credentialRes.credentials);
       setEvents(auditRes.events);
+      setAuditNextCursor(auditRes.nextCursor);
+      setAuditIntegrity(integrityRes);
       setIntegrationTokens(integrationRes.tokens);
       setOnboardingJobs(jobsRes.jobs);
       setProbes(probesRes.probes);
+      setSecurity(securityRes);
+      setAdminAccounts(adminAccountsRes.accounts);
+      setOperationalConfig(configRes.settings);
       setSelectedCredentialId((current) => current ?? credentialRes.credentials[0]?.id ?? null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Načtení selhalo");
@@ -797,8 +863,153 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
   }
 
   async function logout() {
-    await api("/api/logout", { method: "POST", body: "{}" });
+    await api("/api/logout", { method: "POST", headers: { "x-csrf-token": csrf() }, body: "{}" });
     onLogout();
+  }
+
+  async function toggleServerEnabled(server: Server, enabled: boolean) {
+    await api(`/api/mcp-servers/${server.id}/enabled`, {
+      method: "POST",
+      headers: { "x-csrf-token": csrf() },
+      body: JSON.stringify({ enabled })
+    });
+    await load();
+  }
+
+  async function runServerTest(server: Server) {
+    const result = await api<{ ok: boolean; latencyMs: number }>(`/api/mcp-servers/${server.id}/test`, {
+      method: "POST",
+      headers: { "x-csrf-token": csrf() },
+      body: "{}"
+    });
+    await load();
+    return result;
+  }
+
+  async function loadMonitoringProfile(server: Server) {
+    return api<MonitoringProfile>(`/api/mcp-servers/${server.id}/monitoring-profile`);
+  }
+
+  async function saveMonitoringProfile(server: Server, profile: MonitoringProfile) {
+    await api(`/api/mcp-servers/${server.id}/monitoring-profile`, {
+      method: "PUT",
+      headers: { "x-csrf-token": csrf() },
+      body: JSON.stringify(profile)
+    });
+    await load();
+  }
+
+  async function refreshAudit(params: { eventType: string; correlationId: string; objectId: string }) {
+    const search = new URLSearchParams();
+    if (params.eventType && params.eventType !== "all") search.set("eventType", params.eventType);
+    if (params.correlationId) search.set("correlationId", params.correlationId);
+    if (params.objectId) search.set("objectId", params.objectId);
+    const result = await api<AuditResponse>(`/api/audit${search.size ? `?${search.toString()}` : ""}`);
+    setEvents(result.events);
+    setAuditNextCursor(result.nextCursor);
+  }
+
+  async function loadMoreAudit(params: { eventType: string; correlationId: string; objectId: string }) {
+    if (!auditNextCursor) return;
+    const search = new URLSearchParams({ cursor: auditNextCursor });
+    if (params.eventType && params.eventType !== "all") search.set("eventType", params.eventType);
+    if (params.correlationId) search.set("correlationId", params.correlationId);
+    if (params.objectId) search.set("objectId", params.objectId);
+    const result = await api<AuditResponse>(`/api/audit?${search.toString()}`);
+    setEvents((current) => [...current, ...result.events]);
+    setAuditNextCursor(result.nextCursor);
+  }
+
+  async function refreshAuditIntegrity() {
+    setAuditIntegrity(await api<AuditIntegrity>("/api/audit/integrity"));
+  }
+
+  async function refreshSecurity() {
+    const result = await api<AdminSecurity>("/api/admin-security");
+    setSecurity(result);
+  }
+
+  async function changeAdminPassword(currentPassword: string, nextPassword: string) {
+    await api("/api/admin-password", {
+      method: "POST",
+      headers: { "x-csrf-token": csrf() },
+      body: JSON.stringify({ currentPassword, nextPassword })
+    });
+    await refreshSecurity();
+  }
+
+  async function revokeOtherSessions() {
+    await api("/api/admin-sessions/revoke-others", {
+      method: "POST",
+      headers: { "x-csrf-token": csrf() },
+      body: "{}"
+    });
+    await refreshSecurity();
+  }
+
+  async function refreshAdminAccounts() {
+    const result = await api<{ accounts: AdminAccount[] }>("/api/admin-accounts");
+    setAdminAccounts(result.accounts);
+  }
+
+  async function refreshOperationalConfig() {
+    const result = await api<{ settings: OperationalConfigSetting[] }>("/api/operational-config");
+    setOperationalConfig(result.settings);
+  }
+
+  async function saveOperationalConfig(setting: OperationalConfigSetting, value: string | number | boolean) {
+    await api(`/api/operational-config/${setting.key}`, {
+      method: "PUT",
+      headers: { "x-csrf-token": csrf() },
+      body: JSON.stringify({ value })
+    });
+    await refreshOperationalConfig();
+  }
+
+  async function createAdminAccount(input: { username: string; password: string; mfaSecret: string }) {
+    await api("/api/admin-accounts", {
+      method: "POST",
+      headers: { "x-csrf-token": csrf() },
+      body: JSON.stringify(input)
+    });
+    await refreshAdminAccounts();
+  }
+
+  async function setAdminAccountPassword(accountId: string, nextPassword: string) {
+    await api(`/api/admin-accounts/${accountId}/password`, {
+      method: "POST",
+      headers: { "x-csrf-token": csrf() },
+      body: JSON.stringify({ nextPassword })
+    });
+    await refreshAdminAccounts();
+  }
+
+  async function setAdminAccountMfa(accountId: string, enabled: boolean, secret: string) {
+    await api(`/api/admin-accounts/${accountId}/mfa`, {
+      method: "PUT",
+      headers: { "x-csrf-token": csrf() },
+      body: JSON.stringify({ enabled, secret })
+    });
+    await refreshAdminAccounts();
+  }
+
+  async function revokeAdminAccountSessions(accountId: string) {
+    await api(`/api/admin-accounts/${accountId}/sessions/revoke`, {
+      method: "POST",
+      headers: { "x-csrf-token": csrf() },
+      body: "{}"
+    });
+    await Promise.all([refreshAdminAccounts(), refreshSecurity()]);
+  }
+
+  async function rotateAdminRecoveryCodes(accountId: string) {
+    const result = await api<{ recoveryCodes: string[] }>(`/api/admin-accounts/${accountId}/recovery/rotate`, {
+      method: "POST",
+      headers: { "x-csrf-token": csrf() },
+      body: "{}"
+    });
+    await refreshAdminAccounts();
+    return result.recoveryCodes;
   }
 
   function openPermissions(id: string) {
@@ -813,20 +1024,26 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
         <nav>
           <button aria-pressed={page === "monitoring"} className={page === "monitoring" ? "active" : ""} onClick={() => setPage("monitoring")}><Activity size={18} /> Monitoring MCP</button>
           <button aria-pressed={page === "integration"} className={page === "integration" ? "active" : ""} onClick={() => setPage("integration")}><Workflow size={18} /> Implementační tokeny</button>
-          <button aria-pressed={page === "tokens"} className={page === "tokens" ? "active" : ""} onClick={() => setPage("tokens")}><KeyRound size={18} /> Tokeny</button>
+          <button aria-pressed={page === "tokens"} className={page === "tokens" ? "active" : ""} onClick={() => setPage("tokens")}><KeyRound size={18} /> Pověření Kaja</button>
           <button aria-pressed={page === "permissions"} className={page === "permissions" ? "active" : ""} onClick={() => setPage("permissions")}><LockKeyhole size={18} /> Správa oprávnění</button>
           <button aria-pressed={page === "audit"} className={page === "audit" ? "active" : ""} onClick={() => setPage("audit")}><Terminal size={18} /> Audit</button>
+          <button aria-pressed={page === "config"} className={page === "config" ? "active" : ""} onClick={() => setPage("config")}><SlidersHorizontal size={18} /> Konfigurace</button>
+          <button aria-pressed={page === "security"} className={page === "security" ? "active" : ""} onClick={() => setPage("security")}><ShieldCheck size={18} /> Bezpečnost</button>
+          <button aria-pressed={page === "admins"} className={page === "admins" ? "active" : ""} onClick={() => setPage("admins")}><Plus size={18} /> Administrátoři</button>
         </nav>
-        <div className="sidebar-footer"><div className="environment"><span className="status-dot ok" /><span>Production</span></div><div className="account"><span className="avatar">AD</span><span><strong>admin</strong><small>Administrátor</small></span></div><button onClick={() => { void logout(); }}><LogOut size={16} /> Odhlásit se</button></div>
+        <div className="sidebar-footer"><div className="environment"><span className="status-dot ok" /><span>Production</span></div><div className="account"><span className="avatar">{(accountName ?? "AD").slice(0, 2).toUpperCase()}</span><span><strong>{accountName ?? "Administrátor"}</strong><small>Administrátor</small></span></div><button onClick={() => { void logout(); }}><LogOut size={16} /> Odhlásit se</button></div>
       </aside>
       <section className="workspace">
         <div className="mobile-topbar"><div className="brand-row"><span className="brand-mark"><ShieldCheck size={20} /></span><strong>KCML</strong></div><span>{pageNames[page]}</span></div>
         {error && <div className="notice error"><AlertTriangle size={18} /> {error}</div>}
-        {page === "monitoring" && <MonitoringPage servers={servers} probes={probes} onRefresh={() => { void load(); }} onAutomatedOnboarding={() => setIntegrationCreate({})} />}
+        {page === "monitoring" && <MonitoringPage servers={servers} probes={probes} onRefresh={() => { void load(); }} onAutomatedOnboarding={() => setIntegrationCreate({})} onToggleEnabled={toggleServerEnabled} onRunTest={runServerTest} onLoadMonitoringProfile={loadMonitoringProfile} onSaveMonitoringProfile={saveMonitoringProfile} />}
         {page === "integration" && <IntegrationTokensPage tokens={integrationTokens} jobs={onboardingJobs} onCreate={() => setIntegrationCreate({})} onOpenJob={setSelectedJobId} onResume={(jobId) => setIntegrationCreate({ resumeJobId: jobId })} onRevoke={(token) => setIntegrationConfirm({ token, action: "revoke" })} onDelete={(token) => setIntegrationConfirm({ token, action: "delete" })} onRefresh={() => { void load(); }} />}
         {page === "tokens" && <TokensPage credentials={credentials} onOpenCreate={() => setCreateOpen(true)} onEditPermissions={openPermissions} onConfirm={(credential, action) => setConfirm({ credential, action })} onRefresh={() => { void load(); }} />}
         {page === "permissions" && <PermissionsPage credentials={credentials} servers={servers} selectedId={selectedCredentialId} permissions={permissions} saving={savingPermissions} onSelect={setSelectedCredentialId} onChange={setPermissions} onSave={() => { void savePermissions(); }} />}
-        {page === "audit" && <AuditPage events={events} />}
+        {page === "audit" && <AuditPage events={events} nextCursor={auditNextCursor} integrity={auditIntegrity} onLoadMore={loadMoreAudit} onRefresh={refreshAudit} onRefreshIntegrity={refreshAuditIntegrity} />}
+        {page === "config" && <OperationalConfigPage settings={operationalConfig} onRefresh={refreshOperationalConfig} onSave={saveOperationalConfig} />}
+        {page === "security" && <SecurityPage security={security} onRefresh={refreshSecurity} onChangePassword={changeAdminPassword} onRevokeOtherSessions={revokeOtherSessions} />}
+        {page === "admins" && <AdminAccountsPage accounts={adminAccounts} onRefresh={refreshAdminAccounts} onCreate={createAdminAccount} onSetPassword={setAdminAccountPassword} onSetMfa={setAdminAccountMfa} onRevokeSessions={revokeAdminAccountSessions} onRotateRecovery={rotateAdminRecoveryCodes} />}
       </section>
       {createOpen && <CreateTokenModal serverCount={servers.length} onClose={() => setCreateOpen(false)} onCreated={(created) => { setCreateOpen(false); setSecret(created); void load(); }} />}
       {secret && <SecretModal secret={secret} onClose={() => setSecret(null)} />}
@@ -843,17 +1060,18 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
 function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [sessionNotice, setSessionNotice] = useState("");
-  useEffect(() => { void api<Session>("/api/session").then(setSession).catch(() => setSession({ authenticated: false, account: null })); }, []);
+  useEffect(() => { void api<Session>("/api/session").then(setSession).catch(() => setSession({ authenticated: false, account: null, bootstrapRequired: false })); }, []);
   useEffect(() => {
     const handleExpiredSession = () => {
       setSessionNotice("Vaše přihlašovací relace skončila nebo byla odhlášena. Po přihlášení můžete bezpečně pokračovat ve stejné operaci.");
-      setSession({ authenticated: false, account: null });
+      setSession({ authenticated: false, account: null, bootstrapRequired: false });
     };
     window.addEventListener(SESSION_EXPIRED_EVENT, handleExpiredSession);
     return () => window.removeEventListener(SESSION_EXPIRED_EVENT, handleExpiredSession);
   }, []);
   if (!session) return <main className="loading">Načítám</main>;
-  return session.authenticated ? <Dashboard onLogout={() => { setSessionNotice(""); setSession({ authenticated: false, account: null }); }} /> : <Login notice={sessionNotice} onLogin={() => { setSessionNotice(""); setSession({ authenticated: true, account: "karmar78" }); }} />;
+  if (session.bootstrapRequired) return <BootstrapSetup onCompleted={(next) => setSession(next)} />;
+  return session.authenticated ? <Dashboard accountName={session.account} onLogout={() => { setSessionNotice(""); setSession({ authenticated: false, account: null, bootstrapRequired: false }); }} /> : <Login notice={sessionNotice} onLogin={() => { void api<Session>("/api/session").then((next) => { setSessionNotice(""); setSession(next); }); }} />;
 }
 
 createRoot(document.getElementById("root")!).render(<App />);

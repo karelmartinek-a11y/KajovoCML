@@ -21,9 +21,10 @@ import {
   requestDigest,
   revokeIntegrationToken
 } from "../domain/onboarding.js";
+import type { OnboardingDescriptor } from "../domain/onboarding.js";
 import { validateOnboardingManifest } from "../domain/registration.js";
 import { MAX_ARCHIVE_BYTES, validateAndQuarantineArchive } from "../domain/upload-validation.js";
-import { requireCsrf, sessionAccountId } from "./admin-routes.js";
+import { requireCsrf, sessionAccount } from "./admin-routes.js";
 import { hostOf, sendError } from "./errors.js";
 
 const IDEMPOTENCY_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/;
@@ -61,6 +62,17 @@ function statusCode(error: unknown): number {
 function errorCode(error: unknown): string {
   if (error instanceof ZodError) return "invalid_manifest";
   return error instanceof Error ? error.message.split(":")[0] ?? "operation_failed" : "operation_failed";
+}
+
+function defaultDescriptor(label: string): OnboardingDescriptor {
+  const fallback = label.trim() || "Neoznačený server";
+  return {
+    summary: fallback,
+    businessPurpose: fallback,
+    serviceOwner: "unspecified",
+    technicalOwner: "unspecified",
+    criticality: "MEDIUM"
+  };
 }
 
 async function multipartPayload(request: FastifyRequest): Promise<{ manifestInput: unknown; archive: Buffer }> {
@@ -117,8 +129,8 @@ function adminHost(config: AppConfig, request: FastifyRequest, reply: FastifyRep
 
 async function adminIdentity(db: Db, config: AppConfig, request: FastifyRequest, reply: FastifyReply, correlationId?: string, csrfRequired = false): Promise<string | null> {
   if (!adminHost(config, request, reply, correlationId)) return null;
-  const accountId = await sessionAccountId(db, request);
-  if (!accountId) {
+  const session = await sessionAccount(db, request, config);
+  if (!session) {
     sendError(reply, 401, "unauthorized", undefined, correlationId);
     return null;
   }
@@ -126,7 +138,7 @@ async function adminIdentity(db: Db, config: AppConfig, request: FastifyRequest,
     sendError(reply, 403, "csrf_failed", undefined, correlationId);
     return null;
   }
-  return accountId;
+  return session.accountId;
 }
 
 export function registerOnboardingRoutes(app: FastifyInstance, db: Db, config: AppConfig): void {
@@ -137,12 +149,22 @@ export function registerOnboardingRoutes(app: FastifyInstance, db: Db, config: A
     if (!config.ONBOARDING_WORKER_ENABLED) {
       return sendError(reply, 503, "onboarding_unavailable", "Automatická integrace není na serveru připravená.", correlationId);
     }
-    const body = request.body as { note?: unknown; label?: unknown; resumeJobId?: unknown };
+    const body = request.body as { note?: unknown; label?: unknown; descriptor?: unknown; resumeJobId?: unknown };
     const note = typeof body.note === "string" ? body.note.trim() : "";
     const legacyLabel = typeof body.label === "string" ? body.label.trim() : "";
     const label = note || legacyLabel;
     const resumeJobId = typeof body.resumeJobId === "string" && body.resumeJobId ? body.resumeJobId : undefined;
     if (!label || label.length > 120) return sendError(reply, 400, "invalid_label", "Label is required and must be at most 120 characters", correlationId);
+    const descriptorInput = body.descriptor && typeof body.descriptor === "object" ? body.descriptor as Partial<OnboardingDescriptor> : null;
+    const descriptor = descriptorInput
+      ? {
+          summary: typeof descriptorInput.summary === "string" && descriptorInput.summary.trim() ? descriptorInput.summary.trim() : label,
+          businessPurpose: typeof descriptorInput.businessPurpose === "string" && descriptorInput.businessPurpose.trim() ? descriptorInput.businessPurpose.trim() : label,
+          serviceOwner: typeof descriptorInput.serviceOwner === "string" && descriptorInput.serviceOwner.trim() ? descriptorInput.serviceOwner.trim() : "unspecified",
+          technicalOwner: typeof descriptorInput.technicalOwner === "string" && descriptorInput.technicalOwner.trim() ? descriptorInput.technicalOwner.trim() : "unspecified",
+          criticality: ["LOW", "MEDIUM", "HIGH", "CRITICAL"].includes(String(descriptorInput.criticality)) ? String(descriptorInput.criticality) as OnboardingDescriptor["criticality"] : "MEDIUM"
+        }
+      : defaultDescriptor(label);
     try {
       await fs.access(path.resolve(process.cwd(), ONBOARDING_CATALOG_FILE));
     } catch {
@@ -151,7 +173,7 @@ export function registerOnboardingRoutes(app: FastifyInstance, db: Db, config: A
     try {
       reply.header("cache-control", "no-store");
       return {
-        ...await createIntegrationToken(db, config, accountId, correlationId, label, resumeJobId),
+        ...await createIntegrationToken(db, config, accountId, correlationId, label, descriptor, resumeJobId),
         onboardingCatalogUrl: "/api/onboarding-catalog",
         onboardingCatalogFileName: ONBOARDING_CATALOG_FILE,
         programmerApiUrl: `https://${config.REGISTER_HOST}/v1/onboardings`

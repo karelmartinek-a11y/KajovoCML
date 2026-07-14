@@ -1,4 +1,6 @@
+import type pg from "pg";
 import type { Db } from "../db.js";
+import { tx } from "../db.js";
 import { hmacToken, issueOpaqueSecret, hashPasswordLikeSecret, verifyPasswordLikeSecret, fingerprintSecret } from "../security/secrets.js";
 import { appendAudit } from "./audit.js";
 import { resourceFor } from "./catalog.js";
@@ -18,6 +20,7 @@ export type KajaCredentialSummary = {
   activeAccessTokenCount: number;
   lastTokenIssuedAt: string | null;
   lastTokenExpiresAt: string | null;
+  lastUsedAt: string | null;
 };
 
 export type KajaPermissionSummary = {
@@ -26,13 +29,13 @@ export type KajaPermissionSummary = {
   hostname: string;
   displayName: string;
   granted: boolean;
-  accessLevel: "READ" | "EXECUTE" | "MANAGE" | null;
+  accessLevel: "EXECUTE" | null;
   grantedAt: string | null;
 };
 
 export type KajaPermissionInput = {
   serverId: string;
-  accessLevel: "READ" | "EXECUTE" | "MANAGE";
+  accessLevel: "EXECUTE";
 };
 
 export async function createKajaCredential(
@@ -84,7 +87,8 @@ export async function listKajaCredentials(db: Db): Promise<KajaCredentialSummary
       count(distinct kp.id) filter (where kp.revoked_at is null) as permission_count,
       count(distinct at.lookup_digest) filter (where at.revoked_at is null and at.expires_at > now()) as active_access_token_count,
       max(at.issued_at) as last_token_issued_at,
-      max(at.expires_at) as last_token_expires_at
+      max(at.expires_at) as last_token_expires_at,
+      max(at.last_used_at) as last_used_at
     from kaja_credential kc
     left join kaja_permission kp on kp.credential_id = kc.id
     left join access_token at on at.credential_id = kc.id
@@ -106,56 +110,38 @@ export async function listKajaCredentials(db: Db): Promise<KajaCredentialSummary
     permissionCount: Number(row.permission_count),
     activeAccessTokenCount: Number(row.active_access_token_count),
     lastTokenIssuedAt: row.last_token_issued_at ? String(row.last_token_issued_at) : null,
-    lastTokenExpiresAt: row.last_token_expires_at ? String(row.last_token_expires_at) : null
+    lastTokenExpiresAt: row.last_token_expires_at ? String(row.last_token_expires_at) : null,
+    lastUsedAt: row.last_used_at ? String(row.last_used_at) : null
   }));
 }
 
 export async function revokeKajaCredential(db: Db, actorId: string, correlationId: string, credentialId: string): Promise<void> {
-  const result = await db.query(
-    `update kaja_credential
-        set active=false,
-            revoked_at=coalesce(revoked_at, now()),
-            revocation_epoch=gen_random_uuid()
-      where id=$1 and deleted_at is null
-      returning id, public_id, label`,
-    [credentialId]
-  );
-  if (!result.rowCount) throw Object.assign(new Error("not_found"), { statusCode: 404 });
-  await db.query("update kaja_permission set revoked_at=coalesce(revoked_at, now()) where credential_id=$1", [credentialId]);
-  await db.query("update access_token set revoked_at=coalesce(revoked_at, now()) where credential_id=$1", [credentialId]);
-  await appendAudit(db, {
-    eventType: "kaja.revoked",
-    actorType: "admin",
-    actorId,
-    objectType: "kaja_credential",
-    objectId: credentialId,
-    after: { publicId: result.rows[0].public_id, label: result.rows[0].label },
-    correlationId
+  await tx(db, async (client) => {
+    const result = await updateCredentialLifecycle(client, credentialId, { deleted: false });
+    await appendAudit(client, {
+      eventType: "kaja.revoked",
+      actorType: "admin",
+      actorId,
+      objectType: "kaja_credential",
+      objectId: credentialId,
+      after: { publicId: result.publicId, label: result.label },
+      correlationId
+    });
   });
 }
 
 export async function deleteKajaCredential(db: Db, actorId: string, correlationId: string, credentialId: string): Promise<void> {
-  const result = await db.query(
-    `update kaja_credential
-        set active=false,
-            revoked_at=coalesce(revoked_at, now()),
-            deleted_at=coalesce(deleted_at, now()),
-            revocation_epoch=gen_random_uuid()
-      where id=$1 and deleted_at is null
-      returning id, public_id, label`,
-    [credentialId]
-  );
-  if (!result.rowCount) throw Object.assign(new Error("not_found"), { statusCode: 404 });
-  await db.query("update kaja_permission set revoked_at=coalesce(revoked_at, now()) where credential_id=$1", [credentialId]);
-  await db.query("update access_token set revoked_at=coalesce(revoked_at, now()) where credential_id=$1", [credentialId]);
-  await appendAudit(db, {
-    eventType: "kaja.deleted",
-    actorType: "admin",
-    actorId,
-    objectType: "kaja_credential",
-    objectId: credentialId,
-    after: { publicId: result.rows[0].public_id, label: result.rows[0].label },
-    correlationId
+  await tx(db, async (client) => {
+    const result = await updateCredentialLifecycle(client, credentialId, { deleted: true });
+    await appendAudit(client, {
+      eventType: "kaja.deleted",
+      actorType: "admin",
+      actorId,
+      objectType: "kaja_credential",
+      objectId: credentialId,
+      after: { publicId: result.publicId, label: result.label },
+      correlationId
+    });
   });
 }
 
@@ -187,78 +173,97 @@ export async function listKajaPermissions(db: Db, credentialId: string): Promise
 }
 
 export async function replaceKajaPermissions(db: Db, actorId: string, correlationId: string, credentialId: string, permissions: KajaPermissionInput[]): Promise<void> {
-  const credential = await db.query("select id, public_id from kaja_credential where id=$1 and deleted_at is null and revoked_at is null and active is true", [credentialId]);
-  if (!credential.rowCount) throw Object.assign(new Error("not_found"), { statusCode: 404 });
-  const previousResult = await db.query(
-    "select server_id,access_level from kaja_permission where credential_id=$1 and revoked_at is null",
-    [credentialId]
-  );
-  const previousExecutable = new Set(
-    previousResult.rows
-      .filter((row) => ["EXECUTE", "MANAGE"].includes(String(row.access_level)))
-      .map((row) => String(row.server_id))
-  );
-  const byServer = new Map<string, KajaPermissionInput>();
-  for (const permission of permissions) byServer.set(permission.serverId, permission);
-  const normalized = Array.from(byServer.values());
-  const serverIds = normalized.map((permission) => permission.serverId);
-  if (serverIds.length) {
-    const validServers = await db.query("select id from mcp_server where id = any($1::uuid[])", [serverIds]);
-    if (validServers.rowCount !== serverIds.length) throw Object.assign(new Error("invalid_server"), { statusCode: 400 });
-  }
-  await db.query("update kaja_permission set revoked_at=coalesce(revoked_at, now()) where credential_id=$1", [credentialId]);
-  for (const permission of normalized) {
-    await db.query(
-      `insert into kaja_permission(credential_id, server_id, access_level, revoked_at)
-       values ($1,$2,$3,null)
-       on conflict (credential_id, server_id) do update set revoked_at=null, granted_at=now(), access_level=excluded.access_level`,
-      [credentialId, permission.serverId, permission.accessLevel]
+  await tx(db, async (client) => {
+    const credential = await client.query(
+      "select id, public_id from kaja_credential where id=$1 and deleted_at is null and revoked_at is null and active is true for update",
+      [credentialId]
     );
-  }
-  const currentExecutable = new Set(
-    normalized
-      .filter((permission) => ["EXECUTE", "MANAGE"].includes(permission.accessLevel))
-      .map((permission) => permission.serverId)
-  );
-  const removedExecutable = [...previousExecutable].filter((serverId) => !currentExecutable.has(serverId));
-  if (removedExecutable.length) {
-    await db.query(
-      "update access_token set revoked_at=coalesce(revoked_at,now()) where credential_id=$1 and server_id=any($2::uuid[])",
-      [credentialId, removedExecutable]
+    if (!credential.rowCount) throw Object.assign(new Error("not_found"), { statusCode: 404 });
+    const previousResult = await client.query(
+      "select server_id,access_level from kaja_permission where credential_id=$1 and revoked_at is null",
+      [credentialId]
     );
-    for (const serverId of removedExecutable) {
-      await appendAudit(db, {
-        eventType: "permission.revoked",
-        actorType: "admin",
-        actorId,
-        objectType: "mcp_server",
-        objectId: serverId,
-        after: { credentialId },
-        correlationId
-      });
+    const previousExecutable = new Set(previousResult.rows.map((row) => String(row.server_id)));
+    const byServer = new Map<string, KajaPermissionInput>();
+    for (const permission of permissions) byServer.set(permission.serverId, permission);
+    const normalized = Array.from(byServer.values());
+    const serverIds = normalized.map((permission) => permission.serverId);
+    if (serverIds.length) {
+      const validServers = await client.query("select id from mcp_server where id = any($1::uuid[])", [serverIds]);
+      if (validServers.rowCount !== serverIds.length) throw Object.assign(new Error("invalid_server"), { statusCode: 400 });
     }
-  }
-  for (const permission of normalized) {
-    if (!previousExecutable.has(permission.serverId) && currentExecutable.has(permission.serverId)) {
-      await appendAudit(db, {
-        eventType: "permission.granted",
-        actorType: "admin",
-        actorId,
-        objectType: "mcp_server",
-        objectId: permission.serverId,
-        after: { credentialId, accessLevel: permission.accessLevel },
-        correlationId
-      });
+    await client.query("update kaja_permission set revoked_at=coalesce(revoked_at, now()) where credential_id=$1", [credentialId]);
+    for (const permission of normalized) {
+      await client.query(
+        `insert into kaja_permission(credential_id, server_id, access_level, revoked_at)
+         values ($1,$2,$3,null)
+         on conflict (credential_id, server_id) do update set revoked_at=null, granted_at=now(), access_level=excluded.access_level`,
+        [credentialId, permission.serverId, permission.accessLevel]
+      );
     }
-  }
-  await appendAudit(db, {
-    eventType: "kaja.permissions.updated",
-    actorType: "admin",
-    actorId,
-    objectType: "kaja_credential",
-    objectId: credentialId,
-    after: { publicId: credential.rows[0].public_id, permissions: normalized },
-    correlationId
+    const currentExecutable = new Set(normalized.map((permission) => permission.serverId));
+    const removedExecutable = [...previousExecutable].filter((serverId) => !currentExecutable.has(serverId));
+    if (removedExecutable.length) {
+      await client.query(
+        "update access_token set revoked_at=coalesce(revoked_at,now()) where credential_id=$1 and server_id=any($2::uuid[])",
+        [credentialId, removedExecutable]
+      );
+      for (const serverId of removedExecutable) {
+        await appendAudit(client, {
+          eventType: "permission.revoked",
+          actorType: "admin",
+          actorId,
+          objectType: "mcp_server",
+          objectId: serverId,
+          after: { credentialId },
+          correlationId
+        });
+      }
+    }
+    for (const permission of normalized) {
+      if (!previousExecutable.has(permission.serverId) && currentExecutable.has(permission.serverId)) {
+        await appendAudit(client, {
+          eventType: "permission.granted",
+          actorType: "admin",
+          actorId,
+          objectType: "mcp_server",
+          objectId: permission.serverId,
+          after: { credentialId, accessLevel: permission.accessLevel },
+          correlationId
+        });
+      }
+    }
+    await appendAudit(client, {
+      eventType: "kaja.permissions.updated",
+      actorType: "admin",
+      actorId,
+      objectType: "kaja_credential",
+      objectId: credentialId,
+      after: { publicId: credential.rows[0].public_id, permissions: normalized },
+      correlationId
+    });
+  });
+}
+
+export async function renameKajaCredential(db: Db, actorId: string, correlationId: string, credentialId: string, label: string): Promise<void> {
+  await tx(db, async (client) => {
+    const result = await client.query(
+      `update kaja_credential
+          set label=$2
+        where id=$1 and deleted_at is null
+        returning public_id, label`,
+      [credentialId, label]
+    );
+    if (!result.rowCount) throw Object.assign(new Error("not_found"), { statusCode: 404 });
+    await appendAudit(client, {
+      eventType: "kaja.label.updated",
+      actorType: "admin",
+      actorId,
+      objectType: "kaja_credential",
+      objectId: credentialId,
+      after: { publicId: result.rows[0].public_id, label: result.rows[0].label },
+      correlationId
+    });
   });
 }
 
@@ -279,14 +284,27 @@ export async function issueAccessToken(db: Db, params: {
   const verified = await verifyPasswordLikeSecret(String(credential.secret_hash), params.clientSecret);
   if (!verified) throw Object.assign(new Error("invalid_client"), { statusCode: 401 });
 
-  const serverResult = await db.query("select id, code, hostname, enabled, registration_state, revocation_epoch from mcp_server where $1 = ('https://' || hostname || '/mcp')", [params.resource]);
+  const serverResult = await db.query(
+    `select ms.id, ms.code, ms.hostname, ms.enabled, ms.registration_state, ms.revocation_epoch, rr.manifest->'change'->>'reviewDueAt' as review_due_at
+       from mcp_server ms
+       left join lateral (
+         select manifest
+           from registration_revision
+          where server_id=ms.id
+          order by created_at desc
+          limit 1
+       ) rr on true
+      where $1 = ('https://' || ms.hostname || '/mcp')`,
+    [params.resource]
+  );
   if (!serverResult.rowCount) throw Object.assign(new Error("invalid_resource"), { statusCode: 400 });
   const server = serverResult.rows[0];
-  if (!server.enabled || !["ACTIVE", "TRIAL"].includes(String(server.registration_state))) {
+  const reviewDueAt = server.review_due_at ? new Date(String(server.review_due_at)) : null;
+  if (!server.enabled || !["ACTIVE", "TRIAL"].includes(String(server.registration_state)) || (reviewDueAt && reviewDueAt.getTime() <= Date.now())) {
     throw Object.assign(new Error("resource_unavailable"), { statusCode: 503 });
   }
   const permission = await db.query(
-    "select 1 from kaja_permission where credential_id=$1 and server_id=$2 and revoked_at is null and access_level in ('EXECUTE','MANAGE')",
+    "select 1 from kaja_permission where credential_id=$1 and server_id=$2 and revoked_at is null and access_level='EXECUTE'",
     [credential.id, server.id]
   );
   if (!permission.rowCount) throw Object.assign(new Error("insufficient_scope"), { statusCode: 403 });
@@ -316,10 +334,17 @@ export async function validateBearer(db: Db, token: string, hostname: string, hm
   const digest = hmacToken(token, hmacKey);
   const resource = resourceFor(hostname);
   const result = await db.query(
-    `select at.credential_id, at.server_id, ms.code, ms.tool_name
+    `select at.credential_id, at.server_id, ms.code, ms.tool_name, rr.manifest->'change'->>'reviewDueAt' as review_due_at
        from access_token at
        join kaja_credential kc on kc.id=at.credential_id
        join mcp_server ms on ms.id=at.server_id
+       left join lateral (
+         select manifest
+           from registration_revision
+          where server_id=ms.id
+          order by created_at desc
+          limit 1
+       ) rr on true
       where at.lookup_digest=$1
         and at.audience=$2
         and at.expires_at > now()
@@ -331,14 +356,48 @@ export async function validateBearer(db: Db, token: string, hostname: string, hm
         and at.credential_revocation_epoch = kc.revocation_epoch
         and at.server_revocation_epoch = ms.revocation_epoch
         and ms.enabled is true
-        and ms.registration_state in ('ACTIVE','TRIAL')`,
+        and ms.registration_state in ('ACTIVE','TRIAL')
+        and coalesce((rr.manifest->'change'->>'reviewDueAt')::timestamptz, 'infinity'::timestamptz) > now()`,
     [digest, resource]
   );
   if (!result.rowCount) throw Object.assign(new Error("invalid_token"), { statusCode: 401, fingerprint: fingerprintSecret(token) });
+  await db.query(
+    `update access_token
+        set last_used_at=case
+          when last_used_at is null or last_used_at < now() - interval '1 minute' then now()
+          else last_used_at
+        end
+      where lookup_digest=$1`,
+    [digest]
+  );
   return {
     credentialId: result.rows[0].credential_id,
     serverId: result.rows[0].server_id,
     code: result.rows[0].code,
     toolName: result.rows[0].tool_name
+  };
+}
+
+async function updateCredentialLifecycle(
+  client: pg.PoolClient,
+  credentialId: string,
+  options: { deleted: boolean }
+): Promise<{ publicId: string; label: string }> {
+  const result = await client.query(
+    `update kaja_credential
+        set active=false,
+            revoked_at=coalesce(revoked_at, now()),
+            deleted_at=case when $2 then coalesce(deleted_at, now()) else deleted_at end,
+            revocation_epoch=gen_random_uuid()
+      where id=$1 and deleted_at is null
+      returning public_id, label`,
+    [credentialId, options.deleted]
+  );
+  if (!result.rowCount) throw Object.assign(new Error("not_found"), { statusCode: 404 });
+  await client.query("update kaja_permission set revoked_at=coalesce(revoked_at, now()) where credential_id=$1", [credentialId]);
+  await client.query("update access_token set revoked_at=coalesce(revoked_at, now()) where credential_id=$1", [credentialId]);
+  return {
+    publicId: String(result.rows[0].public_id),
+    label: String(result.rows[0].label)
   };
 }

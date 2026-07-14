@@ -65,6 +65,14 @@ export type SourceEvidence = {
   validation: Record<string, unknown>;
 };
 
+export type OnboardingDescriptor = {
+  summary: string;
+  businessPurpose: string;
+  serviceOwner: string;
+  technicalOwner: string;
+  criticality: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+};
+
 export type ProgrammerActionKind = "UPLOAD_SOURCE" | "WAIT" | "UPLOAD_REVISION" | "COMPLETE" | "STOP";
 
 export function programmerActionForState(state: OnboardingJobState, blockingErrorCode?: string | null) {
@@ -129,10 +137,20 @@ function optionalText(value: unknown): string | null {
 }
 
 function mapToken(row: Record<string, unknown>) {
+  const descriptor = row.descriptor && typeof row.descriptor === "object"
+    ? row.descriptor as Record<string, unknown>
+    : {};
   return {
     id: String(row.id),
     label: String(row.label),
     fingerprint: String(row.fingerprint),
+    descriptor: {
+      summary: typeof descriptor.summary === "string" ? descriptor.summary : String(row.label),
+      businessPurpose: typeof descriptor.businessPurpose === "string" ? descriptor.businessPurpose : "",
+      serviceOwner: typeof descriptor.serviceOwner === "string" ? descriptor.serviceOwner : "",
+      technicalOwner: typeof descriptor.technicalOwner === "string" ? descriptor.technicalOwner : "",
+      criticality: typeof descriptor.criticality === "string" ? descriptor.criticality as OnboardingDescriptor["criticality"] : "MEDIUM"
+    } satisfies OnboardingDescriptor,
     jobId: optionalText(row.onboarding_job_id),
     issuedAt: asIso(row.issued_at) ?? "",
     initialExpiresAt: asIso(row.initial_expires_at) ?? "",
@@ -156,6 +174,7 @@ export async function createIntegrationToken(
   actorId: string,
   correlationId: string,
   label: string,
+  descriptor: OnboardingDescriptor,
   resumeJobId?: string
 ) {
   const secret = issueIntegrationSecret();
@@ -182,10 +201,10 @@ export async function createIntegrationToken(
     const inserted = await client.query(
       `insert into integration_token
         (label, lookup_digest, key_id, fingerprint, created_by, onboarding_job_id,
-         issued_at, initial_expires_at, expires_at, max_expires_at)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+         descriptor, issued_at, initial_expires_at, expires_at, max_expires_at)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
        returning *`,
-      [label, digest, config.INTEGRATION_TOKEN_HMAC_KEY_ID, secret.fingerprint, actorId, resumeJobId ?? null,
+      [label, digest, config.INTEGRATION_TOKEN_HMAC_KEY_ID, secret.fingerprint, actorId, resumeJobId ?? null, descriptor,
         deadlines.issuedAt, deadlines.initialExpiresAt, deadlines.expiresAt, deadlines.maxExpiresAt]
     );
     if (resumeJobId) {
@@ -214,7 +233,7 @@ export async function createIntegrationToken(
       actorId,
       objectType: "integration_token",
       objectId: inserted.rows[0].id,
-      after: { label, fingerprint: secret.fingerprint, resumeJobId: resumeJobId ?? null, initialExpiresAt: deadlines.initialExpiresAt, maxExpiresAt: deadlines.maxExpiresAt },
+      after: { label, descriptor, fingerprint: secret.fingerprint, resumeJobId: resumeJobId ?? null, initialExpiresAt: deadlines.initialExpiresAt, maxExpiresAt: deadlines.maxExpiresAt },
       correlationId
     });
     return inserted.rows[0] as Record<string, unknown>;

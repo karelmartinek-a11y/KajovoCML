@@ -1,17 +1,34 @@
 export type OnboardingHandoff = {
   note: string;
+  descriptor: {
+    summary: string;
+    businessPurpose: string;
+    serviceOwner: string;
+    technicalOwner: string;
+    criticality: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+  };
   token: string;
   initialExpiresAt: string;
   programmerApiUrl: string;
 };
 
 export function onboardingHandoffText(handoff: OnboardingHandoff): string {
+  const expiresAt = new Intl.DateTimeFormat("cs-CZ", {
+    dateStyle: "medium",
+    timeStyle: "short",
+    timeZone: "Europe/Prague"
+  }).format(new Date(handoff.initialExpiresAt));
   return [
     "Automatická integrace nového MCP serveru do KajovoMCPCML",
     "",
     `Poznámka k serveru: ${handoff.note}`,
+    `Shrnutí serveru: ${handoff.descriptor.summary}`,
+    `Účel: ${handoff.descriptor.businessPurpose}`,
+    `Vlastník služby: ${handoff.descriptor.serviceOwner}`,
+    `Technický vlastník: ${handoff.descriptor.technicalOwner}`,
+    `Kritičnost: ${handoff.descriptor.criticality}`,
     `Integrační token: ${handoff.token}`,
-    `První upload proveďte nejpozději do: ${new Date(handoff.initialExpiresAt).toLocaleString("cs-CZ")}`,
+    `První upload proveďte nejpozději do: ${expiresAt}`,
     `Programátorské API: ${handoff.programmerApiUrl}`,
     "",
     "Postupujte přesně podle přiloženého dokumentu Connect in Catalog v1.4.",

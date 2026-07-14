@@ -16,6 +16,14 @@ import { validateOnboardingManifest } from "./registration.js";
 
 const enabled = process.env.KCML_TEST_DATABASE === "1";
 
+const descriptor = {
+  summary: "Database test server",
+  businessPurpose: "Validate transactional automated onboarding.",
+  serviceOwner: "Test Service",
+  technicalOwner: "Test Platform",
+  criticality: "MEDIUM" as const
+};
+
 const manifestInput = {
   schemaVersion: "1.4",
   registrationRevision: "db-test-1",
@@ -30,8 +38,24 @@ const manifestInput = {
   tool: { title: "DB test", description: "Database contract test", inputSchema: { type: "object", additionalProperties: false }, outputSchema: { type: "object", additionalProperties: false }, annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false, taskSupport: "forbidden" } },
   behavior: { effectClass: "READ_ONLY", timeoutMs: 1000, maxConcurrency: 1, requestMaxBytes: 1024, responseMaxBytes: 1024, rateLimit: { windowSeconds: 60, maxRequests: 5 }, shutdownPolicy: "COMPLETE_IN_FLIGHT", idempotencyPolicy: "read only", retryPolicy: { automaticRetry: false } },
   testContract: { safeInput: {}, expectedResult: {}, cleanupOrCompensation: "none" },
+  protocol: { protocolVersion: "2025-11-25", transport: "streamable-http", capabilities: ["tools"], errorCatalog: [{ code: "E_DB", description: "Database test" }] },
+  dependencies: {
+    runtime: [{ name: "nodejs22", version: "22.0.0" }],
+    externalServices: ["auth"],
+    secretRefs: ["vault://kcml/db-test"],
+    networkPolicy: { outboundAllowlist: ["auth.example.com"], dnsPolicy: "strict", databaseRole: "kcml_reader", filesystemPolicy: "read-only" },
+    dataClassification: { input: "internal", output: "internal", containsPersonalData: false, loggingPolicy: "redacted", redactionFields: ["token"], retentionPolicy: "30 days" }
+  },
   monitoringProfile: { sloTargets: {}, probeIntervals: {}, alertRules: [{ severity: "critical" }], runbookRef: "test", primaryAlertChannel: "test", backupAlertChannel: "test" },
-  change: { rollbackRef: "test", decommissionRef: "test", reviewDueAt: "2027-01-01T00:00:00.000Z" }
+  errorCatalog: [{ code: "E_DB", description: "Database test" }],
+  change: {
+    changeClass: "MINOR",
+    migrationRef: "migrations/001.sql",
+    rollbackRef: "test",
+    decommissionRef: "test",
+    previousApprovedRevision: null,
+    reviewDueAt: "2027-01-01T00:00:00.000Z"
+  }
 };
 
 describe.skipIf(!enabled)("onboarding PostgreSQL transactions", () => {
@@ -42,8 +66,12 @@ describe.skipIf(!enabled)("onboarding PostgreSQL transactions", () => {
   beforeAll(async () => {
     config = loadConfig(process.env);
     db = createDb(config);
-    const admin = await db.query("select id from admin_account where username='karmar78'");
-    adminId = String(admin.rows[0].id);
+    const admin = await db.query("select id from admin_account where username=$1", [config.ADMIN_BOOTSTRAP_USERNAME]);
+    if (!admin.rowCount) {
+      await db.query("insert into admin_account(username, mfa_enabled) values ($1, false)", [config.ADMIN_BOOTSTRAP_USERNAME]);
+    }
+    const created = await db.query("select id from admin_account where username=$1", [config.ADMIN_BOOTSTRAP_USERNAME]);
+    adminId = String(created.rows[0].id);
   });
 
   beforeEach(async () => {
@@ -53,7 +81,13 @@ describe.skipIf(!enabled)("onboarding PostgreSQL transactions", () => {
   afterAll(async () => db.end());
 
   it("stores only the HMAC lookup digest and makes first registration idempotent under concurrency", async () => {
-    const created = await createIntegrationToken(db, config, adminId, randomUUID(), "DB integration test");
+    const created = await createIntegrationToken(db, config, adminId, randomUUID(), "DB integration test", {
+      summary: "Database test server",
+      businessPurpose: "Validate transactional automated onboarding.",
+      serviceOwner: "Test Service",
+      technicalOwner: "Test Platform",
+      criticality: "MEDIUM"
+    });
     expect(created.token).toMatch(/^kci_/);
     const stored = await db.query("select lookup_digest,fingerprint from integration_token where id=$1", [created.id]);
     expect(Buffer.isBuffer(stored.rows[0].lookup_digest)).toBe(true);
@@ -86,13 +120,19 @@ describe.skipIf(!enabled)("onboarding PostgreSQL transactions", () => {
   });
 
   it("rejects a revoked token with the generic authentication error", async () => {
-    const created = await createIntegrationToken(db, config, adminId, randomUUID(), "Revocation test");
+    const created = await createIntegrationToken(db, config, adminId, randomUUID(), "Revocation test", {
+      summary: "Revocation test server",
+      businessPurpose: "Validate transactional automated onboarding.",
+      serviceOwner: "Test Service",
+      technicalOwner: "Test Platform",
+      criticality: "MEDIUM"
+    });
     await revokeIntegrationToken(db, created.id, adminId, randomUUID());
     await expect(authenticateIntegrationToken(db, created.token, config)).rejects.toThrow("invalid_integration_token");
   });
 
   it("updates the registered server and preserves revision history on a repaired upload", async () => {
-    const created = await createIntegrationToken(db, config, adminId, randomUUID(), "Revision update test");
+    const created = await createIntegrationToken(db, config, adminId, randomUUID(), "Revision update test", descriptor);
     const principal = await authenticateIntegrationToken(db, created.token, config);
     const { manifest, digest: manifestDigest } = validateOnboardingManifest(manifestInput);
     const sourceDigest = `sha256:${"b".repeat(64)}`;
@@ -153,7 +193,7 @@ describe.skipIf(!enabled)("onboarding PostgreSQL transactions", () => {
   });
 
   it("requires manual quarantine release and keeps a resumed repair job waiting for a new revision", async () => {
-    const created = await createIntegrationToken(db, config, adminId, randomUUID(), "Quarantine repair test");
+    const created = await createIntegrationToken(db, config, adminId, randomUUID(), "Quarantine repair test", descriptor);
     const principal = await authenticateIntegrationToken(db, created.token, config);
     const { manifest, digest: manifestDigest } = validateOnboardingManifest(manifestInput);
     const sourceDigest = `sha256:${"c".repeat(64)}`;
@@ -167,7 +207,7 @@ describe.skipIf(!enabled)("onboarding PostgreSQL transactions", () => {
     await db.query("update onboarding_job set state='QUARANTINED', completed_at=now() where id=$1", [job.id]);
     await expect(releaseQuarantinedOnboardingJob(db, job.id, "WRONG", "Valid repair reason", adminId, randomUUID())).rejects.toThrow("confirmation_code_mismatch");
     await releaseQuarantinedOnboardingJob(db, job.id, String(job.code), "Artifact registration metadata was repaired and a new source revision is required.", adminId, randomUUID());
-    await createIntegrationToken(db, config, adminId, randomUUID(), "Quarantine repair resume", job.id);
+    await createIntegrationToken(db, config, adminId, randomUUID(), "Quarantine repair resume", descriptor, job.id);
     const stored = await db.query("select state,completed_at from onboarding_job where id=$1", [job.id]);
     expect(stored.rows[0]).toMatchObject({ state: "AWAITING_REVISION", completed_at: null });
     const transition = await db.query("select event_type from onboarding_event where job_id=$1 order by id desc limit 1", [job.id]);

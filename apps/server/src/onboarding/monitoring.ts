@@ -11,6 +11,12 @@ import { OciRuntime } from "./oci.js";
 
 type Probe = { name: string; status: "PASS" | "FAIL" | "STALE"; latencyMs: number; evidence: Record<string, unknown> };
 
+function isReviewOverdue(reviewDueAt: unknown): boolean {
+  if (typeof reviewDueAt !== "string") return false;
+  const parsed = new Date(reviewDueAt);
+  return Number.isFinite(parsed.getTime()) && parsed.getTime() <= Date.now();
+}
+
 async function measured(name: string, fn: () => Promise<Record<string, unknown>>): Promise<Probe> {
   const started = Date.now();
   try {
@@ -61,6 +67,25 @@ export class MonitoringScheduler {
     const hostname = String(row.hostname);
     const code = String(row.code);
     const { manifest } = validateOnboardingManifest(row.manifest);
+    if (isReviewOverdue((row.manifest as { change?: { reviewDueAt?: unknown } }).change?.reviewDueAt)) {
+      await tx(this.db, async (client) => {
+        await client.query(
+          "update mcp_server set enabled=false,registration_state='SUSPENDED',operational_state='DISABLED',revocation_epoch=gen_random_uuid(),lock_version=lock_version+1 where id=$1",
+          [serverId]
+        );
+        await client.query("update access_token set revoked_at=coalesce(revoked_at,now()) where server_id=$1", [serverId]);
+        await client.query("update egress_capability set revoked_at=coalesce(revoked_at,now()) where server_id=$1", [serverId]);
+        await appendAudit(client, {
+          eventType: "mcp_server.recertification_suspended",
+          actorType: "system",
+          objectType: "mcp_server",
+          objectId: serverId,
+          after: { code, reviewDueAt: (row.manifest as { change?: { reviewDueAt?: unknown } }).change?.reviewDueAt, reason: "review_due_overdue" },
+          correlationId
+        });
+      });
+      return;
+    }
     const probes: Probe[] = [];
     probes.push(await measured("readiness", () => socketReady(String(row.runtime_socket))));
     probes.push(await measured("dns", async () => ({ addresses: (await dns.lookup(hostname, { all: true })).map((item) => item.address) })));

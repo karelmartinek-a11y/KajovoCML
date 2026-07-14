@@ -13,6 +13,10 @@ function optionalText(value: unknown): string | null {
   return typeof value === "string" ? value : typeof value === "number" ? String(value) : null;
 }
 
+function reviewDueAtFromRow(row: Record<string, unknown>): string | null {
+  return typeof row.review_due_at === "string" ? row.review_due_at : null;
+}
+
 function mapServer(row: Record<string, unknown>): McpServer {
   return {
     id: String(row.id),
@@ -32,6 +36,8 @@ function mapServer(row: Record<string, unknown>): McpServer {
     contractVersion: String(row.contract_version),
     artifactDigest: String(row.artifact_digest),
     manifestDigest: String(row.manifest_digest),
+    registrationRevision: optionalText(row.registration_revision),
+    reviewDueAt: reviewDueAtFromRow(row),
     imageReference: optionalText(row.image_reference),
     imageDigest: optionalText(row.image_digest),
     sbomDigest: optionalText(row.sbom_digest),
@@ -43,6 +49,13 @@ function mapServer(row: Record<string, unknown>): McpServer {
     responseMaxBytes: Number(row.response_max_bytes ?? 5_242_880),
     rateWindowSeconds: Number(row.rate_window_seconds ?? 60),
     rateMaxRequests: Number(row.rate_max_requests ?? 60),
+    readOnlyHint: Boolean(row.read_only_hint),
+    destructiveHint: Boolean(row.destructive_hint),
+    idempotentHint: Boolean(row.idempotent_hint),
+    openWorldHint: Boolean(row.open_world_hint),
+    effectClass: row.effect_class as McpServer["effectClass"],
+    shutdownPolicy: row.shutdown_policy as McpServer["shutdownPolicy"],
+    idempotencyPolicy: typeof row.idempotency_policy === "string" ? row.idempotency_policy : "",
     revocationEpoch: String(row.revocation_epoch),
     successCount: Number(row.success_count ?? 0),
     unauthorizedCount: Number(row.unauthorized_count ?? 0),
@@ -58,20 +71,12 @@ function mapServer(row: Record<string, unknown>): McpServer {
   };
 }
 
-export async function getServerByHostname(db: Db, hostname: string): Promise<McpServer | null> {
-  const result = await db.query("select * from mcp_server where lower(hostname)=lower($1)", [hostname]);
-  return result.rowCount ? mapServer(result.rows[0]) : null;
-}
-
-export async function getServerById(db: Db, id: string): Promise<McpServer | null> {
-  const result = await db.query("select * from mcp_server where id=$1", [id]);
-  return result.rowCount ? mapServer(result.rows[0]) : null;
-}
-
-export async function listServers(db: Db): Promise<McpServer[]> {
-  const result = await db.query(`
+function serverQuery(): string {
+  return `
     select
       ms.*,
+      rr.revision as registration_revision,
+      rr.manifest->'change'->>'reviewDueAt' as review_due_at,
       coalesce(fs.success_count, 0) as success_count,
       coalesce(fs.unauthorized_count, 0) as unauthorized_count,
       coalesce(fs.failure_count, 0) as failure_count,
@@ -82,6 +87,13 @@ export async function listServers(db: Db): Promise<McpServer[]> {
       latency.average_latency_ms,
       latency.p95_latency_ms
     from mcp_server ms
+    left join lateral (
+      select revision, manifest
+        from registration_revision
+       where server_id = ms.id
+       order by created_at desc
+       limit 1
+    ) rr on true
     left join function_statistics fs on fs.server_id = ms.id
     left join lateral (
       select
@@ -91,8 +103,21 @@ export async function listServers(db: Db): Promise<McpServer[]> {
       from mcp_invocation_metric metric
       where metric.server_id = ms.id and metric.created_at >= now() - interval '30 days'
     ) latency on true
-    order by ms.kcml_number asc
-  `);
+  `;
+}
+
+export async function getServerByHostname(db: Db, hostname: string): Promise<McpServer | null> {
+  const result = await db.query(`${serverQuery()} where lower(ms.hostname)=lower($1)`, [hostname]);
+  return result.rowCount ? mapServer(result.rows[0]) : null;
+}
+
+export async function getServerById(db: Db, id: string): Promise<McpServer | null> {
+  const result = await db.query(`${serverQuery()} where ms.id=$1`, [id]);
+  return result.rowCount ? mapServer(result.rows[0]) : null;
+}
+
+export async function listServers(db: Db): Promise<McpServer[]> {
+  const result = await db.query(`${serverQuery()} order by ms.kcml_number asc`);
   return result.rows.map(mapServer);
 }
 

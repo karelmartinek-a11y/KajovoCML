@@ -4,6 +4,7 @@ import { replaceKajaPermissions } from "./auth.js";
 
 function fakeDb(previous: Array<{ server_id: string; access_level: string }>) {
   const query = vi.fn(async (sql: string) => {
+    if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") return { rowCount: 0, rows: [] };
     if (sql.startsWith("select id, public_id from kaja_credential")) {
       return { rowCount: 1, rows: [{ id: "credential", public_id: "Kaja0001" }] };
     }
@@ -12,7 +13,14 @@ function fakeDb(previous: Array<{ server_id: string; access_level: string }>) {
     }
     return { rowCount: 1, rows: [] };
   });
-  return { db: { query } as unknown as Db, query };
+  const client = { query, release: vi.fn() };
+  return {
+    db: {
+      query,
+      connect: vi.fn(async () => client)
+    } as unknown as Db,
+    query
+  };
 }
 
 describe("Kaja permission revocation", () => {

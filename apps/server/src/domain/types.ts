@@ -38,6 +38,8 @@ export type McpServer = {
   contractVersion: string;
   artifactDigest: string;
   manifestDigest: string;
+  registrationRevision: string | null;
+  reviewDueAt: string | null;
   imageReference: string | null;
   imageDigest: string | null;
   sbomDigest: string | null;
@@ -49,6 +51,13 @@ export type McpServer = {
   responseMaxBytes: number;
   rateWindowSeconds: number;
   rateMaxRequests: number;
+  readOnlyHint: boolean;
+  destructiveHint: boolean;
+  idempotentHint: boolean;
+  openWorldHint: boolean;
+  effectClass: "READ_ONLY" | "IDEMPOTENT_WRITE" | "NON_IDEMPOTENT_WRITE";
+  shutdownPolicy: "COMPLETE_IN_FLIGHT" | "CANCEL_SAFE" | "COMPENSATE";
+  idempotencyPolicy: string;
   revocationEpoch: string;
   successCount: number;
   unauthorizedCount: number;

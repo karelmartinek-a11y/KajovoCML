@@ -86,8 +86,8 @@ export async function registerDisabledServer(db: Db, job: ActivationJob, socketP
         (kcml_number,code,hostname,tool_name,display_name,description,enabled,registration_state,operational_state,
          input_schema,output_schema,handler_key,handler_version,contract_version,artifact_digest,manifest_digest,
          image_reference,image_digest,sbom_digest,provenance_digest,runtime_socket,timeout_ms,max_concurrency,request_max_bytes,response_max_bytes,
-         rate_window_seconds,rate_max_requests)
-       select kcml_number,code,hostname,tool_name,$2,$3,false,'REGISTERED_DISABLED','DISABLED',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21
+         rate_window_seconds,rate_max_requests,read_only_hint,destructive_hint,idempotent_hint,open_world_hint,effect_class,shutdown_policy,idempotency_policy)
+       select kcml_number,code,hostname,tool_name,$2,$3,false,'REGISTERED_DISABLED','DISABLED',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28
          from onboarding_job where id=$1
        on conflict (code) do update set
          kcml_number=excluded.kcml_number,
@@ -125,7 +125,10 @@ export async function registerDisabledServer(db: Db, job: ActivationJob, socketP
         job.manifest.handlerKey, job.manifest.handlerVersion, job.manifest.registrationRevision, job.imageDigest, job.manifestDigest,
         job.imageReference, job.imageDigest, job.sbomDigest, job.provenanceDigest, socketPath, job.manifest.behavior.timeoutMs,
         job.manifest.behavior.maxConcurrency, job.manifest.behavior.requestMaxBytes, job.manifest.behavior.responseMaxBytes,
-        job.manifest.behavior.rateLimit.windowSeconds, job.manifest.behavior.rateLimit.maxRequests]
+        job.manifest.behavior.rateLimit.windowSeconds, job.manifest.behavior.rateLimit.maxRequests,
+        job.manifest.tool.annotations.readOnlyHint, job.manifest.tool.annotations.destructiveHint,
+        job.manifest.tool.annotations.idempotentHint, job.manifest.tool.annotations.openWorldHint,
+        job.manifest.behavior.effectClass, job.manifest.behavior.shutdownPolicy, job.manifest.behavior.idempotencyPolicy]
     );
     if (!server.rowCount) throw new Error("onboarding_identity_missing");
     const serverId = String(server.rows[0].id);

@@ -1,9 +1,11 @@
 import { loadConfig } from "./config.js";
 import { createDb } from "./db.js";
 import { buildApp } from "./app.js";
+import { loadConfigFromDb } from "./domain/operational-config.js";
 
-const config = loadConfig();
-const db = createDb(config);
+const bootstrapConfig = loadConfig();
+const db = createDb(bootstrapConfig);
+const config = await loadConfigFromDb(db, bootstrapConfig);
 const app = await buildApp(config, db);
 
 try {
