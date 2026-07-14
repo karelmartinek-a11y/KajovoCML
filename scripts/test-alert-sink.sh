@@ -10,7 +10,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-raw_key=0123456789abcdef0123456789abcdef
+raw_key="$(openssl rand -hex 32)"
 printf '%s' "$raw_key" | base64 > "$workdir/key"
 PORT="$port" \
 ALERT_SINK_CHANNEL=PRIMARY \
