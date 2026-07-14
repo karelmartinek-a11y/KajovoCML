@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { digestCanonicalJson } from "../domain/registration.js";
 import {
+  completedProbeCheckTimes,
   expectedMonitoringProfileDigest,
   LEGACY_MONITORING_INTERVALS,
   LEGACY_MONITORING_STALE_AFTER_SECONDS
@@ -30,5 +31,16 @@ describe("legacy monitoring scheduling", () => {
     expect(LEGACY_MONITORING_STALE_AFTER_SECONDS).toBeGreaterThanOrEqual(
       Math.max(...Object.values(LEGACY_MONITORING_INTERVALS))
     );
+  });
+
+  it("does not treat a STALE observation as a completed probe", () => {
+    const completed = completedProbeCheckTimes([
+      { probe_type: "tls", status: "PASS", checked_at: "2026-07-14T16:49:05.000Z" },
+      { probe_type: "tls", status: "STALE", checked_at: "2026-07-14T17:04:10.000Z" },
+      { probe_type: "routing", status: "FAIL", checked_at: "2026-07-14T17:05:00.000Z" }
+    ]);
+
+    expect(completed.get("tls")).toBe(new Date("2026-07-14T16:49:05.000Z").getTime());
+    expect(completed.get("routing")).toBe(new Date("2026-07-14T17:05:00.000Z").getTime());
   });
 });
