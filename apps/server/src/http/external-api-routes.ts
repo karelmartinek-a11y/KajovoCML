@@ -11,6 +11,7 @@ export function registerExternalApiRoutes(app: FastifyInstance, db: Db, config: 
   app.route({
     method: ["GET", "POST", "PUT", "PATCH", "DELETE"],
     url: "/*",
+    config: { rateLimit: { max: 120, timeWindow: "1 minute", groupId: "external-api-http" } },
     handler: async (request, reply) => {
       const correlationId = randomUUID();
       const hostname = hostOf(request.headers.host);

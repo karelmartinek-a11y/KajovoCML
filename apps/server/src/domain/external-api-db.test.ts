@@ -48,9 +48,9 @@ async function createSelfSignedCertificate(): Promise<{ certPem: string; keyPem:
     "-days",
     "1",
     "-subj",
-    "/CN=127.0.0.1",
+    "/CN=localhost",
     "-addext",
-    "subjectAltName=IP:127.0.0.1"
+    "subjectAltName=DNS:localhost,IP:127.0.0.1"
   ]);
   const [certPem, keyPem] = await Promise.all([
     readFile(certPath, "utf8"),
@@ -223,14 +223,15 @@ function manifestFor(baseUrl: string): Record<string, unknown> {
   };
 }
 
-function directHttpsRequest(port: number, path: string): Promise<{ status: number; body: string }> {
+function directHttpsRequest(port: number, path: string, ca: string): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
     const request = https.request({
-      host: "127.0.0.1",
+      ca,
+      family: 4,
+      host: "localhost",
       port,
       path,
-      method: "GET",
-      rejectUnauthorized: false
+      method: "GET"
     }, (response) => {
       const chunks: Buffer[] = [];
       response.on("data", (chunk: Buffer) => chunks.push(Buffer.from(chunk)));
@@ -255,6 +256,7 @@ function sendJson(response: import("node:http").ServerResponse, status: number, 
 }
 
 async function startReferenceBackend(): Promise<{
+  certPem: string;
   certDir: string;
   server: https.Server;
   port: number;
@@ -388,7 +390,7 @@ async function startReferenceBackend(): Promise<{
     });
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
-  return { certDir: dir, server, port: (server.address() as AddressInfo).port, state };
+  return { certPem, certDir: dir, server, port: (server.address() as AddressInfo).port, state };
 }
 
 describe.skipIf(!enabled)("EXTERNAL_API PostgreSQL integration", () => {
@@ -507,7 +509,7 @@ describe.skipIf(!enabled)("EXTERNAL_API PostgreSQL integration", () => {
     expect(gatewayRead.statusCode).toBe(200);
     expect(gatewayRead.json()).toMatchObject({ items: [{ employeeId: "emp-42" }] });
 
-    const direct = await directHttpsRequest(backend.port, "/v1/shifts/emp-42");
+    const direct = await directHttpsRequest(backend.port, "/v1/shifts/emp-42", backend.certPem);
     expect(direct.status).toBe(403);
     expect(JSON.parse(direct.body)).toMatchObject({ code: "REFERENCE_DIRECT_BYPASS_BLOCKED" });
 

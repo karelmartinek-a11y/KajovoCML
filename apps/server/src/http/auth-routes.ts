@@ -46,7 +46,9 @@ export function registerAuthRoutes(app: FastifyInstance, db: Db, config: AppConf
     }
   });
 
-  app.post("/oauth/introspect", async (request, reply) => {
+  app.post("/oauth/introspect", {
+    config: { rateLimit: { max: 60, timeWindow: "1 minute", groupId: "oauth-introspect" } }
+  }, async (request, reply) => {
     const correlationId = randomUUID();
     if (hostOf(request.headers.host) !== config.AUTH_HOST) return sendError(reply, 404, "not_found", undefined, correlationId);
     const contentType = request.headers["content-type"] ?? "";

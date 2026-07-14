@@ -926,7 +926,9 @@ export function registerAdminRoutes(app: FastifyInstance, db: Db, config: AppCon
     }
   });
 
-  app.post("/api/managed-services/:id/api::disable", async (request, reply) => {
+  app.post("/api/managed-services/:id/api::disable", {
+    config: { rateLimit: { max: 5, timeWindow: "1 minute", groupId: "managed-service-api-state-write" } }
+  }, async (request, reply) => {
     const correlationId = randomUUID();
     if (hostOf(request.headers.host) !== config.ADMIN_HOST) return sendError(reply, 404, "not_found", undefined, correlationId);
     const session = await sessionAccount(db, request, config);
@@ -953,7 +955,9 @@ export function registerAdminRoutes(app: FastifyInstance, db: Db, config: AppCon
     }
   });
 
-  app.post("/api/managed-services/:id/api::enable", async (request, reply) => {
+  app.post("/api/managed-services/:id/api::enable", {
+    config: { rateLimit: { max: 5, timeWindow: "1 minute", groupId: "managed-service-api-state-write" } }
+  }, async (request, reply) => {
     const correlationId = randomUUID();
     if (hostOf(request.headers.host) !== config.ADMIN_HOST) return sendError(reply, 404, "not_found", undefined, correlationId);
     const session = await sessionAccount(db, request, config);
