@@ -62,7 +62,15 @@ function egressFetch(url, init = {}) {
       });
       proxyResponse.on("error", reject);
       proxyResponse.on("end", () => {
-        if (proxyResponse.statusCode !== 200) { reject(new Error("egress_request_rejected")); return; }
+        if (proxyResponse.statusCode !== 200) {
+          try {
+            const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+            reject(new Error(typeof body?.error === "string" ? body.error : "egress_request_rejected"));
+          } catch {
+            reject(new Error("egress_request_rejected"));
+          }
+          return;
+        }
         try {
           const result = JSON.parse(Buffer.concat(chunks).toString("utf8"));
           const body = Buffer.from(result.body, "base64");

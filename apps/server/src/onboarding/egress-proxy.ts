@@ -165,7 +165,15 @@ export async function buildEgressProxy(db: Db, config: AppConfig): Promise<http.
       reply.end(response);
     })().catch((error) => {
       const code = error instanceof SyntaxError ? 400 : error instanceof Error && error.message === "invalid_egress_capability" ? 401 : 403;
-      const body = JSON.stringify({ error: code === 401 ? "invalid_egress_capability" : "egress_request_rejected" });
+      const body = JSON.stringify({
+        error: error instanceof SyntaxError
+          ? "invalid_egress_request"
+          : error instanceof Error && error.message
+            ? error.message
+            : code === 401
+              ? "invalid_egress_capability"
+              : "egress_request_rejected"
+      });
       if (!reply.headersSent) reply.writeHead(code, { "content-type": "application/json", "content-length": Buffer.byteLength(body) });
       reply.end(body);
     });
