@@ -25,6 +25,14 @@ curl_json() {
   curl -fsS "$@"
 }
 
+admin_read() {
+  curl_json -H "Host: $admin_host" -H "cookie: $admin_cookie_header" "$@"
+}
+
+admin_write() {
+  curl_json -H "Host: $admin_host" -H "cookie: $admin_cookie_header" -H "x-csrf-token: $csrf_token" "$@"
+}
+
 csrf_token="$(
   jq -nc --arg username "$admin_username" --arg password "$PASS" '{username:$username,password:$password}' \
     | curl_json -c "$cookiejar" -H "Host: $admin_host" -H 'content-type: application/json' \
@@ -32,6 +40,9 @@ csrf_token="$(
     | jq -r '.csrfToken'
 )"
 test -n "$csrf_token"
+session_cookie="$(awk '$6 == "__Host-kcml_session" { print $7 }' "$cookiejar" | tail -n 1)"
+test -n "$session_cookie"
+admin_cookie_header="__Host-kcml_session=${session_cookie}; __Host-kcml_csrf=${csrf_token}"
 
 jq \
   --arg domain "$public_base_domain" \
@@ -45,7 +56,7 @@ jq \
   ' \
   "$release_dir/docs/service-manifest-external-api-v1.0.example.json" > "$manifest_file"
 
-services_json="$(curl_json -b "$cookiejar" -H "Host: $admin_host" "$base_url/api/managed-services")"
+services_json="$(admin_read "$base_url/api/managed-services")"
 service_id="$(jq -r '.services[] | select(.slug == "reference-external-api") | .id' <<<"$services_json" | head -n 1)"
 service_code="$(jq -r '.services[] | select(.slug == "reference-external-api") | .code' <<<"$services_json" | head -n 1)"
 
@@ -85,14 +96,14 @@ intent_body() {
 }
 
 if [ -n "$service_id" ]; then
-  jobs_json="$(curl_json -b "$cookiejar" -H "Host: $admin_host" "$base_url/api/onboarding-jobs")"
+  jobs_json="$(admin_read "$base_url/api/onboarding-jobs")"
   job_id="$(jq -r --arg code "$service_code" '.jobs[] | select(.code == $code) | .id' <<<"$jobs_json" | head -n 1)"
   job_lock_version="$(jq -r --arg job_id "$job_id" '.jobs[] | select(.id == $job_id) | .lockVersion' <<<"$jobs_json" | head -n 1)"
   test -n "$job_id"
   test -n "$job_lock_version"
   intent_json="$(intent_body "$job_id")"
   intent_response="$(
-    curl_json -b "$cookiejar" -H "Host: $admin_host" -H "x-csrf-token: $csrf_token" -H 'content-type: application/json' \
+    admin_write -H 'content-type: application/json' \
       --data "$intent_json" "$base_url/api/integration-intents"
   )"
   integration_token="$(jq -r '.integrationToken' <<<"$intent_response")"
@@ -107,7 +118,7 @@ if [ -n "$service_id" ]; then
 else
   intent_json="$(intent_body)"
   intent_response="$(
-    curl_json -b "$cookiejar" -H "Host: $admin_host" -H "x-csrf-token: $csrf_token" -H 'content-type: application/json' \
+    admin_write -H 'content-type: application/json' \
       --data "$intent_json" "$base_url/api/integration-intents"
   )"
   integration_token="$(jq -r '.integrationToken' <<<"$intent_response")"
@@ -122,7 +133,7 @@ else
 fi
 
 test -n "$service_id"
-state_json="$(curl_json -b "$cookiejar" -H "Host: $admin_host" "$base_url/api/managed-services/$service_id/state")"
+state_json="$(admin_read "$base_url/api/managed-services/$service_id/state")"
 lock_version="$(jq -r '.lockVersion' <<<"$state_json")"
 public_hostname="$(jq -r '.publicHostname' <<<"$state_json")"
 resource_uri="$(jq -r '.resourceUri' <<<"$state_json")"
@@ -130,10 +141,7 @@ api_state="$(jq -r '.apiState' <<<"$state_json")"
 
 if [ "$api_state" != "ENABLED" ]; then
   enable_body="$(jq -nc --arg reason "release_smoke_enable_reference_api" --arg password "$PASS" '{reason:$reason,password:$password}')"
-  curl_json \
-    -b "$cookiejar" \
-    -H "Host: $admin_host" \
-    -H "x-csrf-token: $csrf_token" \
+  admin_write \
     -H "if-match: \"$lock_version\"" \
     -H 'content-type: application/json' \
     --data "$enable_body" \
@@ -142,12 +150,12 @@ fi
 
 kaja_response="$(
   jq -nc --arg label "reference-external-api-smoke-${BUILD_ID:-release-smoke}" '{label:$label}' \
-    | curl_json -b "$cookiejar" -H "Host: $admin_host" -H "x-csrf-token: $csrf_token" -H 'content-type: application/json' \
+    | admin_write -H 'content-type: application/json' \
         --data @- "$base_url/api/kaja"
 )"
 client_id="$(jq -r '.publicId' <<<"$kaja_response")"
 client_secret="$(jq -r '.clientSecret' <<<"$kaja_response")"
-credentials_json="$(curl_json -b "$cookiejar" -H "Host: $admin_host" "$base_url/api/kaja")"
+credentials_json="$(admin_read "$base_url/api/kaja")"
 credential_id="$(jq -r --arg public_id "$client_id" '.credentials[] | select(.publicId == $public_id) | .id' <<<"$credentials_json" | head -n 1)"
 test -n "$credential_id"
 
@@ -163,11 +171,8 @@ permissions_body="$(
       ]
     }'
 )"
-curl_json \
+admin_write \
   -X PUT \
-  -b "$cookiejar" \
-  -H "Host: $admin_host" \
-  -H "x-csrf-token: $csrf_token" \
   -H 'content-type: application/json' \
   --data "$permissions_body" \
   "$base_url/api/kaja/$credential_id/managed-service-permissions" >/dev/null
@@ -209,12 +214,9 @@ direct_status="$(
 test "$direct_status" = "403"
 jq -e '.code == "REFERENCE_DIRECT_BYPASS_BLOCKED"' "$tmpdir/direct-bypass.json" >/dev/null
 
-curl_json -b "$cookiejar" -H "Host: $admin_host" "$base_url/api/managed-services/$service_id/logs?limit=20" \
+admin_read "$base_url/api/managed-services/$service_id/logs?limit=20" \
   | jq -e '.logs | map(select(.eventName == "external_api.gateway.request")) | length > 0' >/dev/null
 
-curl_json \
+admin_write \
   -X POST \
-  -b "$cookiejar" \
-  -H "Host: $admin_host" \
-  -H "x-csrf-token: $csrf_token" \
   "$base_url/api/kaja/$credential_id/revoke" >/dev/null
