@@ -73,13 +73,13 @@ insert into registration_revision(
     "displayName":"Home Assistant inventory",
     "businessPurpose":"Read approved Home Assistant inventory for production operations.",
     "owners":{"service":"KCML Service","technical":"KCML Platform","security":"KCML Security","operations":"KCML Operations"},
-    "source":{"runtime":"nodejs22-typescript","entrypoint":"src/index.ts","testCommand":"pnpm test"},
+    "source":{"runtime":"nodejs24-typescript","entrypoint":"src/index.ts","testCommand":"pnpm test"},
     "runtime":{"memoryMb":128,"cpuCores":0.5,"pidsLimit":32,"egressAllowlist":[]},
     "tool":{"title":"Home Assistant inventory","description":"Return the approved production Home Assistant inventory.","inputSchema":{"type":"object","additionalProperties":false},"outputSchema":{"type":"object","additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false,"taskSupport":"forbidden"}},
     "behavior":{"effectClass":"READ_ONLY","timeoutMs":10000,"maxConcurrency":1,"requestMaxBytes":65536,"responseMaxBytes":262144,"rateLimit":{"windowSeconds":60,"maxRequests":30},"shutdownPolicy":"COMPLETE_IN_FLIGHT","idempotencyPolicy":"Read only and safe to repeat.","retryPolicy":{"automaticRetry":false}},
     "testContract":{"safeInput":{},"expectedResult":{},"cleanupOrCompensation":"No cleanup required."},
     "protocol":{"protocolVersion":"2025-11-25","transport":"streamable-http","capabilities":["tools"],"errorCatalog":[{"code":"INTERNAL_ERROR","description":"The operation did not complete."}]},
-    "dependencies":{"runtime":[{"name":"nodejs22","version":"22.0.0"}],"externalServices":[],"secretRefs":[],"networkPolicy":{"outboundAllowlist":[],"dnsPolicy":"strict","databaseRole":"kcml_reader","filesystemPolicy":"read-only"},"dataClassification":{"input":"internal","output":"internal","containsPersonalData":false,"loggingPolicy":"redacted","redactionFields":[],"retentionPolicy":"365 days"}},
+    "dependencies":{"runtime":[{"name":"nodejs24","version":"24.0.0"}],"externalServices":[],"secretRefs":[],"networkPolicy":{"outboundAllowlist":[],"dnsPolicy":"strict","databaseRole":"kcml_reader","filesystemPolicy":"read-only"},"dataClassification":{"input":"internal","output":"internal","containsPersonalData":false,"loggingPolicy":"redacted","redactionFields":[],"retentionPolicy":"365 days"}},
     "monitoringProfile":{"sloTargets":{"availability":99.9},"probeIntervals":{"readiness":"60s"},"alertRules":[{"severity":"critical"}],"runbookRef":"docs/runbooks/kcml0002.md","primaryAlertChannel":"primary","backupAlertChannel":"backup"},
     "errorCatalog":[{"code":"INTERNAL_ERROR","description":"The operation did not complete."}],
     "change":{"changeClass":"INITIAL","migrationRef":"migrations/production.sql","rollbackRef":"docs/rollback.md","decommissionRef":"docs/decommission.md","previousApprovedRevision":null,"reviewDueAt":"2027-01-13T00:00:00.000Z"}
@@ -102,6 +102,29 @@ insert into integration_token(
   '20000000-0000-0000-0000-000000000002','Legacy production integration token',digest('legacy-token','sha256'),'v1','legacy0000000000',id,
   now()+interval '1 hour',now()+interval '1 hour',now()+interval '24 hours'
 from admin_account where username='karmar78';
+
+insert into onboarding_job(
+  id,token_id,server_id,kcml_number,code,hostname,tool_name,state,correlation_id,manifest
+) values (
+  '40000000-0000-0000-0000-000000000002',
+  '20000000-0000-0000-0000-000000000002',
+  '00000000-0000-0000-0000-000000000002',
+  2,'KCML0002','kcml0002.hcasc.cz','home_assistant_inventory','ACTIVE',
+  '50000000-0000-0000-0000-000000000002',
+  '{}'::jsonb
+);
+
+insert into egress_capability(
+  lookup_digest,fingerprint,job_id,server_id,allowlist,issued_at,expires_at
+) values (
+  digest('legacy-egress-capability','sha256'),
+  'legacy-egress',
+  '40000000-0000-0000-0000-000000000002',
+  '00000000-0000-0000-0000-000000000002',
+  '[]'::jsonb,
+  '2026-04-17T11:37:00Z'::timestamptz,
+  '2026-05-17T11:37:00Z'::timestamptz
+);
 
 insert into kaja_credential(id,public_id,secret_hash,secret_fingerprint,label)
 values ('30000000-0000-0000-0000-000000000002','Kaja0002','legacy-hash','legacy0000000000','Legacy production credential');
@@ -128,7 +151,7 @@ KCML_PROCESS_ROLE=migrate DATABASE_URL="$KCML_UPGRADE_DATABASE_URL" pnpm db:migr
 
 psql "$KCML_UPGRADE_DATABASE_URL" --no-psqlrc --set ON_ERROR_STOP=1 --tuples-only --no-align <<'SQL' | grep -Fx 'upgrade-ok'
 select case when
-  (select count(*) from schema_migration) = 22
+  (select count(*) from schema_migration) = 23
   and (select count(*) from legacy_schema_migration) = 9
   and (select count(*) from audit_event) = 1165
   and (select valid from verify_audit_chain()) is true
@@ -179,6 +202,14 @@ select case when
        and permission.revoked_at is null
        and token.revoked_at is null
        and token.service_revocation_epoch=service.revocation_epoch
+  )
+  and exists (
+    select 1
+      from egress_capability capability
+     where capability.server_id='00000000-0000-0000-0000-000000000002'
+       and capability.revoked_at is null
+       and capability.allowlist='["ha-inventory.hcasc.cz:443"]'::jsonb
+       and capability.expires_at > now() + interval '3000 days'
   )
 then 'upgrade-ok' else 'upgrade-failed' end;
 SQL

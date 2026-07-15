@@ -27,7 +27,13 @@ export async function createEgressCapability(db: Db, config: AppConfig, jobId: s
 }
 
 export async function attachEgressCapabilityToServer(db: Db, jobId: string, serverId: string): Promise<void> {
-  await db.query("update egress_capability set server_id=$2 where job_id=$1 and revoked_at is null", [jobId, serverId]);
+  await db.query(
+    `update egress_capability
+        set server_id=$2,
+            expires_at=greatest(expires_at, now()+interval '3650 days')
+      where job_id=$1 and revoked_at is null`,
+    [jobId, serverId]
+  );
 }
 
 export async function revokeEgressCapabilities(db: Db, jobId: string): Promise<void> {
