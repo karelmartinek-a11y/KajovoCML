@@ -33,6 +33,12 @@ report_error() {
   if [ -s "$tmpdir/managed-service-logs.json" ]; then
     echo "reference-smoke:managed-service-logs=$(jq -c . "$tmpdir/managed-service-logs.json" 2>/dev/null || tr -d '\n' < "$tmpdir/managed-service-logs.json")" >&2
   fi
+  if [ -s "$tmpdir/token-response.json" ]; then
+    echo "reference-smoke:token-response=$(jq -c 'if type == "object" then .access_token = "[REDACTED]" | .refresh_token = "[REDACTED]" else . end' "$tmpdir/token-response.json" 2>/dev/null || tr -d '\n' < "$tmpdir/token-response.json")" >&2
+  fi
+  if [ -s "$tmpdir/token-http-status.txt" ]; then
+    echo "reference-smoke:token-http-status=$(tr -d '\n' < "$tmpdir/token-http-status.txt")" >&2
+  fi
   exit "$exit_code"
 }
 cleanup() {
@@ -239,15 +245,19 @@ admin_write \
 step issue-access-token
 client_id_encoded="$(jq -rn --arg value "$client_id" '$value|@uri')"
 client_secret_encoded="$(jq -rn --arg value "$client_secret" '$value|@uri')"
-resource_encoded="$(jq -rn --arg value "$resource_uri" '$value|@uri')"
-basic_auth="$(printf '%s:%s' "$client_id_encoded" "$client_secret_encoded" | base64)"
-token_json="$(
-  curl_json -H "Host: $auth_host" \
+basic_auth="$(printf '%s:%s' "$client_id_encoded" "$client_secret_encoded" | base64 | tr -d '\r\n')"
+token_http_status="$(
+  curl -sS -o "$tmpdir/token-response.json" -w '%{http_code}' \
+    -H "Host: $auth_host" \
     -H "authorization: Basic $basic_auth" \
     -H 'content-type: application/x-www-form-urlencoded' \
-    --data "grant_type=client_credentials&resource=$resource_encoded" \
+    --data-urlencode 'grant_type=client_credentials' \
+    --data-urlencode "resource=$resource_uri" \
     "$base_url/oauth/token"
 )"
+printf '%s' "$token_http_status" > "$tmpdir/token-http-status.txt"
+test "$token_http_status" = "200"
+token_json="$(cat "$tmpdir/token-response.json")"
 access_token="$(jq -r '.access_token' <<<"$token_json")"
 test -n "$access_token"
 test "$access_token" != "null"
