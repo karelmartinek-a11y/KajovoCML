@@ -285,6 +285,30 @@ if [ "$kcml0002_state" != "ACTIVE/HEALTHY" ] && [ "${kcml0002_state#TRIAL/}" != 
     rm -f "$test_response_file"
     sleep 2
   done
+  if [ "$kcml0002_promoted" != "true" ]; then
+    inventory_probe_file="$(mktemp)"
+    inventory_probe_status="$(
+      curl -sS --max-time 10 -o "$inventory_probe_file" -w '%{http_code}' \
+        "https://ha-inventory.hcasc.cz/v1/catalog" \
+        || true
+    )"
+    if [ "$inventory_probe_status" = "200" ]; then
+      echo "release-check:mcp_kcml0002_inventory_status=200"
+    else
+      echo "release-check:mcp_kcml0002_inventory_status=$inventory_probe_status body=$(tr -d '\n' < "$inventory_probe_file" | head -c 256)"
+    fi
+    rm -f "$inventory_probe_file"
+    recent_kcml0002_logs="$(psql "$app_database_url" --no-psqlrc --tuples-only --no-align --quiet --command \
+      "select coalesce(json_agg(json_build_object('createdAt',created_at,'level',level,'event',event_name,'fields',fields) order by created_at desc)::text,'[]')
+         from (
+           select created_at, level, event_name, fields
+             from runtime_log_event
+            where server_id='$kcml0002_server_id'
+            order by created_at desc
+            limit 5
+         ) recent")"
+    echo "release-check:mcp_kcml0002_recent_logs=$recent_kcml0002_logs"
+  fi
   rm -f "$login_headers_file" "$login_body_file"
   test "$kcml0002_promoted" = "true"
 fi
