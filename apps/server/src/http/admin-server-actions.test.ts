@@ -311,6 +311,78 @@ describe("admin server actions", () => {
     expect(blocked.json()).toMatchObject({ error: "monitoring_revision_required" });
   });
 
+  it("deletes a registered server only after explicit code confirmation and reauthentication", async () => {
+    const sessionHash = await argon2.hash(sessionValue, { type: argon2.argon2id, memoryCost: 4096, timeCost: 2, parallelism: 1 });
+    const passwordHash = await argon2.hash("current-password", { type: argon2.argon2id, memoryCost: 4096, timeCost: 2, parallelism: 1 });
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes("from admin_session")) {
+        return { rowCount: 1, rows: [{ id: "session-id", account_id: "account-id", session_hash: sessionHash, username: "admin" }] };
+      }
+      if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") return { rowCount: 0, rows: [] };
+      if (sql === "select password_hash,mfa_enabled,mfa_secret from admin_account where id=$1") {
+        return { rowCount: 1, rows: [{ password_hash: passwordHash, mfa_enabled: false, mfa_secret: null }] };
+      }
+      if (sql === "select code from mcp_server where id=$1") {
+        return { rowCount: 1, rows: [{ code: "KCML0007" }] };
+      }
+      if (sql.includes("from mcp_server") && sql.includes("for update")) {
+        return {
+          rowCount: 1,
+          rows: [{
+            id: "server-id",
+            code: "KCML0007",
+            hostname: "kcml0007.hcasc.cz",
+            tool_name: "example_tool",
+            display_name: "Example",
+            registration_state: "REGISTERED_DISABLED",
+            operational_state: "DISABLED",
+            active_revision_id: "revision-id"
+          }]
+        };
+      }
+      if (sql.includes("from onboarding_job")) return { rowCount: 1, rows: [{ id: "job-id", token_id: "token-id", state: "ACTIVE" }] };
+      if (sql.includes("from integration_token") && sql.includes("for update")) {
+        return { rowCount: 1, rows: [{ id: "token-id", fingerprint: "deadbeefdeadbeefdeadbeefdeadbeef" }] };
+      }
+      if (sql.includes("from managed_service")) return { rowCount: 1, rows: [{ id: "managed-id", code: "KCML0007" }] };
+      return { rowCount: 1, rows: [] };
+    });
+    const db = { query, connect: vi.fn(async () => ({ query, release: vi.fn() })) } as unknown as Db;
+    app = Fastify();
+    await app.register(cookie, { secret: config.SESSION_SECRET_BASE64.toString("base64url") });
+    registerAdminRoutes(app, db, config);
+    await app.ready();
+
+    const mismatch = await app.inject({
+      method: "POST",
+      url: "/api/mcp-servers/server-id/delete",
+      headers: {
+        host: config.ADMIN_HOST,
+        cookie: `__Host-kcml_session=${sessionValue}; __Host-kcml_csrf=${csrfValue}`,
+        "x-csrf-token": csrfValue
+      },
+      payload: { confirmedCode: "KCML9999", reason: "Odstraňuji starou registraci serveru.", password: "current-password" }
+    });
+    expect(mismatch.statusCode, mismatch.body).toBe(409);
+    expect(mismatch.json()).toMatchObject({ error: "confirmation_code_mismatch" });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/mcp-servers/server-id/delete",
+      headers: {
+        host: config.ADMIN_HOST,
+        cookie: `__Host-kcml_session=${sessionValue}; __Host-kcml_csrf=${csrfValue}`,
+        "x-csrf-token": csrfValue
+      },
+      payload: { confirmedCode: "KCML0007", reason: "Odstraňuji starou registraci serveru.", password: "current-password" }
+    });
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json()).toMatchObject({ ok: true, deletedServerId: "server-id" });
+    expect(query.mock.calls.some(([sql]) => String(sql).includes("delete from onboarding_job"))).toBe(true);
+    expect(query.mock.calls.some(([sql]) => String(sql).includes("delete from managed_service"))).toBe(true);
+    expect(query.mock.calls.some(([sql]) => String(sql).includes("delete from mcp_server"))).toBe(true);
+  });
+
   it("returns admin security overview with active sessions", async () => {
     const sessionHash = await argon2.hash(sessionValue, { type: argon2.argon2id, memoryCost: 4096, timeCost: 2, parallelism: 1 });
     const db = {

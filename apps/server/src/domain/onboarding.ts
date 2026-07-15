@@ -729,6 +729,109 @@ export async function deleteIntegrationToken(db: Db, tokenId: string, actorId: s
   });
 }
 
+export async function deleteRegisteredServer(db: Db, serverId: string, actorId: string, correlationId: string, reason: string): Promise<void> {
+  await tx(db, async (client) => {
+    const server = await client.query(
+      `select id, code, hostname, tool_name, display_name, registration_state, operational_state, active_revision_id
+         from mcp_server
+        where id=$1
+        for update`,
+      [serverId]
+    );
+    if (!server.rowCount) throw Object.assign(new Error("not_found"), { statusCode: 404 });
+    const serverRow = server.rows[0];
+    const jobs = await client.query(
+      `select id, token_id, state
+         from onboarding_job
+        where server_id=$1 or code=$2
+        for update`,
+      [serverId, serverRow.code]
+    );
+    const jobIds = jobs.rows.map((row) => String(row.id));
+    const tokenIds = [...new Set(jobs.rows.map((row) => String(row.token_id)))];
+    const tokenFingerprints = tokenIds.length
+      ? await client.query(
+        `select id, fingerprint
+           from integration_token
+          where id = any($1::uuid[])
+          for update`,
+        [tokenIds]
+      )
+      : { rows: [] as Array<{ id: string; fingerprint: string }> };
+    const managed = await client.query(
+      `select id, code
+         from managed_service
+        where legacy_mcp_server_id=$1
+        for update`,
+      [serverId]
+    );
+    const managedIds = managed.rows.map((row) => String(row.id));
+
+    await client.query("update access_token set revoked_at=coalesce(revoked_at,now()) where server_id=$1", [serverId]);
+    await client.query("update egress_capability set revoked_at=coalesce(revoked_at,now()) where server_id=$1", [serverId]);
+
+    if (tokenIds.length) {
+      await client.query(
+        `update integration_token
+            set onboarding_job_id=null,
+                revoked_at=coalesce(revoked_at,now()),
+                deleted_at=coalesce(deleted_at,now()),
+                lock_version=lock_version+1
+          where id = any($1::uuid[])`,
+        [tokenIds]
+      );
+    }
+
+    if (jobIds.length) {
+      await client.query("delete from onboarding_job where id = any($1::uuid[])", [jobIds]);
+    }
+
+    await client.query("delete from alert_webhook_delivery where alert_id in (select id from operational_alert where server_id=$1)", [serverId]);
+    await client.query("delete from operational_alert where server_id=$1", [serverId]);
+    await client.query("delete from server_state_history where server_id=$1", [serverId]);
+    await client.query("delete from mcp_invocation_metric where server_id=$1", [serverId]);
+    await client.query("delete from mcp_invocation where server_id=$1", [serverId]);
+    await client.query("delete from function_statistics where server_id=$1", [serverId]);
+    await client.query("delete from monitoring_profile where server_id=$1", [serverId]);
+    await client.query("delete from kaja_permission where server_id=$1", [serverId]);
+    await client.query("delete from access_token where server_id=$1", [serverId]);
+    await client.query("delete from egress_capability where server_id=$1", [serverId]);
+
+    if (managedIds.length) {
+      await client.query("delete from managed_service where id = any($1::uuid[])", [managedIds]);
+    }
+
+    await client.query("update mcp_server set active_revision_id=null where id=$1", [serverId]);
+    await client.query("delete from registration_revision where server_id=$1", [serverId]);
+    await client.query("delete from mcp_server where id=$1", [serverId]);
+
+    await appendAudit(client, {
+      eventType: "mcp_server.deleted",
+      actorType: "admin",
+      actorId,
+      objectType: "mcp_server",
+      objectId: serverId,
+      before: {
+        code: serverRow.code,
+        hostname: serverRow.hostname,
+        toolName: serverRow.tool_name,
+        displayName: serverRow.display_name,
+        registrationState: serverRow.registration_state,
+        operationalState: serverRow.operational_state,
+        onboardingJobIds: jobIds,
+        integrationTokenFingerprints: tokenFingerprints.rows.map((row) => String(row.fingerprint)),
+        managedServiceIds: managedIds
+      },
+      after: {
+        deleted: true,
+        code: serverRow.code,
+        reason
+      },
+      correlationId
+    });
+  });
+}
+
 export async function cancelOnboardingJob(db: Db, jobId: string, actorType: "admin" | "integration_token", actorId: string, correlationId: string): Promise<void> {
   await tx(db, async (client) => {
     const result = await client.query("select * from onboarding_job where id=$1 for update", [jobId]);

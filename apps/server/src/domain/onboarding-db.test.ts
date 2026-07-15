@@ -8,6 +8,7 @@ import {
   authenticateIntegrationToken,
   createIntegrationToken,
   createOnboardingJob,
+  deleteRegisteredServer,
   requestDigest,
   releaseQuarantinedOnboardingJob,
   revokeIntegrationToken,
@@ -193,5 +194,43 @@ describe.skipIf(!enabled)("onboarding PostgreSQL transactions", () => {
     expect(stored.rows[0]).toMatchObject({ state: "AWAITING_REVISION", completed_at: null });
     const transition = await db.query("select event_type from onboarding_event where job_id=$1 order by id desc limit 1", [job.id]);
     expect(transition.rows[0].event_type).toBe("quarantine.revision_approved");
+  });
+
+  it("deletes a registered server together with its onboarding state and forces a fresh token for any new registration", async () => {
+    const created = await createIntegrationToken(db, config, adminId, randomUUID(), "Deletion test", descriptor);
+    const principal = await authenticateIntegrationToken(db, created.token, config);
+    const { manifest, digest: manifestDigest } = validateOnboardingManifest(manifestInput);
+    const sourceDigest = `sha256:${"d".repeat(64)}`;
+    const job = await createOnboardingJob(db, config, principal, "db-test-delete-server", manifest, {
+      archivePath: "/tmp/source.zip",
+      sourceDigest,
+      manifestDigest,
+      requestDigest: requestDigest(manifestDigest, sourceDigest),
+      validation: { fileCount: 5 }
+    }, randomUUID());
+    await db.query("update onboarding_job set state='DEPLOYING' where id=$1", [job.id]);
+    const activationJob: ActivationJob = {
+      id: job.id,
+      code: String(job.code),
+      hostname: String(job.hostname),
+      toolName: String(job.toolName),
+      manifestDigest,
+      sourceDigest,
+      imageReference: "ghcr.io/example/handler:delete-test",
+      imageDigest: `sha256:${"7".repeat(64)}`,
+      sbomDigest: `sha256:${"8".repeat(64)}`,
+      provenanceDigest: `sha256:${"9".repeat(64)}`,
+      sourceCommit: "delete-test-commit",
+      buildId: "delete-test-build",
+      manifest
+    };
+    const serverId = await registerDisabledServer(db, activationJob, "/run/kcml/delete-test.sock", randomUUID());
+    await deleteRegisteredServer(db, serverId, adminId, randomUUID(), "Registration retired and must be recreated with a new onboarding token.");
+
+    expect((await db.query("select count(*)::int as count from mcp_server where code=$1", [job.code])).rows[0].count).toBe(0);
+    expect((await db.query("select count(*)::int as count from onboarding_job where id=$1", [job.id])).rows[0].count).toBe(0);
+    expect((await db.query("select count(*)::int as count from integration_token where id=$1 and deleted_at is null", [created.id])).rows[0].count).toBe(0);
+    await expect(authenticateIntegrationToken(db, created.token, config)).rejects.toThrow("invalid_integration_token");
+    await expect(createIntegrationToken(db, config, adminId, randomUUID(), "Deletion test resume", descriptor, job.id)).rejects.toThrow("not_found");
   });
 });

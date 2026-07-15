@@ -26,6 +26,7 @@ import { buildReadinessReport } from "../domain/readiness.js";
 import { evaluateRecertification } from "../domain/recertification.js";
 import { digestCanonicalJson } from "../domain/registration.js";
 import { transitionServerState } from "../domain/server-state.js";
+import { deleteRegisteredServer } from "../domain/onboarding.js";
 import { matchesExpectedResult } from "../onboarding/activation.js";
 import { decryptMfaSecret, encryptMfaSecret, hmacToken } from "../security/secrets.js";
 import { getHandler } from "../handlers/registry.js";
@@ -1048,6 +1049,33 @@ export function registerAdminRoutes(app: FastifyInstance, db: Db, config: AppCon
     const { id } = request.params as { id: string };
     try {
       return await saveMonitoringProfile(db, session.accountId, correlationId, id, request.body);
+    } catch (error) {
+      return sendError(reply, Number((error as { statusCode?: number }).statusCode ?? 500), error instanceof Error ? error.message : "operation_failed", undefined, correlationId);
+    }
+  });
+
+  app.post("/api/mcp-servers/:id/delete", {
+    config: { rateLimit: { max: 3, timeWindow: "10 minutes", groupId: "mcp-server-delete" } }
+  }, async (request, reply) => {
+    const correlationId = randomUUID();
+    if (hostOf(request.headers.host) !== config.ADMIN_HOST) return sendError(reply, 404, "not_found", undefined, correlationId);
+    const session = await sessionAccount(db, request, config);
+    if (!session) return sendError(reply, 401, "unauthorized", undefined, correlationId);
+    if (!requireCsrf(request)) return sendError(reply, 403, "csrf_failed", undefined, correlationId);
+    const { id } = request.params as { id: string };
+    const body = request.body as Record<string, unknown>;
+    const confirmedCode = typeof body.confirmedCode === "string" ? body.confirmedCode.trim() : "";
+    const reason = typeof body.reason === "string" ? body.reason.trim() : "";
+    if (reason.length < 10) return sendError(reply, 400, "invalid_delete_request", undefined, correlationId);
+    if (!await requireAdminReauthentication(db, config, session.accountId, body)) {
+      return sendError(reply, 403, "reauthentication_failed", undefined, correlationId);
+    }
+    try {
+      const server = await db.query("select code from mcp_server where id=$1", [id]);
+      if (!server.rowCount) return sendError(reply, 404, "not_found", undefined, correlationId);
+      if (confirmedCode !== String(server.rows[0].code)) return sendError(reply, 409, "confirmation_code_mismatch", undefined, correlationId);
+      await deleteRegisteredServer(db, id, session.accountId, correlationId, reason);
+      return { ok: true, deletedServerId: id };
     } catch (error) {
       return sendError(reply, Number((error as { statusCode?: number }).statusCode ?? 500), error instanceof Error ? error.message : "operation_failed", undefined, correlationId);
     }
