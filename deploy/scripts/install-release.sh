@@ -254,15 +254,39 @@ if [ "$kcml0002_state" != "ACTIVE/HEALTHY" ] && [ "${kcml0002_state#TRIAL/}" != 
   test -n "$session_cookie"
   test "$csrf_cookie" = "$csrf_token"
   admin_cookie_header="__Host-kcml_session=${session_cookie}; __Host-kcml_csrf=${csrf_cookie}"
-  test_response_file="$(mktemp)"
-  curl -fsS -o "$test_response_file" \
-    -H "Host: $admin_host" \
-    -H "cookie: $admin_cookie_header" \
-    -H "x-csrf-token: $csrf_token" \
-    -X POST \
-    "http://127.0.0.1:${PORT:-3010}/api/mcp-servers/$kcml0002_server_id/test"
-  jq -e '.ok == true' "$test_response_file" >/dev/null
-  rm -f "$login_headers_file" "$login_body_file" "$test_response_file"
+  kcml0002_promoted=false
+  for _attempt in $(seq 1 30); do
+    kcml0002_state="$(psql "$app_database_url" --no-psqlrc --tuples-only --no-align --quiet --command \
+      "select registration_state::text || '/' || operational_state::text from mcp_server where code='KCML0002'")"
+    if [ "$kcml0002_state" = "ACTIVE/HEALTHY" ]; then
+      kcml0002_promoted=true
+      break
+    fi
+    test_response_file="$(mktemp)"
+    test_http_status="$(
+      curl -sS -o "$test_response_file" -w '%{http_code}' \
+        -H "Host: $admin_host" \
+        -H "cookie: $admin_cookie_header" \
+        -H "x-csrf-token: $csrf_token" \
+        -X POST \
+        "http://127.0.0.1:${PORT:-3010}/api/mcp-servers/$kcml0002_server_id/test" \
+        || true
+    )"
+    if [ "$test_http_status" = "200" ] && jq -e '.ok == true' "$test_response_file" >/dev/null; then
+      kcml0002_promoted=true
+      rm -f "$test_response_file"
+      break
+    fi
+    if [ -s "$test_response_file" ]; then
+      echo "release-check:mcp_kcml0002_test_status=$test_http_status body=$(jq -c . "$test_response_file" 2>/dev/null || tr -d '\n' < "$test_response_file")"
+    else
+      echo "release-check:mcp_kcml0002_test_status=$test_http_status body=<empty>"
+    fi
+    rm -f "$test_response_file"
+    sleep 2
+  done
+  rm -f "$login_headers_file" "$login_body_file"
+  test "$kcml0002_promoted" = "true"
 fi
 wait_for_sql_equals "mcp_kcml0002_state" "ACTIVE/HEALTHY" "select registration_state::text || '/' || operational_state::text from mcp_server where code='KCML0002'" 90 2
 wait_for_sql_equals "migration_019" "1" "select count(*) from schema_migration where version='019_postgres_http_rate_limiting.sql'"
