@@ -320,7 +320,8 @@ function ServerDetailModal({
   onRunTest,
   onLoadMonitoringProfile,
   onSaveMonitoringProfile,
-  onStartRevision
+  onStartRevision,
+  onDeleteServer
 }: {
   server: Server;
   onClose: () => void;
@@ -329,11 +330,13 @@ function ServerDetailModal({
   onLoadMonitoringProfile: (server: Server) => Promise<MonitoringProfile>;
   onSaveMonitoringProfile: (server: Server, profile: MonitoringProfile) => Promise<void>;
   onStartRevision: (server: Server) => Promise<void>;
+  onDeleteServer: (server: Server, input: { confirmedCode: string; reason: string; password: string; totp: string }) => Promise<void>;
 }) {
   const [busy, setBusy] = useState(false);
   const [testStatus, setTestStatus] = useState<{ ok: boolean; latencyMs: number } | null>(null);
   const [error, setError] = useState("");
   const [monitoring, setMonitoring] = useState<MonitoringProfile | null>(null);
+  const [deleteOpen, setDeleteOpen] = useState(false);
   const activeRevision = ["ACTIVE", "TRIAL"].includes(server.registrationState);
   useEffect(() => {
     void onLoadMonitoringProfile(server)
@@ -435,9 +438,19 @@ function ServerDetailModal({
           {!activeRevision ? <button type="button" className="secondary" disabled={busy || !monitoring} onClick={() => { void saveMonitoring(); }}><Save size={16} /> Uložit monitoring</button> : <button type="button" disabled={busy} onClick={() => { setBusy(true); void onStartRevision(server).catch((err) => setError(err instanceof Error ? err.message : "Založení revize selhalo")).finally(() => setBusy(false)); }}><Workflow size={16} /> Založit změnovou revizi</button>}
           <button type="button" className="secondary" disabled={busy} onClick={() => { void runTest(); }}><Terminal size={16} /> Otestovat server</button>
           <button type="button" className="secondary" disabled={busy} onClick={() => { void toggleEnabled(); }}>{server.enabled ? "Vypnout server" : "Zapnout server"}</button>
+          <button type="button" className="danger-button" disabled={busy} onClick={() => setDeleteOpen(true)}><Ban size={16} /> Smazat registraci</button>
           <button type="button" className="secondary" onClick={onClose}>Zavřít detail</button>
         </footer>
       </div>
+      {deleteOpen ? <DeleteServerModal
+        server={server}
+        onClose={() => setDeleteOpen(false)}
+        onDeleted={async (input) => {
+          await onDeleteServer(server, input);
+          setDeleteOpen(false);
+          onClose();
+        }}
+      /> : null}
     </Modal>
   );
 }
@@ -453,6 +466,7 @@ function MonitoringPage({
   onLoadMonitoringProfile,
   onSaveMonitoringProfile,
   onStartRevision,
+  onDeleteServer,
   onTestWebhook,
   onAcknowledgeAlert,
   onSuppressAlert,
@@ -468,6 +482,7 @@ function MonitoringPage({
   onLoadMonitoringProfile: (server: Server) => Promise<MonitoringProfile>;
   onSaveMonitoringProfile: (server: Server, profile: MonitoringProfile) => Promise<void>;
   onStartRevision: (server: Server) => Promise<void>;
+  onDeleteServer: (server: Server, input: { confirmedCode: string; reason: string; password: string; totp: string }) => Promise<void>;
   onTestWebhook: () => Promise<void>;
   onAcknowledgeAlert: (alert: OperationalAlert) => Promise<void>;
   onSuppressAlert: (alert: OperationalAlert, reason: string, until: string) => Promise<void>;
@@ -549,9 +564,52 @@ function MonitoringPage({
         <div className="table-scroll"><table><thead><tr><th>Čas</th><th>Server</th><th>Registrace</th><th>Provoz</th><th>Recertifikace</th><th>Důvod</th><th>Correlation ID</th></tr></thead><tbody>{overview.stateHistory.map((entry) => <tr key={entry.id}><td>{formatDate(entry.recorded_at)}</td><td>{entry.code}</td><td><span className="badge neutral">{entry.registration_state}</span></td><td>{entry.operational_state}</td><td>{entry.recertification_phase}</td><td>{entry.reason}</td><td><code>{entry.correlation_id}</code></td></tr>)}</tbody></table></div>
         {overview.stateHistory.length === 0 ? <div className="empty-state"><Clock3 size={34} /><strong>Historie je prázdná</strong></div> : null}
       </section> : null}
-      {detailServer ? <ServerDetailModal server={servers.find((server) => server.id === detailServer.id) ?? detailServer} onClose={() => setDetailServer(null)} onToggleEnabled={onToggleEnabled} onRunTest={onRunTest} onLoadMonitoringProfile={onLoadMonitoringProfile} onSaveMonitoringProfile={onSaveMonitoringProfile} onStartRevision={onStartRevision} /> : null}
+      {detailServer ? <ServerDetailModal server={servers.find((server) => server.id === detailServer.id) ?? detailServer} onClose={() => setDetailServer(null)} onToggleEnabled={onToggleEnabled} onRunTest={onRunTest} onLoadMonitoringProfile={onLoadMonitoringProfile} onSaveMonitoringProfile={onSaveMonitoringProfile} onStartRevision={onStartRevision} onDeleteServer={onDeleteServer} /> : null}
       {suppressingAlert ? <AlertSuppressionModal alert={suppressingAlert} onClose={() => setSuppressingAlert(null)} onSubmit={async (reason, until) => { await onSuppressAlert(suppressingAlert, reason, until); setSuppressingAlert(null); }} /> : null}
     </>
+  );
+}
+
+function DeleteServerModal({
+  server,
+  onClose,
+  onDeleted
+}: {
+  server: Server;
+  onClose: () => void;
+  onDeleted: (input: { confirmedCode: string; reason: string; password: string; totp: string }) => Promise<void>;
+}) {
+  const [confirmedCode, setConfirmedCode] = useState("");
+  const [reason, setReason] = useState("");
+  const [password, setPassword] = useState("");
+  const [totp, setTotp] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      await onDeleted({ confirmedCode: confirmedCode.trim(), reason: reason.trim(), password, totp: totp.trim() });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Smazání registrace selhalo");
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <Modal title="Smazat registraci serveru" onClose={onClose}>
+      <form className="modal-form" onSubmit={(event) => { void submit(event); }}>
+        <div className="notice error"><AlertTriangle size={18} /><span>Server bude kompletně odstraněn z registru KCML. Pokud se bude registrovat znovu, musí být vystaven nový onboarding token a proběhne celý onboarding od začátku.</span></div>
+        <label>Důvod smazání<textarea autoFocus value={reason} onChange={(event) => setReason(event.target.value)} minLength={10} maxLength={1000} rows={4} /></label>
+        <label>Pro potvrzení opište přesný KCML kód<input value={confirmedCode} onChange={(event) => setConfirmedCode(event.target.value)} placeholder={server.code} /></label>
+        <input type="text" autoComplete="username" value="karmar78" readOnly hidden />
+        <label>Heslo administrátora<input name="password" value={password} onChange={(event) => setPassword(event.target.value)} type="password" autoComplete="current-password" /></label>
+        <label>Jednorázový MFA kód (je-li zapnutý)<input value={totp} onChange={(event) => setTotp(event.target.value)} inputMode="numeric" autoComplete="one-time-code" /></label>
+        {error ? <p className="error">{error}</p> : null}
+        <footer className="modal-actions"><button type="button" className="secondary" onClick={onClose}>Zrušit</button><button type="submit" className="danger-button" disabled={busy || confirmedCode !== server.code || reason.trim().length < 10 || !password}>{busy ? "Mažu…" : "Smazat registraci"}</button></footer>
+      </form>
+    </Modal>
   );
 }
 
@@ -962,6 +1020,15 @@ function Dashboard({ accountName, onLogout }: { accountName: string | null; onLo
     await load();
   }
 
+  async function deleteServerRegistration(server: Server, input: { confirmedCode: string; reason: string; password: string; totp: string }) {
+    await api(`/api/mcp-servers/${server.id}/delete`, {
+      method: "POST",
+      headers: { "x-csrf-token": csrf() },
+      body: JSON.stringify(input)
+    });
+    await load();
+  }
+
   async function testAlertWebhooks() {
     await api("/api/alerts/test", { method: "POST", headers: { "x-csrf-token": csrf() }, body: "{}" });
     await load();
@@ -1123,7 +1190,7 @@ function Dashboard({ accountName, onLogout }: { accountName: string | null; onLo
       <section className="workspace">
         <div className="mobile-topbar"><div className="brand-row"><span className="brand-mark"><ShieldCheck size={20} /></span><strong>KCML</strong></div><span>{pageNames[page]}</span></div>
         {error && <div className="notice error"><AlertTriangle size={18} /> {error}</div>}
-        {page === "monitoring" && <MonitoringPage servers={servers} probes={probes} overview={monitoringOverview} onRefresh={() => { void load(); }} onAutomatedOnboarding={() => setIntegrationCreate({})} onToggleEnabled={toggleServerEnabled} onRunTest={runServerTest} onLoadMonitoringProfile={loadMonitoringProfile} onSaveMonitoringProfile={saveMonitoringProfile} onStartRevision={startServerRevision} onTestWebhook={testAlertWebhooks} onAcknowledgeAlert={acknowledgeAlert} onSuppressAlert={suppressAlert} onRetryDelivery={retryAlertDelivery} />}
+        {page === "monitoring" && <MonitoringPage servers={servers} probes={probes} overview={monitoringOverview} onRefresh={() => { void load(); }} onAutomatedOnboarding={() => setIntegrationCreate({})} onToggleEnabled={toggleServerEnabled} onRunTest={runServerTest} onLoadMonitoringProfile={loadMonitoringProfile} onSaveMonitoringProfile={saveMonitoringProfile} onStartRevision={startServerRevision} onDeleteServer={deleteServerRegistration} onTestWebhook={testAlertWebhooks} onAcknowledgeAlert={acknowledgeAlert} onSuppressAlert={suppressAlert} onRetryDelivery={retryAlertDelivery} />}
         {page === "integration" && <IntegrationTokensPage tokens={integrationTokens} jobs={onboardingJobs} onCreate={() => setIntegrationCreate({})} onOpenJob={setSelectedJobId} onResume={(jobId) => setIntegrationCreate({ resumeJobId: jobId })} onRevoke={(token) => setIntegrationConfirm({ token, action: "revoke" })} onDelete={(token) => setIntegrationConfirm({ token, action: "delete" })} onRefresh={() => { void load(); }} />}
         {page === "tokens" && <TokensPage credentials={credentials} onOpenCreate={() => setCreateOpen(true)} onEditPermissions={openPermissions} onConfirm={(credential, action) => setConfirm({ credential, action })} onRefresh={() => { void load(); }} />}
         {page === "permissions" && <PermissionsPage credentials={credentials} servers={servers} selectedId={selectedCredentialId} permissions={permissions} saving={savingPermissions} onSelect={setSelectedCredentialId} onChange={setPermissions} onSave={() => { void savePermissions(); }} />}
