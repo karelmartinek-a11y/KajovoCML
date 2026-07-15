@@ -20,6 +20,9 @@ step() {
 }
 report_error() {
   local exit_code=$?
+  if [ -n "${service_id:-}" ] && [ -n "${admin_cookie_header:-}" ] && [ -n "${base_url:-}" ] && [ ! -s "$tmpdir/managed-service-logs.json" ]; then
+    admin_read "$base_url/api/managed-services/$service_id/logs?limit=100" > "$tmpdir/managed-service-logs.json" 2>/dev/null || true
+  fi
   echo "reference-smoke-failed:$current_step" >&2
   if [ -s "$tmpdir/onboarding-response.json" ]; then
     echo "reference-smoke:onboarding-response=$(jq -c . "$tmpdir/onboarding-response.json" 2>/dev/null || tr -d '\n' < "$tmpdir/onboarding-response.json")" >&2
@@ -38,6 +41,12 @@ report_error() {
   fi
   if [ -s "$tmpdir/token-http-status.txt" ]; then
     echo "reference-smoke:token-http-status=$(tr -d '\n' < "$tmpdir/token-http-status.txt")" >&2
+  fi
+  if [ -s "$tmpdir/gateway-read.json" ]; then
+    echo "reference-smoke:gateway-read=$(jq -c . "$tmpdir/gateway-read.json" 2>/dev/null || tr -d '\n' < "$tmpdir/gateway-read.json")" >&2
+  fi
+  if [ -s "$tmpdir/gateway-read-status.txt" ]; then
+    echo "reference-smoke:gateway-read-status=$(tr -d '\n' < "$tmpdir/gateway-read-status.txt")" >&2
   fi
   exit "$exit_code"
 }
@@ -263,12 +272,25 @@ access_token="$(jq -r '.access_token' <<<"$token_json")"
 test -n "$access_token"
 test "$access_token" != "null"
 
+step verify-direct-bypass-block
+direct_status="$(
+  curl -sS -o "$tmpdir/direct-bypass.json" -w '%{http_code}' \
+    -H "Host: reference-api.$public_base_domain" \
+    "$base_url/v1/shifts/release-smoke"
+)"
+test "$direct_status" = "403"
+jq -e '.code == "REFERENCE_DIRECT_BYPASS_BLOCKED"' "$tmpdir/direct-bypass.json" >/dev/null
+
 step exercise-gateway-read
-curl_json \
-  -H "Host: $public_hostname" \
-  -H "authorization: Bearer $access_token" \
-  "$base_url/v1/shifts/release-smoke" \
-  | jq -e '.items[0].employeeId == "release-smoke"' >/dev/null
+gateway_read_status="$(
+  curl -sS -o "$tmpdir/gateway-read.json" -w '%{http_code}' \
+    -H "Host: $public_hostname" \
+    -H "authorization: Bearer $access_token" \
+    "$base_url/v1/shifts/release-smoke"
+)"
+printf '%s' "$gateway_read_status" > "$tmpdir/gateway-read-status.txt"
+test "$gateway_read_status" = "200"
+jq -e '.items[0].employeeId == "release-smoke"' "$tmpdir/gateway-read.json" >/dev/null
 
 step exercise-gateway-write
 curl_json \
@@ -279,15 +301,6 @@ curl_json \
   --data '{"employeeId":"release-smoke","days":1}' \
   "$base_url/v1/time-off" \
   | jq -e '.accepted == true' >/dev/null
-
-step verify-direct-bypass-block
-direct_status="$(
-  curl -sS -o "$tmpdir/direct-bypass.json" -w '%{http_code}' \
-    -H "Host: reference-api.$public_base_domain" \
-    "$base_url/v1/shifts/release-smoke"
-)"
-test "$direct_status" = "403"
-jq -e '.code == "REFERENCE_DIRECT_BYPASS_BLOCKED"' "$tmpdir/direct-bypass.json" >/dev/null
 
 step verify-runtime-logs
 runtime_logs_ready=false
