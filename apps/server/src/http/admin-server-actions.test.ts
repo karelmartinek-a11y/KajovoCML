@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadConfig, type AppConfig } from "../config.js";
 import type { Db } from "../db.js";
 import { hashAuditEvent } from "../domain/audit.js";
+import { validateStoredOnboardingManifest } from "../domain/registration.js";
 import { encryptMfaSecret } from "../security/secrets.js";
 import { registerAdminRoutes } from "./admin-routes.js";
 
@@ -32,7 +33,7 @@ vi.mock("../onboarding/oci.js", () => ({
 const secret = (byte: number) => Buffer.alloc(32, byte).toString("base64");
 
 function legacyEgressManifest() {
-  return {
+  const base = {
     schemaVersion: "1.4",
     registrationRevision: "rev-1",
     environment: "production",
@@ -107,6 +108,22 @@ function legacyEgressManifest() {
       reviewDueAt: "2027-01-01T00:00:00.000Z"
     }
   };
+  for (const runtime of ["nodejs24-typescript", "nodejs22-typescript"] as const) {
+    const candidate = {
+      ...base,
+      source: {
+        ...base.source,
+        runtime
+      }
+    };
+    try {
+      validateStoredOnboardingManifest(candidate);
+      return candidate;
+    } catch {
+      continue;
+    }
+  }
+  return base;
 }
 
 function mockServerRow(overrides: Record<string, unknown> = {}) {
