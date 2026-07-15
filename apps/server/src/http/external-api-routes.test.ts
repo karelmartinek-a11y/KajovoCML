@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadConfig, type AppConfig } from "../config.js";
 import type { Db } from "../db.js";
 import { registerExternalApiRoutes } from "./external-api-routes.js";
+import { registerReferenceExternalApiRoutes } from "./reference-external-api-routes.js";
 
 const state: {
   service: Record<string, unknown> | null;
@@ -73,6 +74,7 @@ describe("external API gateway route", () => {
       headers: { "content-type": "application/json" }
     };
     app = Fastify();
+    registerReferenceExternalApiRoutes(app, config);
     registerExternalApiRoutes(app, { query: vi.fn() } as unknown as Db, config);
     await app.ready();
   });
@@ -120,5 +122,15 @@ describe("external API gateway route", () => {
     expect(response.statusCode).toBe(200);
     expect(response.headers["x-correlation-id"]).toBeTruthy();
     expect(response.json()).toEqual({ ok: true });
+  });
+
+  it("keeps the reference backend reachable on its own host without shadowing kcml routes", async () => {
+    const response = await app.inject({
+      method: "GET",
+      url: "/v1/shifts/emp-42",
+      headers: { host: "reference-api.hcasc.cz" }
+    });
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toMatchObject({ code: "REFERENCE_DIRECT_BYPASS_BLOCKED" });
   });
 });

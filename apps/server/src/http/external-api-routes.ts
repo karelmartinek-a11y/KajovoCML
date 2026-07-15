@@ -9,6 +9,9 @@ import { hostOf, sendError } from "./errors.js";
 
 export function registerExternalApiRoutes(app: FastifyInstance, db: Db, config: AppConfig): void {
   app.all("/*", {
+    constraints: {
+      host: new RegExp(`^kcml[0-9]{4,}\\.${config.PUBLIC_BASE_DOMAIN.replaceAll(".", "\\.")}$`, "i")
+    },
     config: { rateLimit: { max: 120, timeWindow: "1 minute", groupId: "external-api-http" } },
   }, async (request, reply) => {
       const correlationId = randomUUID();

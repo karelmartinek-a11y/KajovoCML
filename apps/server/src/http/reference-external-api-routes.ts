@@ -6,20 +6,27 @@ import {
   isReferenceExternalApiHostname,
   listReferenceShifts,
   referenceAcceptanceContract,
+  referenceExternalApiHostname,
   referenceExternalApiState,
   requireGatewayHeaders
 } from "../domain/reference-external-api.js";
 import { hostOf, sendError } from "./errors.js";
 
 export function registerReferenceExternalApiRoutes(app: FastifyInstance, config: AppConfig): void {
-  app.get("/ready", async (request, reply) => {
+  const routeOptions = {
+    constraints: {
+      host: referenceExternalApiHostname(config.PUBLIC_BASE_DOMAIN)
+    }
+  } as const;
+
+  app.get("/ready", routeOptions, async (request, reply) => {
     if (!isReferenceExternalApiHostname(hostOf(request.headers.host), config.PUBLIC_BASE_DOMAIN)) {
       return sendError(reply, 404, "not_found");
     }
     return reply.send({ ok: true, service: "reference-external-api" });
   });
 
-  app.get("/state/operational", async (request, reply) => {
+  app.get("/state/operational", routeOptions, async (request, reply) => {
     if (!isReferenceExternalApiHostname(hostOf(request.headers.host), config.PUBLIC_BASE_DOMAIN)) {
       return sendError(reply, 404, "not_found");
     }
@@ -29,14 +36,14 @@ export function registerReferenceExternalApiRoutes(app: FastifyInstance, config:
     });
   });
 
-  app.get("/state/api-acceptance", async (request, reply) => {
+  app.get("/state/api-acceptance", routeOptions, async (request, reply) => {
     if (!isReferenceExternalApiHostname(hostOf(request.headers.host), config.PUBLIC_BASE_DOMAIN)) {
       return sendError(reply, 404, "not_found");
     }
     return reply.send(referenceAcceptanceContract(config.PUBLIC_BASE_DOMAIN));
   });
 
-  app.get("/v1/shifts/:employeeId", async (request, reply) => {
+  app.get("/v1/shifts/:employeeId", routeOptions, async (request, reply) => {
     if (!isReferenceExternalApiHostname(hostOf(request.headers.host), config.PUBLIC_BASE_DOMAIN)) {
       return sendError(reply, 404, "not_found");
     }
@@ -69,7 +76,7 @@ export function registerReferenceExternalApiRoutes(app: FastifyInstance, config:
     return reply.send(body);
   });
 
-  app.post("/v1/time-off", async (request, reply) => {
+  app.post("/v1/time-off", routeOptions, async (request, reply) => {
     if (!isReferenceExternalApiHostname(hostOf(request.headers.host), config.PUBLIC_BASE_DOMAIN)) {
       return sendError(reply, 404, "not_found");
     }
