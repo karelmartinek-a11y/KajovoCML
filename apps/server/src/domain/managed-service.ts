@@ -15,6 +15,7 @@ export type ManagedServiceSummary = {
   description: string;
   serviceKind: "MCP" | "EXTERNAL_API";
   environment: string;
+  enabled: boolean;
   publicHostname: string | null;
   resourceUri: string | null;
   lifecycleState: string;
@@ -79,6 +80,7 @@ function mapManagedService(row: Record<string, unknown>): ManagedServiceSummary 
     description: String(row.description),
     serviceKind: String(row.service_kind) as ManagedServiceSummary["serviceKind"],
     environment: String(row.environment),
+    enabled: Boolean(row.enabled),
     publicHostname: optionalText(row.public_hostname),
     resourceUri: optionalText(row.resource_uri),
     lifecycleState: String(row.lifecycle_state),
@@ -140,8 +142,28 @@ export function canServeManagedService(service: ManagedServiceSummary, validatio
   return { ok: true, reason: "ok" };
 }
 
+export function assertManagedServiceRuntimeAvailable(service: ManagedServiceSummary, validationState: string | null): void {
+  if (!service.enabled) throw Object.assign(new Error("service_disabled"), { statusCode: 503 });
+  const availability = canServeManagedService(service, validationState);
+  if (!availability.ok) throw Object.assign(new Error(availability.reason), { statusCode: 503 });
+  switch (service.serviceKind) {
+    case "MCP":
+      if (!service.legacyMcpServerId || !service.publicHostname || !service.resourceUri) {
+        throw Object.assign(new Error("runtime_configuration_missing"), { statusCode: 503 });
+      }
+      return;
+    case "EXTERNAL_API":
+      if (!service.publicHostname || !service.resourceUri) {
+        throw Object.assign(new Error("runtime_configuration_missing"), { statusCode: 503 });
+      }
+      return;
+    default:
+      throw Object.assign(new Error("unsupported_service_kind"), { statusCode: 503 });
+  }
+}
+
 export async function currentManagedServiceScopes(
-  db: Db,
+  db: Pick<Db, "query">,
   credentialId: string,
   managedServiceId: string,
   at = "now()"
@@ -192,8 +214,11 @@ export async function authorizeManagedServiceToken(db: Db, params: {
         kc.principal_token_epoch as current_principal_token_epoch,
         ms.code,
         ms.service_kind,
+        ms.public_hostname,
+        ms.resource_uri,
         ms.lifecycle_state,
         ms.api_state,
+        ms.enabled,
         ms.active_revision_id,
         ms.active_revision_epoch,
         ms.environment,
@@ -264,8 +289,11 @@ export async function authorizeManagedServiceToken(db: Db, params: {
   if (String(row.permission_epoch_snapshot) !== service.permissionEpoch) return deny("permission_epoch_mismatch");
   if (Number(row.active_revision_epoch_snapshot) !== service.activeRevisionEpoch) return deny("revision_epoch_mismatch");
   if (service.activeRevisionId === null) return deny("revision_missing");
-  const availability = canServeManagedService(service, optionalText(row.active_revision_validation_state));
-  if (!availability.ok) return deny(availability.reason);
+  try {
+    assertManagedServiceRuntimeAvailable(service, optionalText(row.active_revision_validation_state));
+  } catch (error) {
+    return deny(error instanceof Error ? error.message : "resource_unavailable");
+  }
   if (String(row.service_kind) === "EXTERNAL_API") {
     const manifest = validateExternalApiManifest(row.active_revision_manifest).manifest;
     const staleAfterMs = manifest.monitoringProfile.staleAfterSeconds * 1000;
@@ -365,10 +393,12 @@ export async function setManagedServiceApiState(db: Db, params: {
     }
     if (params.nextState === "ENABLED") {
       const service = mapManagedService(row);
-      const availability = canServeManagedService({ ...service, apiState: "ENABLED" }, optionalText(row.active_revision_validation_state));
       if (!service.activeRevisionId) throw Object.assign(new Error("active_revision_required"), { statusCode: 409 });
-      if (!availability.ok && availability.reason !== "lifecycle_inactive") {
-        throw Object.assign(new Error(availability.reason), { statusCode: 409 });
+      try {
+        assertManagedServiceRuntimeAvailable({ ...service, apiState: "ENABLED" }, optionalText(row.active_revision_validation_state));
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : "resource_unavailable";
+        if (!["lifecycle_inactive", "service_disabled"].includes(reason)) throw Object.assign(new Error(reason), { statusCode: 409 });
       }
       if (row.legacy_mcp_server_id) {
         const criticalAlerts = await client.query(
@@ -423,6 +453,7 @@ export async function setManagedServiceApiState(db: Db, params: {
           set api_state = $2::managed_service_api_state,
               api_disabled_reason = case when $2::text = 'DISABLED' then $3 else null end,
               lifecycle_state = $4::managed_service_state,
+              enabled = case when $2::text = 'ENABLED' then true else false end,
               service_token_epoch = case when $2::text = 'DISABLED' then gen_random_uuid() else service_token_epoch end,
               lock_version = lock_version + 1,
               last_policy_invalidation_at = now(),

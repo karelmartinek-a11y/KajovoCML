@@ -8,11 +8,13 @@ import type { AddressInfo } from "node:net";
 import { promisify } from "node:util";
 import Fastify, { type FastifyInstance } from "fastify";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { migrateLegacyMfaSecrets } from "../cli/migrate-mfa-secrets.js";
 import { loadConfig, type AppConfig } from "../config.js";
-import { createDb, type Db } from "../db.js";
+import { createDb, type Db, tx } from "../db.js";
 import {
   createKajaCredential,
   issueAccessToken,
+  listManagedServicePermissions,
   replaceManagedServicePermissions
 } from "./auth.js";
 import {
@@ -27,6 +29,7 @@ import { authenticateIntegrationToken, createIntegrationToken } from "./onboardi
 import { buildEgressProxy, listenEgressProxy } from "../onboarding/egress-proxy.js";
 import { registerAuthRoutes } from "../http/auth-routes.js";
 import { registerExternalApiRoutes } from "../http/external-api-routes.js";
+import { decryptMfaSecret } from "../security/secrets.js";
 
 const enabled = process.env.KCML_TEST_DATABASE === "1";
 const execFileAsync = promisify(execFile);
@@ -246,6 +249,73 @@ function directHttpsRequest(port: number, path: string, ca: string): Promise<{ s
   });
 }
 
+async function seedMcpManagedService(db: Db, code: string) {
+  const serverId = randomUUID();
+  const revisionId = randomUUID();
+  const managedServiceId = randomUUID();
+  const scopeId = randomUUID();
+  const hostname = `${code.toLowerCase()}.hcasc.cz`;
+  const resourceUri = `https://${hostname}/mcp`;
+  await tx(db, async (client) => {
+    const number = await client.query("select nextval('kcml_number_seq') as value");
+    const kcmlNumber = Number(number.rows[0].value);
+    await client.query(
+      `insert into mcp_server(
+        id, kcml_number, code, hostname, tool_name, display_name, description, enabled,
+        registration_state, operational_state, input_schema, output_schema, handler_key,
+        handler_version, contract_version, artifact_digest, manifest_digest, active_revision_id
+     ) values (
+        $1::uuid, $2::bigint, $3::citext, $4::citext, $5::citext, $6::text, $7::text, true,
+        'ACTIVE', 'HEALTHY', '{"type":"object","additionalProperties":false}', '{"type":"object","additionalProperties":false}',
+        $5::text, '1.0.0', '1.0', 'sha256:artifact', 'sha256:manifest', null
+      )`,
+      [serverId, kcmlNumber, code, hostname, `${code.toLowerCase()}_tool`, code, `${code} fixture`]
+    );
+    await client.query(
+      `insert into registration_revision(
+          id, server_id, revision, state, schema_version, validation_state, manifest, manifest_digest, artifact_digest,
+          evidence, approved_at, review_due_at, review_interval_days, active
+       ) values (
+          $1::uuid, $2::uuid, 'prod-1', 'ACTIVE', '1.6', 'VALID', '{"testContract":{"safeInput":{},"expectedResult":{}}}', 'sha256:manifest',
+          'sha256:artifact', '{}'::jsonb, now(), now() + interval '365 days', 365, true
+       )`,
+      [revisionId, serverId]
+    );
+    await client.query(
+      "update mcp_server set active_revision_id=$2 where id=$1",
+      [serverId, revisionId]
+    );
+    await client.query(
+      `insert into managed_service(
+        id, legacy_mcp_server_id, code, slug, display_name, description, service_kind, lifecycle_state, operational_state,
+        enabled, public_hostname, base_url, resource_uri, auth_mode, api_state, active_revision_id, monitoring_enabled,
+        monitoring_profile_digest, review_approved_at, review_due_at, review_interval_days
+     ) values (
+        $1::uuid, $2::uuid, $3::citext, lower($3::text), $3::text, $4::text, 'MCP', 'ACTIVE', 'HEALTHY', true, $5::citext, $6::text, $7::text,
+        'OAUTH2_CLIENT_CREDENTIALS', 'ENABLED', null, true, 'sha256:monitoring', now(), now() + interval '365 days', 365
+      )`,
+      [managedServiceId, serverId, code, `${code} managed fixture`, hostname, `https://${hostname}`, resourceUri]
+    );
+    await client.query(
+      `insert into managed_service_revision(
+          id, managed_service_id, revision, schema_version, service_kind, validation_state, manifest, manifest_digest, artifact_digest,
+          approved_at, review_due_at, review_interval_days, active
+       ) values (
+          $1::uuid, $2::uuid, 'prod-1', '1.6', 'MCP', 'VALID', '{"testContract":{"safeInput":{},"expectedResult":{}}}', 'sha256:manifest',
+          'sha256:artifact', now(), now() + interval '365 days', 365, true
+       )`,
+      [revisionId, managedServiceId]
+    );
+    await client.query("update managed_service set active_revision_id=$2 where id=$1", [managedServiceId, revisionId]);
+    await client.query(
+      `insert into managed_service_scope(id, managed_service_id, scope_name, level, description)
+     values ($1::uuid, $2::uuid, 'mcp.invoke', 'INVOKE', 'Invoke the MCP handler')`,
+      [scopeId, managedServiceId]
+    );
+  });
+  return { serverId, managedServiceId, resourceUri };
+}
+
 function sendJson(response: import("node:http").ServerResponse, status: number, body: Record<string, unknown>): void {
   const payload = JSON.stringify(body);
   response.writeHead(status, {
@@ -429,7 +499,7 @@ describe.skipIf(!enabled)("EXTERNAL_API PostgreSQL integration", () => {
   });
 
   beforeEach(async () => {
-    await db.query("truncate table onboarding_job, integration_token, managed_service, kaja_credential, operational_alert, audit_event restart identity cascade");
+    await db.query("truncate table onboarding_job, integration_token, managed_service, managed_service_revision, managed_service_scope, managed_service_access_token, mcp_server, registration_revision, access_token, kaja_credential, operational_alert, audit_event restart identity cascade");
     await db.query("select setval('kcml_number_seq', 1, false)");
     await db.query("update audit_head set last_sequence=0,event_hash=null,updated_at=now() where singleton=true");
     backend.state.ready = true;
@@ -477,6 +547,9 @@ describe.skipIf(!enabled)("EXTERNAL_API PostgreSQL integration", () => {
       managedServiceId: serviceId,
       scopeNames: ["reference.shifts.read", "reference.time_off.write"]
     }]);
+    const initialMonitoringTarget = (await listExternalApiMonitoringTargets(db)).find((item) => item.managedServiceId === serviceId);
+    expect(initialMonitoringTarget).toBeTruthy();
+    await runExternalApiMonitoringTarget(db, config, initialMonitoringTarget!);
 
     let state = await managedServiceStateView(db, serviceId);
     await setManagedServiceApiState(db, {
@@ -655,5 +728,164 @@ describe.skipIf(!enabled)("EXTERNAL_API PostgreSQL integration", () => {
       [serviceId]
     );
     expect(internalError.rows[0]?.status).toBe("OPEN");
+  });
+
+  it("rolls back token issuance when the legacy token insert fails", async () => {
+    const mcp = await seedMcpManagedService(db, "KCML9100");
+    const credential = await createKajaCredential(db, adminId, randomUUID(), "Rollback legacy insert", null);
+    const credentialRow = await db.query("select id from kaja_credential where public_id = $1", [credential.publicId]);
+    const credentialId = String(credentialRow.rows[0].id);
+    await replaceManagedServicePermissions(db, adminId, randomUUID(), credentialId, [{
+      managedServiceId: mcp.managedServiceId,
+      scopeNames: ["mcp.invoke"]
+    }]);
+    await db.query(`
+      create or replace function fail_access_token_insert() returns trigger language plpgsql as $$
+      begin
+        raise exception 'forced_access_token_failure';
+      end $$;
+      drop trigger if exists access_token_force_fail on access_token;
+      create trigger access_token_force_fail before insert on access_token
+      for each row execute function fail_access_token_insert();
+    `);
+    try {
+      await expect(issueAccessToken(db, {
+        clientId: credential.publicId,
+        clientSecret: credential.clientSecret,
+        resource: mcp.resourceUri,
+        hmacKey: config.ACCESS_TOKEN_HMAC_KEY_BASE64,
+        keyId: config.ACCESS_TOKEN_HMAC_KEY_ID,
+        correlationId: randomUUID()
+      })).rejects.toThrow(/forced_access_token_failure/);
+    } finally {
+      await db.query("drop trigger if exists access_token_force_fail on access_token");
+      await db.query("drop function if exists fail_access_token_insert()");
+    }
+    const counts = await db.query(
+      `select
+          (select count(*) from managed_service_access_token where credential_id = $1)::int as managed_count,
+          (select count(*) from access_token where credential_id = $1)::int as legacy_count`,
+      [credentialId]
+    );
+    expect(counts.rows[0]).toMatchObject({ managed_count: 0, legacy_count: 0 });
+  });
+
+  it("rolls back credential creation when audit append fails", async () => {
+    await db.query(`
+      create or replace function fail_audit_event_insert() returns trigger language plpgsql as $$
+      begin
+        raise exception 'forced_audit_failure';
+      end $$;
+      drop trigger if exists audit_event_force_fail on audit_event;
+      create trigger audit_event_force_fail before insert on audit_event
+      for each row execute function fail_audit_event_insert();
+    `);
+    try {
+      await expect(createKajaCredential(db, adminId, randomUUID(), "Audit rollback credential", null))
+        .rejects.toThrow(/forced_audit_failure/);
+    } finally {
+      await db.query("drop trigger if exists audit_event_force_fail on audit_event");
+      await db.query("drop function if exists fail_audit_event_insert()");
+    }
+    const count = await db.query("select count(*)::int as count from kaja_credential where label = $1", ["Audit rollback credential"]);
+    expect(Number(count.rows[0].count)).toBe(0);
+  });
+
+  it("migrates legacy plaintext MFA secrets idempotently", async () => {
+    await db.query(
+      "update admin_account set mfa_enabled=true, mfa_secret=$2 where id=$1",
+      [adminId, "JBSWY3DPEHPK3PXP"]
+    );
+    const migrated = await migrateLegacyMfaSecrets();
+    expect(migrated.migrated).toBe(1);
+    const account = await db.query("select mfa_secret from admin_account where id=$1", [adminId]);
+    expect(String(account.rows[0].mfa_secret)).toMatch(/^enc:v1:/);
+    expect(decryptMfaSecret(String(account.rows[0].mfa_secret), config.MFA_ENCRYPTION_KEY_BASE64)).toBe("JBSWY3DPEHPK3PXP");
+    const rerun = await migrateLegacyMfaSecrets();
+    expect(rerun.migrated).toBe(0);
+  });
+
+  it("rolls back both token stores when audit append fails and keeps a single logical token on success", async () => {
+    const mcp = await seedMcpManagedService(db, "KCML9101");
+    const credential = await createKajaCredential(db, adminId, randomUUID(), "Audit rollback", null);
+    const credentialRow = await db.query("select id from kaja_credential where public_id = $1", [credential.publicId]);
+    const credentialId = String(credentialRow.rows[0].id);
+    await replaceManagedServicePermissions(db, adminId, randomUUID(), credentialId, [{
+      managedServiceId: mcp.managedServiceId,
+      scopeNames: ["mcp.invoke"]
+    }]);
+    await db.query(`
+      create or replace function fail_audit_event_insert() returns trigger language plpgsql as $$
+      begin
+        raise exception 'forced_audit_failure';
+      end $$;
+      drop trigger if exists audit_event_force_fail on audit_event;
+      create trigger audit_event_force_fail before insert on audit_event
+      for each row execute function fail_audit_event_insert();
+    `);
+    try {
+      await expect(issueAccessToken(db, {
+        clientId: credential.publicId,
+        clientSecret: credential.clientSecret,
+        resource: mcp.resourceUri,
+        hmacKey: config.ACCESS_TOKEN_HMAC_KEY_BASE64,
+        keyId: config.ACCESS_TOKEN_HMAC_KEY_ID,
+        correlationId: randomUUID()
+      })).rejects.toThrow(/forced_audit_failure/);
+    } finally {
+      await db.query("drop trigger if exists audit_event_force_fail on audit_event");
+      await db.query("drop function if exists fail_audit_event_insert()");
+    }
+    const token = await issueAccessToken(db, {
+      clientId: credential.publicId,
+      clientSecret: credential.clientSecret,
+      resource: mcp.resourceUri,
+      hmacKey: config.ACCESS_TOKEN_HMAC_KEY_BASE64,
+      keyId: config.ACCESS_TOKEN_HMAC_KEY_ID,
+      correlationId: randomUUID()
+    });
+    expect(token.scope).toBe("mcp.invoke");
+    const snapshots = await db.query(
+      `select
+          managed.lookup_digest = managed.legacy_access_token_digest as linked,
+          managed.legacy_access_token_digest = legacy.lookup_digest as shared_digest,
+          managed.permission_epoch_snapshot = service.permission_epoch as permission_epoch_match,
+          managed.active_revision_epoch_snapshot = service.active_revision_epoch as revision_epoch_match
+         from managed_service_access_token managed
+         join access_token legacy on legacy.lookup_digest = managed.legacy_access_token_digest
+         join managed_service service on service.id = managed.managed_service_id
+        where managed.credential_id = $1`,
+      [credentialId]
+    );
+    expect(snapshots.rowCount).toBe(1);
+    expect(snapshots.rows[0]).toMatchObject({
+      linked: true,
+      shared_digest: true,
+      permission_epoch_match: true,
+      revision_epoch_match: true
+    });
+  });
+
+  it("applies full replace semantics for managed-service permissions", async () => {
+    const first = await seedMcpManagedService(db, "KCML9102");
+    const second = await seedMcpManagedService(db, "KCML9103");
+    const credential = await createKajaCredential(db, adminId, randomUUID(), "Permission replace", null);
+    const credentialRow = await db.query("select id from kaja_credential where public_id = $1", [credential.publicId]);
+    const credentialId = String(credentialRow.rows[0].id);
+    await replaceManagedServicePermissions(db, adminId, randomUUID(), credentialId, [
+      { managedServiceId: first.managedServiceId, scopeNames: ["mcp.invoke"] },
+      { managedServiceId: second.managedServiceId, scopeNames: ["mcp.invoke"] }
+    ]);
+    const epochBefore = await db.query("select id, permission_epoch from managed_service where id = any($1::uuid[]) order by id", [[first.managedServiceId, second.managedServiceId]]);
+    await replaceManagedServicePermissions(db, adminId, randomUUID(), credentialId, [
+      { managedServiceId: first.managedServiceId, scopeNames: ["mcp.invoke"] }
+    ]);
+    const remaining = await listManagedServicePermissions(db, credentialId);
+    expect(remaining.filter((permission) => permission.scopes.length > 0).map((permission) => permission.managedServiceId)).toEqual([first.managedServiceId]);
+    await replaceManagedServicePermissions(db, adminId, randomUUID(), credentialId, []);
+    const cleared = await listManagedServicePermissions(db, credentialId);
+    expect(cleared.every((permission) => permission.scopes.length === 0)).toBe(true);
+    const epochAfter = await db.query("select id, permission_epoch from managed_service where id = any($1::uuid[]) order by id", [[first.managedServiceId, second.managedServiceId]]);
+    expect(epochAfter.rows.map((row, index) => row.permission_epoch !== epochBefore.rows[index]?.permission_epoch)).toEqual([true, true]);
   });
 });

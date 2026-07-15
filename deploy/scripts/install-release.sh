@@ -150,6 +150,14 @@ step split-config-final
 bash "$source_dir/deploy/scripts/split-service-config.sh" "$release_id"
 stage_registry_auth
 
+step migrate-mfa-secrets
+KCML_PROCESS_ROLE=admin-sync \
+DATABASE_URL_FILE=/etc/kcml/credentials/admin-sync/database_url \
+MFA_ENCRYPTION_KEY_BASE64_FILE=/etc/kcml/credentials/admin-sync/mfa_encryption \
+NODE_ENV=production \
+BUILD_ID="$release_id" \
+  node "$source_dir/apps/server/dist/cli/migrate-mfa-secrets.js"
+
 step sync-admin-password
 PASS="$PASS" \
 KCML_PROCESS_ROLE=admin-sync \

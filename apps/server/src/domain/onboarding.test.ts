@@ -13,7 +13,7 @@ describe("automated onboarding token policy", () => {
     const issued = issueIntegrationSecret();
     expect(issued.value).toMatch(/^kci_[A-Za-z0-9_-]+$/);
     expect(Buffer.from(issued.value.slice(4), "base64url")).toHaveLength(64);
-    expect(issued.fingerprint).toHaveLength(16);
+    expect(issued.fingerprint).toHaveLength(32);
   });
 
   it("sets an initial two-hour TTL and a hard 24-hour ceiling", () => {

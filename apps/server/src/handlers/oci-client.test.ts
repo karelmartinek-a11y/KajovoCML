@@ -106,7 +106,7 @@ describe("ociHandler", () => {
       expect.objectContaining({
         operation: "list_home_assistant_devices",
         serverCode: "KCML0002",
-        imageDigest: "sha256:image",
+        imageDigest: "[REDACTED]",
         correlationId: "00000000-0000-4000-8000-000000000000"
       }),
       "catalog.requested"

@@ -48,7 +48,8 @@ describe("readiness report", () => {
       EGRESS_CAPABILITY_HMAC_KEY_BASE64: secret(3),
       SESSION_SECRET_BASE64: secret(4),
       CSRF_SECRET_BASE64: secret(5),
-      MFA_ENCRYPTION_KEY_BASE64: secret(6)
+      MFA_ENCRYPTION_KEY_BASE64: secret(6),
+      MONITOR_ENABLED: "false"
     });
 
     const report = await buildReadinessReport(db, config);
