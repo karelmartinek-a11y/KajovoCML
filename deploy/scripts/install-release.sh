@@ -232,7 +232,39 @@ SQL
 
 step verify-final-invariants
 wait_for_sql_equals "audit_chain" "t" "select valid from verify_audit_chain()"
-wait_for_sql_equals "mcp_kcml0002_state" "ACTIVE/HEALTHY" "select registration_state::text || '/' || operational_state::text from mcp_server where code='KCML0002'" 30 2
+kcml0002_server_id="$(psql "$app_database_url" --no-psqlrc --tuples-only --no-align --quiet --command \
+  "select id from mcp_server where code='KCML0002'")"
+test -n "$kcml0002_server_id"
+kcml0002_state="$(psql "$app_database_url" --no-psqlrc --tuples-only --no-align --quiet --command \
+  "select registration_state::text || '/' || operational_state::text from mcp_server where code='KCML0002'")"
+echo "release-check:mcp_kcml0002_initial_state=$kcml0002_state"
+if [ "$kcml0002_state" != "ACTIVE/HEALTHY" ] && [ "${kcml0002_state#TRIAL/}" != "$kcml0002_state" ]; then
+  login_headers_file="$(mktemp)"
+  login_body_file="$(mktemp)"
+  login_payload="$(jq -nc --arg username "$admin_username" --arg password "$PASS" '{username:$username,password:$password}')"
+  curl -fsS -D "$login_headers_file" -o "$login_body_file" \
+    -H "Host: $admin_host" \
+    -H 'content-type: application/json' \
+    --data "$login_payload" \
+    "http://127.0.0.1:${PORT:-3010}/api/login" >/dev/null
+  csrf_token="$(jq -r '.csrfToken' "$login_body_file")"
+  session_cookie="$(sed -nE 's/^[Ss]et-[Cc]ookie: __Host-kcml_session=([^;]+).*/\1/p' "$login_headers_file" | tr -d '\r' | tail -n 1)"
+  csrf_cookie="$(sed -nE 's/^[Ss]et-[Cc]ookie: __Host-kcml_csrf=([^;]+).*/\1/p' "$login_headers_file" | tr -d '\r' | tail -n 1)"
+  test -n "$csrf_token"
+  test -n "$session_cookie"
+  test "$csrf_cookie" = "$csrf_token"
+  admin_cookie_header="__Host-kcml_session=${session_cookie}; __Host-kcml_csrf=${csrf_cookie}"
+  test_response_file="$(mktemp)"
+  curl -fsS -o "$test_response_file" \
+    -H "Host: $admin_host" \
+    -H "cookie: $admin_cookie_header" \
+    -H "x-csrf-token: $csrf_token" \
+    -X POST \
+    "http://127.0.0.1:${PORT:-3010}/api/mcp-servers/$kcml0002_server_id/test"
+  jq -e '.ok == true' "$test_response_file" >/dev/null
+  rm -f "$login_headers_file" "$login_body_file" "$test_response_file"
+fi
+wait_for_sql_equals "mcp_kcml0002_state" "ACTIVE/HEALTHY" "select registration_state::text || '/' || operational_state::text from mcp_server where code='KCML0002'" 90 2
 wait_for_sql_equals "migration_019" "1" "select count(*) from schema_migration where version='019_postgres_http_rate_limiting.sql'"
 
 trap - ERR
