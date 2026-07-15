@@ -70,7 +70,7 @@ export async function loadConfigFromDb(db: Db, bootstrapConfig: AppConfig): Prom
     const value = parseValue(definition, row.value_json);
     if (definition.envKey === "ONBOARDING_WORKER_INTERVAL_MS") merged.ONBOARDING_WORKER_INTERVAL_MS = Number(value);
     else if (definition.envKey === "MONITOR_INTERVAL_MS") merged.MONITOR_INTERVAL_MS = Number(value);
-    else merged.LOG_LEVEL = String(value);
+    else merged.LOG_LEVEL = String(value) as AppConfig["LOG_LEVEL"];
   }
   return merged;
 }

@@ -16,6 +16,7 @@ vi.mock("../security/secrets.js", () => ({
 }));
 
 vi.mock("./managed-service.js", () => ({
+  assertManagedServiceRuntimeAvailable: vi.fn(),
   authorizeManagedServiceToken: vi.fn(),
   bumpManagedServicePermissionEpoch: vi.fn(),
   currentManagedServiceScopes
@@ -34,8 +35,9 @@ describe("issueAccessToken", () => {
     vi.clearAllMocks();
   });
 
-  it("accepts an MCP managed service with a valid active revision", async () => {
+  it("issues the token through a single transaction and records the canonical legacy link", async () => {
     const query = vi.fn(async (sql: string) => {
+      if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") return { rowCount: 0, rows: [] };
       if (sql.startsWith("select * from kaja_credential")) {
         return {
           rowCount: 1,
@@ -60,32 +62,30 @@ describe("issueAccessToken", () => {
             service_kind: "MCP",
             legacy_mcp_server_id: "legacy-server-id",
             resource_uri: "https://kcml0002.example.test/mcp",
+            public_hostname: "kcml0002.example.test",
             environment: "production",
+            enabled: true,
             active_revision_id: "revision-id",
             service_token_epoch: "service-epoch",
             permission_epoch: "permission-epoch",
             active_revision_epoch: 4,
             active_revision_validation_state: "VALID",
-            registration_state: "ACTIVE",
+            lifecycle_state: "ACTIVE",
             api_state: "ENABLED",
             monitoring_enabled: true,
             monitoring_profile_digest: "sha256:monitoring",
-            approved_at: "2026-01-13T00:00:00.000Z",
+            review_approved_at: "2026-01-13T00:00:00.000Z",
             review_due_at: "2027-01-13T00:00:00.000Z",
             review_interval_days: 365
           }]
         };
       }
-      if (sql.startsWith("insert into managed_service_access_token")) {
-        return { rowCount: 1, rows: [] };
-      }
-      if (sql.startsWith("insert into access_token")) {
-        return { rowCount: 1, rows: [] };
-      }
+      if (sql.startsWith("insert into managed_service_access_token")) return { rowCount: 1, rows: [] };
+      if (sql.startsWith("insert into access_token")) return { rowCount: 1, rows: [] };
       return { rowCount: 0, rows: [] };
     });
-
-    const db = { query } as unknown as Db;
+    const client = { query, release: vi.fn() };
+    const db = { connect: vi.fn(async () => client) } as unknown as Db;
     const { issueAccessToken } = await import("./auth.js");
 
     const token = await issueAccessToken(db, {
@@ -102,7 +102,9 @@ describe("issueAccessToken", () => {
       token_type: "Bearer",
       scope: "mcp.invoke"
     });
-    expect(query.mock.calls.some(([sql]) => String(sql).includes("ms.active_revision_id"))).toBe(true);
-    expect(currentManagedServiceScopes).toHaveBeenCalledWith(db, "credential-id", "managed-service-id");
+    expect(query.mock.calls.some(([sql]) => String(sql).startsWith("insert into managed_service_access_token"))).toBe(true);
+    expect(query.mock.calls.some(([sql]) => String(sql).startsWith("insert into access_token"))).toBe(true);
+    expect(query.mock.calls.some(([sql]) => String(sql) === "BEGIN")).toBe(true);
+    expect(currentManagedServiceScopes).toHaveBeenCalledWith(client, "credential-id", "managed-service-id");
   });
 });

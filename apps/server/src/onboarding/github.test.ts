@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadConfig } from "../config.js";
 import { GitHubOnboardingClient } from "./github.js";
 
-const secret = Buffer.alloc(32, 1).toString("base64");
+const secret = (byte: number) => Buffer.alloc(32, byte).toString("base64");
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -17,12 +17,12 @@ describe("GitHub onboarding authorization", () => {
     vi.stubGlobal("fetch", fetchMock);
     const config = loadConfig({
       DATABASE_URL: "postgres://localhost/kcml",
-      ACCESS_TOKEN_HMAC_KEY_BASE64: secret,
-      INTEGRATION_TOKEN_HMAC_KEY_BASE64: Buffer.alloc(32, 2).toString("base64"),
-      EGRESS_CAPABILITY_HMAC_KEY_BASE64: Buffer.alloc(32, 3).toString("base64"),
-      SESSION_SECRET_BASE64: secret,
-      CSRF_SECRET_BASE64: secret,
-      MFA_ENCRYPTION_KEY_BASE64: secret,
+      ACCESS_TOKEN_HMAC_KEY_BASE64: secret(1),
+      INTEGRATION_TOKEN_HMAC_KEY_BASE64: secret(2),
+      EGRESS_CAPABILITY_HMAC_KEY_BASE64: secret(3),
+      SESSION_SECRET_BASE64: secret(4),
+      CSRF_SECRET_BASE64: secret(5),
+      MFA_ENCRYPTION_KEY_BASE64: secret(6),
       ONBOARDING_WORKER_ENABLED: "true",
       GITHUB_OWNER: "example",
       GITHUB_REPO: "repository",

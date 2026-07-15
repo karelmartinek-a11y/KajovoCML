@@ -28,7 +28,8 @@ const EXPECTED_MIGRATIONS = [
   "019_postgres_http_rate_limiting.sql",
   "020_managed_service_runtime_control.sql",
   "021_external_api_runtime_enforcement.sql",
-  "022_runtime_egress_capability_backfill.sql"
+  "022_runtime_egress_capability_backfill.sql",
+  "023_access_token_compatibility_and_mfa.sql"
 ] as const;
 
 export type ReadinessReport = {

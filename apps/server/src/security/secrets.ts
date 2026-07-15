@@ -18,7 +18,7 @@ export function issueOpaqueSecret(): IssuedSecret {
 }
 
 export function fingerprintSecret(value: string): string {
-  return createHash("sha256").update(value).digest("hex").slice(0, 16);
+  return createHash("sha256").update(value).digest("hex").slice(0, 32);
 }
 
 export async function hashPasswordLikeSecret(value: string): Promise<string> {
@@ -44,19 +44,29 @@ export function safeEqual(a: Buffer, b: Buffer): boolean {
 
 const ENCRYPTED_MFA_PREFIX = "enc:v1";
 
+function mfaCipherKey(key: Buffer): Buffer {
+  if (key.length !== 32) throw new Error("invalid_mfa_encryption_key_length");
+  return key;
+}
+
 export function encryptMfaSecret(secret: string, key: Buffer): string {
   const iv = randomBytes(12);
-  const cipher = createCipheriv("aes-256-gcm", key.subarray(0, 32), iv);
+  const cipher = createCipheriv("aes-256-gcm", mfaCipherKey(key), iv);
   const ciphertext = Buffer.concat([cipher.update(secret, "utf8"), cipher.final()]);
   const tag = cipher.getAuthTag();
   return `${ENCRYPTED_MFA_PREFIX}:${iv.toString("base64url")}:${ciphertext.toString("base64url")}:${tag.toString("base64url")}`;
 }
 
-export function decryptMfaSecret(secret: string, key: Buffer): string {
-  if (!secret.startsWith(`${ENCRYPTED_MFA_PREFIX}:`)) return secret;
+export function decryptMfaSecret(secret: string, key: Buffer, options: {
+  allowLegacyPlaintext?: boolean;
+} = {}): string {
+  if (!secret.startsWith(`${ENCRYPTED_MFA_PREFIX}:`)) {
+    if (options.allowLegacyPlaintext) return secret;
+    throw new Error("plaintext_mfa_secret_rejected");
+  }
   const [, version, ivRaw, payloadRaw, tagRaw] = secret.split(":");
   if (version !== "v1" || !ivRaw || !payloadRaw || !tagRaw) throw new Error("invalid_mfa_secret_format");
-  const decipher = createDecipheriv("aes-256-gcm", key.subarray(0, 32), Buffer.from(ivRaw, "base64url"));
+  const decipher = createDecipheriv("aes-256-gcm", mfaCipherKey(key), Buffer.from(ivRaw, "base64url"));
   decipher.setAuthTag(Buffer.from(tagRaw, "base64url"));
   return Buffer.concat([
     decipher.update(Buffer.from(payloadRaw, "base64url")),
@@ -67,14 +77,18 @@ export function decryptMfaSecret(secret: string, key: Buffer): string {
 export function redact(input: unknown): unknown {
   if (typeof input === "string") {
     return input
-      .replace(/(Bearer\s+)[A-Za-z0-9_-]+/gi, "$1[REDACTED]")
+      .replace(/authorization:\s*[^\r\n]+/gi, "authorization: [REDACTED]")
+      .replace(/cookie:\s*[^\r\n]+/gi, "cookie: [REDACTED]")
+      .replace(/(Bearer\s+)([^\s,;]+)/gi, "$1[REDACTED]")
       .replace(/\bkc[ie]_[A-Za-z0-9_-]{40,}\b/g, "[REDACTED]");
   }
   if (Array.isArray(input)) return input.map(redact);
   if (input && typeof input === "object") {
     return Object.fromEntries(
       Object.entries(input).map(([key, value]) => {
-        if (/secret|token|password|authorization|cookie/i.test(key)) return [key, "[REDACTED]"];
+        if (/secret|token|password|authorization|cookie|credential|clientsecret|privatekey|(?:^|_)key$|mfa|otp|totp|signature|digest|session|csrf/i.test(key)) {
+          return [key, "[REDACTED]"];
+        }
         return [key, redact(value)];
       })
     );
