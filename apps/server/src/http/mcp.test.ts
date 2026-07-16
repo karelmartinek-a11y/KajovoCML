@@ -2,10 +2,11 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadConfig, type AppConfig } from "../config.js";
 import type { Db } from "../db.js";
+import type { HandlerContext } from "../handlers/registry.js";
 import { registerMcpRoutes } from "./mcp.js";
 
 const handlerState: {
-  invoke: ((input: unknown) => Promise<unknown>) | null;
+  invoke: ((input: unknown, ctx: HandlerContext) => Promise<unknown>) | null;
 } = {
   invoke: null
 };
@@ -23,7 +24,7 @@ vi.mock("../handlers/registry.js", () => ({
   getHandler: vi.fn(() => handlerState.invoke ? {
     key: "mock",
     version: "1",
-    invoke: (input: unknown) => handlerState.invoke!(input)
+    invoke: (input: unknown, ctx: HandlerContext) => handlerState.invoke!(input, ctx)
   } : null)
 }));
 
@@ -34,7 +35,7 @@ function createDb(serverOverrides: Partial<Record<string, unknown>> = {}): Db {
     id: "server-id",
     code: "KCML0001",
     kcml_number: 1,
-    hostname: "kcml0001.hcasc.cz",
+    hostname: "kcml0001.example.invalid",
     tool_name: "example_tool",
     display_name: "Example Tool",
     description: "Example description",
@@ -88,9 +89,9 @@ function createDb(serverOverrides: Partial<Record<string, unknown>> = {}): Db {
     if (sql.startsWith("insert into mcp_invocation_idempotency")) return { rowCount: 1, rows: [{ idempotency_key: params?.[2] }] };
     if (sql.startsWith("select request_digest,status,response_json")) return { rowCount: 0, rows: [] };
     if (sql.startsWith("update mcp_invocation_idempotency")) return { rowCount: 1, rows: [] };
-    if (sql.includes("insert into function_rate_bucket")) {
+    if (sql.includes("insert into mcp_rate_bucket")) {
       rateKeys.push(params ?? []);
-      return { rowCount: 1, rows: [{ request_count: 1 }] };
+      return { rowCount: 1, rows: [{ request_count: 1, retry_after_ms: 60_000 }] };
     }
     if (sql.startsWith("insert into function_statistics")) return { rowCount: 1, rows: [] };
     if (sql.startsWith("insert into mcp_invocation_metric")) return { rowCount: 1, rows: [] };
@@ -154,7 +155,7 @@ describe("MCP route", () => {
     const response = await app.inject({
       method: "POST",
       url: "/mcp",
-      headers: { host: "kcml0001.hcasc.cz", authorization: "Bearer token" },
+      headers: { host: "kcml0001.example.invalid", authorization: "Bearer token" },
       payload: { jsonrpc: "2.0", id: 1, method: "tools/list" }
     });
     expect(response.statusCode).toBe(200);
@@ -174,11 +175,58 @@ describe("MCP route", () => {
     const response = await app.inject({
       method: "POST",
       url: "/mcp",
-      headers: { host: "kcml0001.hcasc.cz", authorization: "Bearer token" },
+      headers: { host: "kcml0001.example.invalid", authorization: "Bearer token" },
       payload: { method: "tools/list" }
     });
     expect(response.statusCode).toBe(200);
     expect(response.json().error.code).toBe(-32600);
+  });
+
+  it("maps malformed raw JSON to the JSON-RPC parse error", async () => {
+    app = Fastify();
+    registerMcpRoutes(app, createDb(), config);
+    await app.ready();
+    const response = await app.inject({
+      method: "POST",
+      url: "/mcp",
+      headers: {
+        host: "kcml0001.example.invalid",
+        authorization: "Bearer token",
+        "content-type": "application/json"
+      },
+      payload: "{\"jsonrpc\":\"2.0\","
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ jsonrpc: "2.0", id: null, error: { code: -32700 } });
+  });
+
+  it("requires JSON POST transport headers for MCP JSON-RPC", async () => {
+    app = Fastify();
+    registerMcpRoutes(app, createDb(), config);
+    await app.ready();
+
+    const unsupportedMediaType = await app.inject({
+      method: "POST",
+      url: "/mcp",
+      headers: { host: "kcml0001.example.invalid", authorization: "Bearer token", "content-type": "text/plain" },
+      payload: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" })
+    });
+    expect(unsupportedMediaType.statusCode).toBe(415);
+    expect(unsupportedMediaType.json()).toMatchObject({ error: "unsupported_media_type" });
+
+    const notAcceptable = await app.inject({
+      method: "POST",
+      url: "/mcp",
+      headers: {
+        host: "kcml0001.example.invalid",
+        authorization: "Bearer token",
+        "content-type": "application/json",
+        accept: "text/plain"
+      },
+      payload: { jsonrpc: "2.0", id: 1, method: "tools/list" }
+    });
+    expect(notAcceptable.statusCode).toBe(406);
+    expect(notAcceptable.json()).toMatchObject({ error: "not_acceptable" });
   });
 
   it("rejects cross-origin MCP transport requests", async () => {
@@ -188,29 +236,81 @@ describe("MCP route", () => {
     const response = await app.inject({
       method: "POST",
       url: "/mcp",
-      headers: { host: "kcml0001.hcasc.cz", origin: "https://evil.example", authorization: "Bearer token" },
+      headers: { host: "kcml0001.example.invalid", origin: "https://evil.example", authorization: "Bearer token" },
       payload: { jsonrpc: "2.0", id: 1, method: "tools/list" }
     });
     expect(response.statusCode).toBe(403);
     expect(response.json().error).toBe("invalid_origin");
   });
 
-  it("supports authorized GET SSE polling on the streamable HTTP endpoint", async () => {
+  it("honestly rejects GET when no Streamable HTTP session transport is implemented", async () => {
     app = Fastify();
     registerMcpRoutes(app, createDb(), config);
     await app.ready();
     const response = await app.inject({
       method: "GET",
       url: "/mcp",
-      headers: { host: "kcml0001.hcasc.cz", accept: "text/event-stream", authorization: "Bearer token" }
+      headers: { host: "kcml0001.example.invalid", accept: "text/event-stream", authorization: "Bearer token" }
     });
-    expect(response.statusCode).toBe(200);
-    expect(response.headers["content-type"]).toContain("text/event-stream");
-    expect(response.body).toContain("retry: 15000");
+    expect(response.statusCode).toBe(405);
+    expect(response.headers.allow).toBe("POST");
+    expect(response.json()).toMatchObject({ error: "method_not_allowed" });
+  });
+
+  it("accepts wildcard JSON response negotiation and returns no body for initialized notification", async () => {
+    app = Fastify();
+    registerMcpRoutes(app, createDb(), config);
+    await app.ready();
+
+    const initialize = await app.inject({
+      method: "POST",
+      url: "/mcp",
+      headers: {
+        host: "kcml0001.example.invalid",
+        authorization: "Bearer token",
+        "content-type": "application/json; charset=utf-8",
+        accept: "*/*"
+      },
+      payload: { jsonrpc: "2.0", id: 1, method: "initialize" }
+    });
+    expect(initialize.statusCode).toBe(200);
+    expect(initialize.headers["content-type"]).toContain("application/json");
+
+    const initialized = await app.inject({
+      method: "POST",
+      url: "/mcp",
+      headers: {
+        host: "kcml0001.example.invalid",
+        authorization: "Bearer token",
+        "content-type": "application/json",
+        accept: "application/json"
+      },
+      payload: { jsonrpc: "2.0", method: "notifications/initialized" }
+    });
+    expect(initialized.statusCode).toBe(204);
+    expect(initialized.body).toBe("");
+  });
+
+  it("does not send method errors for JSON-RPC notifications", async () => {
+    app = Fastify();
+    registerMcpRoutes(app, createDb(), config);
+    await app.ready();
+    const response = await app.inject({
+      method: "POST",
+      url: "/mcp",
+      headers: { host: "kcml0001.example.invalid", authorization: "Bearer token" },
+      payload: { jsonrpc: "2.0", method: "unknown/notification" }
+    });
+    expect(response.statusCode).toBe(204);
+    expect(response.body).toBe("");
   });
 
   it("classifies timed out handlers as JSON-RPC timeout failures", async () => {
-    handlerState.invoke = async () => new Promise((resolve) => {
+    let aborted = false;
+    handlerState.invoke = async (_input, ctx) => new Promise((resolve) => {
+      ctx.signal?.addEventListener("abort", () => {
+        aborted = true;
+      }, { once: true });
       setTimeout(() => resolve({ ok: true }), 60);
     });
     app = Fastify();
@@ -219,11 +319,12 @@ describe("MCP route", () => {
     const response = await app.inject({
       method: "POST",
       url: "/mcp",
-      headers: { host: "kcml0001.hcasc.cz", authorization: "Bearer token", "idempotency-key": "timeout-test-0001" },
+      headers: { host: "kcml0001.example.invalid", authorization: "Bearer token", "idempotency-key": "timeout-test-0001" },
       payload: { jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "example_tool", arguments: { name: "A" } } }
     });
     expect(response.statusCode).toBe(200);
     expect(response.json().error.code).toBe(-32005);
+    expect(aborted).toBe(true);
   });
 
   it("keys tool rate limits by server and credential", async () => {
@@ -235,11 +336,16 @@ describe("MCP route", () => {
     const response = await app.inject({
       method: "POST",
       url: "/mcp",
-      headers: { host: "kcml0001.hcasc.cz", authorization: "Bearer token", "idempotency-key": "rate-test-0001" },
+      headers: { host: "kcml0001.example.invalid", authorization: "Bearer token", "idempotency-key": "rate-test-0001" },
       payload: { jsonrpc: "2.0", id: 9, method: "tools/call", params: { name: "example_tool", arguments: { name: "A" } } }
     });
     expect(response.statusCode).toBe(200);
-    expect(db.rateKeys[0]).toEqual(["server-id", "credential-id", 60]);
+    expect(db.rateKeys).toHaveLength(3);
+    expect(db.rateKeys.map((params) => [params[0], params[2], params[3], params[4]])).toEqual([
+      ["SERVER_CREDENTIAL", "server-id", "credential-id", 60],
+      ["CREDENTIAL", null, "credential-id", 60],
+      ["SERVER", "server-id", null, 60]
+    ]);
   });
 
   it("requires an Idempotency-Key for non-idempotent tools", async () => {
@@ -250,11 +356,32 @@ describe("MCP route", () => {
     const response = await app.inject({
       method: "POST",
       url: "/mcp",
-      headers: { host: "kcml0001.hcasc.cz", authorization: "Bearer token" },
+      headers: { host: "kcml0001.example.invalid", authorization: "Bearer token" },
       payload: { jsonrpc: "2.0", id: 10, method: "tools/call", params: { name: "example_tool", arguments: { name: "A" } } }
     });
     expect(response.statusCode).toBe(200);
     expect(response.json().error.message).toContain("Idempotency-Key");
+  });
+
+  it("does not require an Idempotency-Key for read-only tools", async () => {
+    handlerState.invoke = async () => ({ ok: true });
+    app = Fastify();
+    registerMcpRoutes(app, createDb({
+      effect_class: "READ_ONLY",
+      read_only_hint: true,
+      destructive_hint: false,
+      idempotent_hint: true,
+      idempotency_policy: "read only"
+    }), config);
+    await app.ready();
+    const response = await app.inject({
+      method: "POST",
+      url: "/mcp",
+      headers: { host: "kcml0001.example.invalid", authorization: "Bearer token" },
+      payload: { jsonrpc: "2.0", id: 11, method: "tools/call", params: { name: "example_tool", arguments: { name: "A" } } }
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().result.structuredContent).toEqual({ ok: true });
   });
 
   it.each([
@@ -269,7 +396,7 @@ describe("MCP route", () => {
     const response = await app.inject({
       method: "GET",
       url: "/.well-known/oauth-protected-resource/mcp",
-      headers: { host: "kcml0001.hcasc.cz" }
+      headers: { host: "kcml0001.example.invalid" }
     });
     expect(response.statusCode).toBe(503);
     expect(response.json()).toMatchObject({ error: "service_unavailable" });
@@ -288,7 +415,7 @@ describe("MCP route", () => {
     const grace = await app.inject({
       method: "POST",
       url: "/mcp",
-      headers: { host: "kcml0001.hcasc.cz", authorization: "Bearer token" },
+      headers: { host: "kcml0001.example.invalid", authorization: "Bearer token" },
       payload: { jsonrpc: "2.0", id: 12, method: "tools/list" }
     });
     expect(grace.statusCode).toBe(200);
@@ -305,7 +432,7 @@ describe("MCP route", () => {
     const suspended = await app.inject({
       method: "POST",
       url: "/mcp",
-      headers: { host: "kcml0001.hcasc.cz", authorization: "Bearer token" },
+      headers: { host: "kcml0001.example.invalid", authorization: "Bearer token" },
       payload: { jsonrpc: "2.0", id: 13, method: "tools/list" }
     });
     expect(suspended.statusCode).toBe(503);

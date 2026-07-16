@@ -1,3 +1,5 @@
+import { formatDate } from "./ui-helpers.js";
+
 export type OnboardingHandoff = {
   label: string;
   descriptor: {
@@ -13,11 +15,7 @@ export type OnboardingHandoff = {
 };
 
 export function onboardingHandoffText(handoff: OnboardingHandoff): string {
-  const expiresAt = new Intl.DateTimeFormat("cs-CZ", {
-    dateStyle: "medium",
-    timeStyle: "short",
-    timeZone: "Europe/Prague"
-  }).format(new Date(handoff.initialExpiresAt));
+  const expiresAt = formatDate(handoff.initialExpiresAt);
   return [
     "Automatická integrace nového MCP serveru do KajovoMCPCML",
     "",
@@ -31,7 +29,7 @@ export function onboardingHandoffText(handoff: OnboardingHandoff): string {
     `První upload proveďte nejpozději do: ${expiresAt}`,
     `Programátorské API: ${handoff.programmerApiUrl}`,
     "",
-    "Postupujte přesně podle přiloženého dokumentu Connect in Catalog v1.5.",
+    "Postupujte přesně podle přiloženého dokumentu Connect in Catalog v1.7.",
     "Po přijetí manifestu a zdrojového ZIPu systém sám přidělí KCML identitu a HTTPS adresu a spustí PR/CI, nasazení, autorizaci, logging, monitoring, testy a aktivaci.",
     "Stav jobu průběžně načítejte přes programátorské API. Pokud vrátí UPLOAD_REVISION, opravte uvedenou chybu a nahrajte novou revizi podle katalogu; opakujte až do COMPLETE / ACTIVE."
   ].join("\n");

@@ -1,0 +1,9 @@
+.git
+node_modules
+apps/*/node_modules
+handlers/*/node_modules
+dist
+coverage
+tmp
+.DS_Store
+._*

@@ -96,6 +96,24 @@ function validateGitHubToken(value: string): string {
   return value;
 }
 
+function validateTimeZone(value: string): string {
+  const normalized = value.trim();
+  try {
+    new Intl.DateTimeFormat("en", { timeZone: normalized }).format(0);
+  } catch {
+    throw new Error("UI_TIME_ZONE must be a valid IANA time zone");
+  }
+  return normalized;
+}
+
+function normalizeAdminUsername(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.length < 3 || trimmed.length > 120) throw new Error("ADMIN_BOOTSTRAP_USERNAME must be 3-120 characters long");
+  if (trimmed !== trimmed.toLowerCase()) throw new Error("ADMIN_BOOTSTRAP_USERNAME must be lowercase");
+  if (!/^[a-z0-9._-]+$/.test(trimmed)) throw new Error("ADMIN_BOOTSTRAP_USERNAME contains unsupported characters");
+  return trimmed;
+}
+
 function isWithinDirectory(file: string, directory: string): boolean {
   const relativePath = relative(resolve(directory), resolve(file));
   return relativePath !== "" && !relativePath.startsWith("..") && !isAbsolute(relativePath);
@@ -103,8 +121,7 @@ function isWithinDirectory(file: string, directory: string): boolean {
 
 function isSystemdCredentialFile(env: NodeJS.ProcessEnv, file: string): boolean {
   const credentialsDirectory = env.CREDENTIALS_DIRECTORY;
-  if (!credentialsDirectory) return false;
-  return isWithinDirectory(file, credentialsDirectory);
+  return Boolean(credentialsDirectory && isWithinDirectory(file, credentialsDirectory));
 }
 
 function readSecretFile(env: NodeJS.ProcessEnv, key: string): string | undefined {
@@ -122,12 +139,12 @@ function readSecretFile(env: NodeJS.ProcessEnv, key: string): string | undefined
     if (systemdCredential) {
       const credentialsDirectory = env.CREDENTIALS_DIRECTORY!;
       const credentialsMetadata = lstatSync(credentialsDirectory);
-      if (!credentialsMetadata.isDirectory()) throw new Error(`CREDENTIALS_DIRECTORY must be a directory`);
-      if (credentialsMetadata.isSymbolicLink()) throw new Error(`CREDENTIALS_DIRECTORY must not be a symlink in production`);
+      if (!credentialsMetadata.isDirectory()) throw new Error("CREDENTIALS_DIRECTORY must be a directory");
+      if (credentialsMetadata.isSymbolicLink()) throw new Error("CREDENTIALS_DIRECTORY must not be a symlink in production");
       const credentialsOwnerOk = credentialsMetadata.uid === process.getuid?.() || credentialsMetadata.uid === 0;
-      if (!credentialsOwnerOk) throw new Error(`CREDENTIALS_DIRECTORY has an unexpected owner`);
+      if (!credentialsOwnerOk) throw new Error("CREDENTIALS_DIRECTORY has an unexpected owner");
       if ((credentialsMetadata.mode & 0o077) !== 0) {
-        throw new Error(`CREDENTIALS_DIRECTORY must not be group/world accessible`);
+        throw new Error("CREDENTIALS_DIRECTORY must not be group/world accessible");
       }
       if ((target.mode & 0o007) !== 0) throw new Error(`${key}_FILE must not be world accessible`);
     } else if ((target.mode & 0o077) !== 0) {
@@ -158,13 +175,35 @@ const exactMfaKey = z.string().optional().default("").transform((value, ctx) => 
     return z.NEVER;
   }
 });
+const vaultMasterKey = z.string().optional().default("").transform((value, ctx) => {
+  if (!value) return Buffer.alloc(0);
+  try {
+    return assertCanonicalBase64(value, { exactBytes: 32 }, "CONFIG_VAULT_MASTER_KEY_BASE64");
+  } catch (error) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: error instanceof Error ? error.message : "invalid config vault key" });
+    return z.NEVER;
+  }
+});
+const adminBootstrapUsername = z.string().default("owner").transform((value, ctx) => {
+  try {
+    return normalizeAdminUsername(value);
+  } catch (error) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: error instanceof Error ? error.message : "invalid ADMIN_BOOTSTRAP_USERNAME"
+    });
+    return z.NEVER;
+  }
+});
 
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   KCML_PROCESS_ROLE: z.enum(["all", "web", "worker", "monitor", "egress", "migrate", "admin-sync"]).default("all"),
   PORT: z.coerce.number().int().min(1).max(65535).default(3000),
-  PUBLIC_BASE_DOMAIN: hostnameSchema("PUBLIC_BASE_DOMAIN", "hcasc.cz"),
+  PUBLIC_BASE_DOMAIN: hostnameSchema("PUBLIC_BASE_DOMAIN", "example.invalid"),
   DATABASE_URL: z.string().min(1),
+  CONFIG_VAULT_MASTER_KEY_BASE64: vaultMasterKey,
+  CONFIG_VAULT_MASTER_KEY_ID: z.string().trim().min(1).max(120).default("config-v1"),
   ACCESS_TOKEN_HMAC_KEY_BASE64: roleBase64Secret,
   ACCESS_TOKEN_HMAC_KEY_ID: z.string().min(1).default("v1"),
   INTEGRATION_TOKEN_HMAC_KEY_BASE64: roleBase64Secret,
@@ -173,11 +212,12 @@ const envSchema = z.object({
   SESSION_SECRET_BASE64: roleBase64Secret,
   CSRF_SECRET_BASE64: roleBase64Secret,
   MFA_ENCRYPTION_KEY_BASE64: exactMfaKey,
-  ADMIN_BOOTSTRAP_USERNAME: z.literal("karmar78").default("karmar78"),
+  ADMIN_BOOTSTRAP_USERNAME: adminBootstrapUsername,
+  ADMIN_BOOTSTRAP_SECRET: z.string().min(32).max(512).optional(),
   ADMIN_TOTP_SECRET: z.string().min(16).optional(),
-  ADMIN_HOST: hostnameSchema("ADMIN_HOST", "admin.hcasc.cz"),
-  AUTH_HOST: hostnameSchema("AUTH_HOST", "auth.hcasc.cz"),
-  REGISTER_HOST: hostnameSchema("REGISTER_HOST", "register.hcasc.cz"),
+  ADMIN_HOST: hostnameSchema("ADMIN_HOST", "admin.example.invalid"),
+  AUTH_HOST: hostnameSchema("AUTH_HOST", "auth.example.invalid"),
+  REGISTER_HOST: hostnameSchema("REGISTER_HOST", "register.example.invalid"),
   QUARANTINE_ROOT: z.string().default("/var/lib/kcml/onboarding"),
   ONBOARDING_WORKER_ENABLED: z.string().optional().transform((value) => value === "true"),
   ONBOARDING_WORKER_INTERVAL_MS: z.coerce.number().int().min(1_000).default(15_000),
@@ -209,10 +249,19 @@ const envSchema = z.object({
   COSIGN_BINARY: z.string().default("cosign"),
   RUNTIME_SOCKET_ROOT: z.string().default("/var/lib/kcml/runtime"),
   EGRESS_PROXY_SOCKET_PATH: z.string().default("/var/lib/kcml/egress/proxy.sock"),
-  WILDCARD_TLS_CERT_PATH: z.string().default("/etc/letsencrypt/live/wildcard.hcasc.cz/fullchain.pem"),
+  WILDCARD_TLS_CERT_PATH: z.string().default("/etc/kcml/tls/fullchain.pem"),
   TRUSTED_PROXY_CIDRS: z.string().default("127.0.0.1,::1").transform((value) => value.split(",").map((item) => item.trim()).filter(Boolean)),
   BUILD_ID: z.string().min(1).default("local"),
   LOG_LEVEL: z.enum(LOG_LEVELS).default("info"),
+  AUDIT_ARCHIVE_PATH: z.string().min(1).default("/var/lib/kcml/audit/archive.jsonl"),
+  UI_TIME_ZONE: z.string().default("Europe/Prague").transform((value, ctx) => {
+    try {
+      return validateTimeZone(value);
+    } catch (error) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: error instanceof Error ? error.message : "invalid time zone" });
+      return z.NEVER;
+    }
+  }),
   MFA_ALLOW_PLAINTEXT_LEGACY: z.string().optional().transform((value) => value === "true")
 }).superRefine((config, ctx) => {
   const requiredSecrets: Partial<Record<typeof config.KCML_PROCESS_ROLE, Array<keyof typeof config>>> = {
@@ -296,18 +345,82 @@ const envSchema = z.object({
   }
 });
 
-export type AppConfig = z.infer<typeof envSchema>;
+type ParsedEnvConfig = z.infer<typeof envSchema>;
+export type MutableRuntimeConfigKey = "ONBOARDING_WORKER_INTERVAL_MS" | "MONITOR_INTERVAL_MS" | "LOG_LEVEL" | "UI_TIME_ZONE";
 
-export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
+const mutableRuntimeConfigKeys = ["ONBOARDING_WORKER_INTERVAL_MS", "MONITOR_INTERVAL_MS", "LOG_LEVEL", "UI_TIME_ZONE"] as const satisfies ReadonlyArray<MutableRuntimeConfigKey>;
+
+const bootstrapEnvSchema = z.object({
+  NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
+  KCML_PROCESS_ROLE: z.enum(["all", "web", "worker", "monitor", "egress", "migrate", "admin-sync"]).default("all"),
+  PORT: z.coerce.number().int().min(1).max(65535).default(3000),
+  DATABASE_URL: z.string().min(1),
+  CONFIG_VAULT_MASTER_KEY_BASE64: vaultMasterKey,
+  CONFIG_VAULT_MASTER_KEY_ID: z.string().trim().min(1).max(120).default("config-v1")
+}).superRefine((config, ctx) => {
+  if (config.NODE_ENV === "production" && config.KCML_PROCESS_ROLE !== "migrate" && config.CONFIG_VAULT_MASTER_KEY_BASE64.length !== 32) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["CONFIG_VAULT_MASTER_KEY_BASE64"], message: "config vault master key is required in production" });
+  }
+});
+
+export type BootstrapConfig = z.infer<typeof bootstrapEnvSchema>;
+export type RuntimeConfig = ParsedEnvConfig;
+export type AppConfig = ParsedEnvConfig;
+export type RuntimeDefaultsConfig = Partial<Pick<RuntimeConfig, MutableRuntimeConfigKey>>;
+export type DatabaseConfig = Pick<BootstrapConfig, "DATABASE_URL">;
+export type HostRoutingConfig = Pick<AppConfig, "PUBLIC_BASE_DOMAIN" | "ADMIN_HOST" | "AUTH_HOST" | "REGISTER_HOST">;
+export type WebAppConfig = HostRoutingConfig & Pick<AppConfig, "LOG_LEVEL" | "TRUSTED_PROXY_CIDRS" | "SESSION_SECRET_BASE64">;
+export type OAuthConfig = Pick<AppConfig, "AUTH_HOST" | "ACCESS_TOKEN_HMAC_KEY_BASE64" | "ACCESS_TOKEN_HMAC_KEY_ID">;
+export type ReferenceExternalApiConfig = Pick<AppConfig, "PUBLIC_BASE_DOMAIN">;
+export type McpHttpConfig = Pick<AppConfig, "PUBLIC_BASE_DOMAIN" | "AUTH_HOST" | "ACCESS_TOKEN_HMAC_KEY_BASE64">;
+export type IntegrationTokenConfig = Pick<AppConfig, "INTEGRATION_TOKEN_HMAC_KEY_BASE64" | "INTEGRATION_TOKEN_HMAC_KEY_ID">;
+export type EgressClientConfig = Pick<AppConfig, "EGRESS_PROXY_SOCKET_PATH" | "EGRESS_CAPABILITY_HMAC_KEY_BASE64">;
+export type OnboardingRouteConfig = HostRoutingConfig & IntegrationTokenConfig & Pick<AppConfig, "QUARANTINE_ROOT" | "ONBOARDING_WORKER_ENABLED" | "MFA_ENCRYPTION_KEY_BASE64" | "MFA_ALLOW_PLAINTEXT_LEGACY" | "SESSION_SECRET_BASE64" | "EGRESS_PROXY_SOCKET_PATH" | "EGRESS_CAPABILITY_HMAC_KEY_BASE64">;
+export type ExternalApiRegistrationConfig = Pick<AppConfig, "PUBLIC_BASE_DOMAIN"> & EgressClientConfig;
+export type ReadinessConfig = Pick<AppConfig, "MONITOR_ENABLED" | "MONITOR_INTERVAL_MS" | "BUILD_ID">;
+export type AdminSessionConfig = Pick<AppConfig, "SESSION_SECRET_BASE64">;
+export type AdminReauthConfig = Pick<AppConfig, "MFA_ENCRYPTION_KEY_BASE64" | "MFA_ALLOW_PLAINTEXT_LEGACY">;
+export type AdminRoutesConfig = HostRoutingConfig
+  & AdminSessionConfig
+  & AdminReauthConfig
+  & ReadinessConfig
+  & Pick<AppConfig, "ADMIN_BOOTSTRAP_USERNAME" | "ADMIN_BOOTSTRAP_SECRET" | "BUILD_ID" | "CONFIG_VAULT_MASTER_KEY_BASE64" | "CONFIG_VAULT_MASTER_KEY_ID">;
+export type ExternalApiGatewayConfig = Pick<AppConfig, "PUBLIC_BASE_DOMAIN" | "ACCESS_TOKEN_HMAC_KEY_BASE64"> & EgressClientConfig;
+export type AlertDeliveryConfig = Pick<AppConfig, "ALERT_PRIMARY_WEBHOOK_URL" | "ALERT_PRIMARY_HMAC_KEY_BASE64" | "ALERT_BACKUP_WEBHOOK_URL" | "ALERT_BACKUP_HMAC_KEY_BASE64">;
+export type GitHubOnboardingConfig = Pick<AppConfig, "GITHUB_TOKEN" | "GITHUB_APP_ID" | "GITHUB_APP_INSTALLATION_ID" | "GITHUB_APP_PRIVATE_KEY_BASE64" | "GITHUB_OWNER" | "GITHUB_REPO">;
+export type ActivationConfig = Pick<AppConfig, "AUTH_HOST" | "PUBLIC_BASE_DOMAIN">;
+export type EgressProxyConfig = EgressClientConfig & Pick<AppConfig, "NODE_ENV">;
+export type OciRuntimeConfig = Pick<AppConfig, "OCI_IMAGE_NAMESPACE" | "OCI_REGISTRY" | "OCI_CERTIFICATE_IDENTITY" | "OCI_CERTIFICATE_OIDC_ISSUER" | "PODMAN_BINARY" | "COSIGN_BINARY" | "RUNTIME_SOCKET_ROOT" | "EGRESS_PROXY_SOCKET_PATH">;
+export type WorkerConfig = GitHubOnboardingConfig & ActivationConfig & EgressClientConfig & OciRuntimeConfig & Pick<AppConfig, "ONBOARDING_WORKER_INTERVAL_MS">;
+export type MonitoringConfig = AlertDeliveryConfig & EgressClientConfig & OciRuntimeConfig & Pick<AppConfig, "AUTH_HOST" | "MONITOR_INTERVAL_MS" | "AUDIT_ARCHIVE_PATH">;
+export type AppServerConfig = WebAppConfig
+  & AdminRoutesConfig
+  & OAuthConfig
+  & McpHttpConfig
+  & ExternalApiGatewayConfig
+  & OnboardingRouteConfig;
+
+export function runtimeConfigDefaults(config: RuntimeDefaultsConfig = {}): Pick<RuntimeConfig, MutableRuntimeConfigKey> {
+  return {
+    ONBOARDING_WORKER_INTERVAL_MS: config.ONBOARDING_WORKER_INTERVAL_MS ?? 15_000,
+    MONITOR_INTERVAL_MS: config.MONITOR_INTERVAL_MS ?? 60_000,
+    LOG_LEVEL: config.LOG_LEVEL ?? "info",
+    UI_TIME_ZONE: config.UI_TIME_ZONE ?? "Europe/Prague"
+  };
+}
+
+function parseConfig(env: NodeJS.ProcessEnv, options: { allowAdminTotpSecret?: boolean } = {}): ParsedEnvConfig {
   const resolved = { ...env };
   for (const key of [
     "DATABASE_URL",
+    "CONFIG_VAULT_MASTER_KEY_BASE64",
     "ACCESS_TOKEN_HMAC_KEY_BASE64",
     "INTEGRATION_TOKEN_HMAC_KEY_BASE64",
     "EGRESS_CAPABILITY_HMAC_KEY_BASE64",
     "SESSION_SECRET_BASE64",
     "CSRF_SECRET_BASE64",
     "MFA_ENCRYPTION_KEY_BASE64",
+    "ADMIN_BOOTSTRAP_SECRET",
     "ADMIN_TOTP_SECRET",
     "ALERT_PRIMARY_HMAC_KEY_BASE64",
     "ALERT_BACKUP_HMAC_KEY_BASE64",
@@ -319,16 +432,47 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const config = envSchema.parse(resolved);
   if (config.NODE_ENV === "production") {
     const requiredProductionKeys: Array<keyof AppConfig> = ["BUILD_ID"];
-    if (["web", "worker", "monitor", "egress"].includes(config.KCML_PROCESS_ROLE)) {
+    if (["all", "web", "worker", "monitor", "egress"].includes(config.KCML_PROCESS_ROLE)) {
       requiredProductionKeys.push("PUBLIC_BASE_DOMAIN");
     }
-    if (["web", "monitor"].includes(config.KCML_PROCESS_ROLE)) {
+    if (["all", "web", "monitor"].includes(config.KCML_PROCESS_ROLE)) {
       requiredProductionKeys.push("ADMIN_HOST", "AUTH_HOST", "REGISTER_HOST");
     }
     for (const key of requiredProductionKeys) {
       if (!env[key]) throw new Error(`${key} must be explicitly set in production`);
     }
-    if (env.ADMIN_TOTP_SECRET) throw new Error("ADMIN_TOTP_SECRET must not be provided directly in production");
+    if (env.ADMIN_TOTP_SECRET && !options.allowAdminTotpSecret) {
+      throw new Error("ADMIN_TOTP_SECRET must not be provided directly in production");
+    }
   }
   return config;
 }
+
+export function loadBootstrapConfig(env: NodeJS.ProcessEnv = process.env): BootstrapConfig {
+  const resolved = { ...env };
+  if (!resolved.DATABASE_URL) resolved.DATABASE_URL = readSecretFile(env, "DATABASE_URL");
+  if (!resolved.CONFIG_VAULT_MASTER_KEY_BASE64) {
+    resolved.CONFIG_VAULT_MASTER_KEY_BASE64 = readSecretFile(env, "CONFIG_VAULT_MASTER_KEY_BASE64");
+  }
+  return bootstrapEnvSchema.parse(resolved);
+}
+
+// Legacy environment parsing is intentionally explicit and is only used by
+// migration tooling and tests. Production runtime entry points use the DB provider.
+export function loadConfig(env: NodeJS.ProcessEnv, options: { allowAdminTotpSecret?: boolean } = {}): AppConfig {
+  return parseConfig(env, options);
+}
+
+export function parseStoredRuntimeConfig(bootstrap: BootstrapConfig, values: NodeJS.ProcessEnv): AppConfig {
+  return envSchema.parse({
+    ...values,
+    NODE_ENV: bootstrap.NODE_ENV,
+    KCML_PROCESS_ROLE: bootstrap.KCML_PROCESS_ROLE,
+    PORT: String(bootstrap.PORT),
+    DATABASE_URL: bootstrap.DATABASE_URL,
+    CONFIG_VAULT_MASTER_KEY_BASE64: bootstrap.CONFIG_VAULT_MASTER_KEY_BASE64.toString("base64"),
+    CONFIG_VAULT_MASTER_KEY_ID: bootstrap.CONFIG_VAULT_MASTER_KEY_ID
+  });
+}
+
+export const mutableRuntimeConfigEnvKeys = [...mutableRuntimeConfigKeys];

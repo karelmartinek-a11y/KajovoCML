@@ -4,6 +4,7 @@ import { ociHandler } from "./oci-client.js";
 export type HandlerContext = {
   correlationId: string;
   server: McpServer;
+  signal?: AbortSignal;
   logger: { info: (obj: object, msg?: string) => void | Promise<void>; error: (obj: object, msg?: string) => void | Promise<void> };
 };
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isAllowedDestination, isForbiddenAddress } from "./egress-proxy.js";
+import { isAllowedDestination, isForbiddenAddress, tlsServername } from "./egress-proxy.js";
 
 describe("egress SSRF policy", () => {
   it("blocks loopback, private, link-local, metadata and mapped addresses", () => {
@@ -17,5 +17,11 @@ describe("egress SSRF policy", () => {
     expect(isAllowedDestination(new URL("http://api.example.com/v1"), allowlist)).toBe(false);
     expect(isAllowedDestination(new URL("https://sub.api.example.com/v1"), allowlist)).toBe(false);
     expect(isAllowedDestination(new URL("https://localhost/v1"), ["localhost"])).toBe(false);
+  });
+
+  it("uses TLS SNI only for DNS names", () => {
+    expect(tlsServername("api.example.com")).toBe("api.example.com");
+    expect(tlsServername("127.0.0.1")).toBeUndefined();
+    expect(tlsServername("[::1]")).toBeUndefined();
   });
 });

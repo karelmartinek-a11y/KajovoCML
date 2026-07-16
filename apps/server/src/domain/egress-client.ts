@@ -1,6 +1,6 @@
 import http from "node:http";
 import { createEphemeralEgressCapability } from "./egress.js";
-import type { AppConfig } from "../config.js";
+import type { EgressClientConfig } from "../config.js";
 
 type EgressResponse = {
   status: number;
@@ -21,7 +21,7 @@ export type EgressFetchParams = {
 };
 
 export async function fetchThroughEgress(
-  config: AppConfig,
+  config: EgressClientConfig,
   params: EgressFetchParams
 ): Promise<{ status: number; headers: Record<string, string | string[]>; body: Buffer }> {
   const capability = createEphemeralEgressCapability(config, {

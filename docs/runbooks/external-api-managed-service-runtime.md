@@ -72,7 +72,7 @@ The monitor probes `health`, `readiness`, `tls` and `acceptance` for active `EXT
 Use `scripts/external-api-soak.mjs` for the A22 soak run.
 
 - Default duration is `72` hours.
-- The summary file reports `PARTIALLY_IMPLEMENTED` until a full 72-hour run actually completes.
+- The summary file always reports `harnessStatus = READY`; if the execution ends before the full 72-hour target, it reports `runStatus = SHORT_RUN` instead of pretending the harness itself is unfinished.
 - When admin credentials and identifiers are supplied, the harness also exercises disable/enable and permission churn.
 
 ## Rollback

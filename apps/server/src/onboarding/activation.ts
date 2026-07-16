@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import dns from "node:dns/promises";
 import tls from "node:tls";
 import { isDeepStrictEqual } from "node:util";
-import type { AppConfig } from "../config.js";
+import type { ActivationConfig } from "../config.js";
 import type { Db } from "../db.js";
 import { tx } from "../db.js";
 import { appendAudit } from "../domain/audit.js";
@@ -223,7 +223,7 @@ export async function registerDisabledServer(db: Db, job: ActivationJob, socketP
   });
 }
 
-export async function runPublicPreflight(db: Db, config: AppConfig, serverId: string, job: ActivationJob, correlationId: string): Promise<Record<string, unknown>> {
+export async function runPublicPreflight(db: Db, config: ActivationConfig, serverId: string, job: ActivationJob, correlationId: string): Promise<Record<string, unknown>> {
   const addresses = await dns.lookup(job.hostname, { all: true });
   if (!addresses.length) throw new Error("dns_resolution_failed");
   const certificate = await tlsCertificate(job.hostname);
@@ -326,7 +326,7 @@ async function rpc(hostname: string, token: string | null, method: string, param
   });
 }
 
-export async function runTrialAndActivate(db: Db, config: AppConfig, serverId: string, job: ActivationJob, correlationId: string): Promise<Record<string, unknown>> {
+export async function runTrialAndActivate(db: Db, config: ActivationConfig, serverId: string, job: ActivationJob, correlationId: string): Promise<Record<string, unknown>> {
   const credential = await createSystemCredential(db, serverId);
   let accessToken = "";
   try {
@@ -422,7 +422,7 @@ export async function runTrialAndActivate(db: Db, config: AppConfig, serverId: s
 
 export async function runSyntheticMonitoringProbe(
   db: Db,
-  config: AppConfig,
+  config: Pick<ActivationConfig, "AUTH_HOST">,
   server: { id: string; hostname: string; toolName: string },
   manifest: OnboardingManifest
 ): Promise<{ correlationId: string }> {

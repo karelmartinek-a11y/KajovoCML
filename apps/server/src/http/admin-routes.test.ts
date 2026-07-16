@@ -45,10 +45,10 @@ describe("automatic-onboarding-only registration surface", () => {
     expect(response.statusCode).toBe(404);
   });
 
-  it("never advertises a public bootstrap flow", async () => {
+  it("advertises the guarded bootstrap flow only while no owner exists", async () => {
     const response = await app.inject({ method: "GET", url: "/api/session", headers: { host: config.ADMIN_HOST } });
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({ authenticated: false, bootstrapRequired: false });
+    expect(response.json()).toMatchObject({ authenticated: false, bootstrapRequired: true, role: null });
   });
 
   it("does not expose an endpoint that can create the primary administrator", async () => {

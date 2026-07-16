@@ -1,30 +1,31 @@
 import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
-import { loadConfig } from "../config.js";
+import { loadBootstrapConfig } from "../config.js";
 import { createDb, tx } from "../db.js";
 import { appendAudit } from "../domain/audit.js";
+import { loadConfigFromDb } from "../domain/operational-config.js";
 import { decryptMfaSecret, encryptMfaSecret } from "../security/secrets.js";
 
 export async function migrateLegacyMfaSecrets(options: {
   dryRun?: boolean;
 } = {}): Promise<{ migrated: number; skipped: number }> {
-  const config = loadConfig();
+  const config = loadBootstrapConfig();
   const db = createDb(config);
   try {
+    const runtimeConfig = await loadConfigFromDb(db, config);
     return await tx(db, async (client) => {
       const legacy = await client.query(
         `select id, username, mfa_secret
            from admin_account
-          where mfa_enabled = true
-            and mfa_secret is not null
+          where mfa_secret is not null
             and mfa_secret <> ''
-            and mfa_secret not like 'enc:v1:%'
+            and mfa_secret not like 'enc:v_:%'
           for update`
       );
       let migrated = 0;
       for (const row of legacy.rows as Array<{ id: string; username: string; mfa_secret: string }>) {
-        const encrypted = encryptMfaSecret(String(row.mfa_secret), config.MFA_ENCRYPTION_KEY_BASE64);
-        const roundTrip = decryptMfaSecret(encrypted, config.MFA_ENCRYPTION_KEY_BASE64);
+        const encrypted = encryptMfaSecret(String(row.mfa_secret), runtimeConfig.MFA_ENCRYPTION_KEY_BASE64, { subjectId: row.id, purpose: "admin_totp" });
+        const roundTrip = decryptMfaSecret(encrypted, runtimeConfig.MFA_ENCRYPTION_KEY_BASE64, { subjectId: row.id, purpose: "admin_totp" });
         if (roundTrip !== String(row.mfa_secret)) throw new Error("mfa_secret_round_trip_failed");
         if (!options.dryRun) {
           await client.query("update admin_account set mfa_secret=$2 where id=$1", [row.id, encrypted]);
@@ -38,11 +39,14 @@ export async function migrateLegacyMfaSecrets(options: {
           after: {
             username: row.username,
             mode: options.dryRun ? "dry_run" : "applied",
-            format: "enc:v1"
+            format: "enc:v2"
           },
           correlationId: randomUUID()
         });
         migrated += 1;
+      }
+      if (!options.dryRun) {
+        await client.query("alter table admin_account validate constraint admin_account_mfa_secret_ciphertext_check");
       }
       return { migrated, skipped: 0 };
     });

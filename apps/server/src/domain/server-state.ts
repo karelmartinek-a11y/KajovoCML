@@ -1,4 +1,6 @@
 import type pg from "pg";
+import type { Db } from "../db.js";
+import { tx } from "../db.js";
 import { appendAudit } from "./audit.js";
 import { evaluateRecertification, type RecertificationDecision } from "./recertification.js";
 import type { OperationalState, RegistrationState } from "./types.js";
@@ -45,6 +47,13 @@ function operationalStateFor(to: RegistrationState, requested?: OperationalState
   if (to === "QUARANTINED") return "QUARANTINED";
   if (to === "RETIRED") return "RETIRED";
   return "DISABLED";
+}
+
+function managedLifecycleFor(to: RegistrationState): "DRAFT" | "REGISTERED_DISABLED" | "TRIAL" | "ACTIVE" | "SUSPENDED" | "QUARANTINED" | "RETIRED" {
+  if (["TRIAL", "ACTIVE", "SUSPENDED", "QUARANTINED", "RETIRED", "REGISTERED_DISABLED"].includes(to)) {
+    return to as "REGISTERED_DISABLED" | "TRIAL" | "ACTIVE" | "SUSPENDED" | "QUARANTINED" | "RETIRED";
+  }
+  return ["APPROVED", "TEST_FAILED", "REJECTED"].includes(to) ? "REGISTERED_DISABLED" : "DRAFT";
 }
 
 export async function transitionServerState(client: pg.PoolClient, params: TransitionParams): Promise<{
@@ -99,12 +108,13 @@ export async function transitionServerState(client: pg.PoolClient, params: Trans
 
   const enabled = params.to === "TRIAL" || params.to === "ACTIVE";
   const operationalState = operationalStateFor(params.to, params.operationalState);
+  const managedLifecycle = managedLifecycleFor(params.to);
   await client.query(
     `update mcp_server
         set enabled=$2,
             registration_state=$3::registration_state,
             operational_state=$4,
-            revocation_epoch=case when $2 then revocation_epoch else gen_random_uuid() end,
+            revocation_epoch=gen_random_uuid(),
             lock_version=lock_version+1,
             updated_at=now(),
             retired_at=case when $3::registration_state='RETIRED'::registration_state then now() else retired_at end
@@ -114,6 +124,28 @@ export async function transitionServerState(client: pg.PoolClient, params: Trans
   if (!enabled) {
     await client.query("update access_token set revoked_at=coalesce(revoked_at,now()) where server_id=$1", [params.serverId]);
     await client.query("update egress_capability set revoked_at=coalesce(revoked_at,now()) where server_id=$1", [params.serverId]);
+  }
+  const managedServices = await client.query<{ id: string }>(
+    `update managed_service
+        set enabled=$2,
+            lifecycle_state=$4::managed_service_state,
+            operational_state=$5::operational_state,
+            api_state=case when $2 then 'ENABLED'::managed_service_api_state else 'DISABLED'::managed_service_api_state end,
+            api_disabled_reason=case when $2 then null else $3 end,
+            service_token_epoch=gen_random_uuid(),
+            last_policy_invalidation_at=now(),
+            lock_version=lock_version+1,
+            updated_at=now()
+      where legacy_mcp_server_id=$1
+      returning id`,
+    [params.serverId, enabled, params.reason, managedLifecycle, operationalState]
+  );
+  if (managedServices.rowCount) {
+    const managedServiceIds = managedServices.rows.map((managedService) => managedService.id);
+    await client.query(
+      "update managed_service_access_token set revoked_at=coalesce(revoked_at,now()) where managed_service_id=any($1::uuid[])",
+      [managedServiceIds]
+    );
   }
   await client.query(
     `insert into server_state_history(server_id,registration_state,operational_state,recertification_phase,reason,correlation_id)
@@ -141,6 +173,42 @@ export async function transitionServerState(client: pg.PoolClient, params: Trans
     correlationId: params.correlationId
   });
   return { from, to: params.to, operationalState, recertification };
+}
+
+export async function setServerEnabled(
+  db: Db,
+  actorId: string,
+  correlationId: string,
+  serverId: string,
+  enabled: boolean
+): Promise<{ registrationState: string; operationalState: string }> {
+  return tx(db, async (client) => {
+    const latest = await client.query(
+      `select id,enabled,registration_state,operational_state
+         from mcp_server where id=$1 for update`,
+      [serverId]
+    );
+    if (!latest.rowCount) throw Object.assign(new Error("not_found"), { statusCode: 404 });
+    const currentRow = latest.rows[0];
+    if (Boolean(currentRow.enabled) === enabled) {
+      return {
+        registrationState: String(currentRow.registration_state),
+        operationalState: String(currentRow.operational_state)
+      };
+    }
+    const transition = await transitionServerState(client, {
+      serverId,
+      to: enabled ? "TRIAL" : "REGISTERED_DISABLED",
+      actorType: "admin",
+      actorId,
+      reason: enabled ? "manual_trial_started" : "manual_disable",
+      correlationId
+    });
+    return {
+      registrationState: transition.to,
+      operationalState: transition.operationalState
+    };
+  });
 }
 
 export async function setComputedOperationalState(client: pg.PoolClient, params: {

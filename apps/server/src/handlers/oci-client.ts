@@ -1,16 +1,28 @@
+import { createHash } from "node:crypto";
 import http from "node:http";
-import { redact } from "../security/secrets.js";
 import type { KcmlHandler } from "./registry.js";
 
 type WorkerReply = {
   output?: unknown;
-  error?: { code?: string; message?: string };
+  error?: { code?: string };
   logs?: Array<{ level?: string; message?: string; fields?: Record<string, unknown> }>;
 };
 
 const activeByServer = new Map<string, number>();
 
-function invokeSocket(socketPath: string, payload: Buffer, timeoutMs: number, maxResponseBytes: number): Promise<WorkerReply> {
+function abortError(): Error {
+  const error = new Error("worker_aborted");
+  error.name = "AbortError";
+  return error;
+}
+
+function invokeSocket(
+  socketPath: string,
+  payload: Buffer,
+  timeoutMs: number,
+  maxResponseBytes: number,
+  signal?: AbortSignal
+): Promise<WorkerReply> {
   return new Promise((resolve, reject) => {
     const request = http.request({
       socketPath,
@@ -41,6 +53,15 @@ function invokeSocket(socketPath: string, payload: Buffer, timeoutMs: number, ma
     });
     request.on("timeout", () => request.destroy(new Error("worker_timeout")));
     request.on("error", reject);
+    if (signal) {
+      const abortRequest = () => request.destroy(abortError());
+      if (signal.aborted) {
+        abortRequest();
+        return;
+      }
+      signal.addEventListener("abort", abortRequest, { once: true });
+      request.on("close", () => signal.removeEventListener("abort", abortRequest));
+    }
     request.end(payload);
   });
 }
@@ -67,17 +88,23 @@ export function ociHandler(): KcmlHandler {
       if (payload.length > server.requestMaxBytes + 64 * 1024) throw new Error("worker_request_too_large");
       activeByServer.set(server.id, current + 1);
       try {
-        const reply = await invokeSocket(server.runtimeSocket, payload, server.timeoutMs + 1_000, server.responseMaxBytes + 128 * 1024);
+        const reply = await invokeSocket(
+          server.runtimeSocket,
+          payload,
+          server.timeoutMs + 1_000,
+          server.responseMaxBytes + 128 * 1024,
+          ctx.signal
+        );
         for (const frame of reply.logs ?? []) {
-          const fields = redact({ ...frame.fields, serverCode: server.code, imageDigest: server.imageDigest, correlationId: ctx.correlationId }) as Record<string, unknown>;
-          if (frame.level === "error") await ctx.logger.error(fields, String(frame.message ?? "handler log"));
-          else await ctx.logger.info(fields, String(frame.message ?? "handler log"));
+          const handlerLogDigest = createHash("sha256")
+            .update(JSON.stringify({ level: frame.level, message: frame.message, fields: frame.fields }))
+            .digest("hex");
+          const fields = { serverCode: server.code, imageDigest: server.imageDigest, correlationId: ctx.correlationId, handlerLogDigest };
+          if (frame.level === "error") await ctx.logger.error(fields, "handler.error");
+          else await ctx.logger.info(fields, "handler.info");
         }
         if (reply.error) {
-          const message = typeof reply.error.message === "string" && reply.error.message.trim()
-            ? reply.error.message
-            : String(reply.error.code ?? "worker_failed");
-          throw new Error(message);
+          throw new Error(String(reply.error.code ?? "worker_failed"));
         }
         return reply.output;
       } finally {

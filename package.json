@@ -4,13 +4,17 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=22.0.0",
+    "node": ">=24.0.0",
     "pnpm": ">=9.0.0"
   },
   "scripts": {
     "build": "pnpm -r build",
-    "dev": "pnpm --filter @kcml/server dev",
+    "dev": "pnpm --filter @kcml/admin-ui build && pnpm --filter @kcml/server dev",
     "lint": "eslint .",
+    "postinstall": "node scripts/clean-appledouble.mjs",
+    "catalog:generate": "node scripts/generate-mcp-onboarding-catalog.mjs",
+    "catalog:check": "node scripts/generate-mcp-onboarding-catalog.mjs --check",
+    "pretest": "node scripts/clean-appledouble.mjs && node scripts/generate-mcp-onboarding-catalog.mjs --check",
     "test": "vitest run --exclude '**/._*'",
     "typecheck": "pnpm -r typecheck",
     "ci": "pnpm lint && pnpm typecheck && pnpm test && pnpm build",
@@ -23,7 +27,7 @@
   ],
   "devDependencies": {
     "@eslint/js": "^9.30.1",
-    "@types/node": "^22.10.2",
+    "@types/node": "^24.0.0",
     "eslint": "^9.30.1",
     "typescript": "^5.8.3",
     "typescript-eslint": "^8.35.1",

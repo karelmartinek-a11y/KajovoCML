@@ -36,7 +36,7 @@ case "$action" in
     test -d "$target_release"
     test -s "$state_dir/config.tar"
     systemctl stop kcml kcml-onboarding-worker kcml-monitor kcml-egress-proxy kcml-alert-primary kcml-alert-backup 2>/dev/null || true
-    for path in "${managed_paths[@]}"; do rm -rf "/$path"; done
+    for path in "${managed_paths[@]}"; do rm -rf "/${path:?}"; done
     tar --extract --file "$state_dir/config.tar" --directory /
     ln -sfn "$target_release" /opt/kcml/current
     systemctl daemon-reload

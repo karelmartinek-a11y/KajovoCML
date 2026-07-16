@@ -1,10 +1,11 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type pg from "pg";
-import type { AppConfig } from "../config.js";
+import type { IntegrationTokenConfig } from "../config.js";
 import type { Db } from "../db.js";
 import { tx } from "../db.js";
 import { fingerprintSecret, hmacToken } from "../security/secrets.js";
 import { appendAudit } from "./audit.js";
+import { kcmlCodeFromNumber, kcmlHostnameForCode } from "./hostnames.js";
 import type { OnboardingManifest } from "./registration.js";
 import { transitionServerState } from "./server-state.js";
 
@@ -197,7 +198,7 @@ function mapToken(row: Record<string, unknown>) {
 
 export async function createIntegrationToken(
   db: Db,
-  config: AppConfig,
+  config: IntegrationTokenConfig,
   actorId: string,
   correlationId: string,
   label: string,
@@ -361,7 +362,7 @@ export async function listIntegrationTokens(db: Db) {
   return result.rows.map((row) => mapToken(row as Record<string, unknown>));
 }
 
-export async function authenticateIntegrationToken(db: Db, token: string, config: AppConfig): Promise<IntegrationTokenPrincipal> {
+export async function authenticateIntegrationToken(db: Db, token: string, config: IntegrationTokenConfig): Promise<IntegrationTokenPrincipal> {
   if (!token.startsWith("kci_") || token.length < 80 || token.length > 100) throw new Error("invalid_integration_token");
   const digest = hmacToken(token, config.INTEGRATION_TOKEN_HMAC_KEY_BASE64);
   const result = await db.query(
@@ -395,7 +396,7 @@ function toolNameFor(code: string, handlerKey: string): string {
 
 export async function createOnboardingJob(
   db: Db,
-  config: AppConfig,
+  config: { PUBLIC_BASE_DOMAIN: string },
   principal: IntegrationTokenPrincipal,
   idempotencyKey: string,
   manifest: OnboardingManifest,
@@ -423,8 +424,8 @@ export async function createOnboardingJob(
     }
     const allocation = await client.query("select nextval('kcml_number_seq') as number");
     const number = Number(allocation.rows[0].number);
-    const code = `KCML${String(number).padStart(4, "0")}`;
-    const hostname = `${code.toLowerCase()}.${config.PUBLIC_BASE_DOMAIN}`;
+    const code = kcmlCodeFromNumber(number);
+    const hostname = kcmlHostnameForCode(code, config.PUBLIC_BASE_DOMAIN);
     const toolName = toolNameFor(code, manifest.handlerKey);
     const job = await client.query(
       `insert into onboarding_job
@@ -516,8 +517,7 @@ export async function replaceOnboardingSource(
   });
 }
 
-async function initializeGates(client: pg.PoolClient, jobId: string, correlationId: string): Promise<void> {
-  const gates = [
+export const MCP_ONBOARDING_GATES = [
     ["archive_policy", "intake"], ["manifest_schema", "intake"], ["secret_scan", "intake"], ["dependency_policy", "intake"],
     ["path_policy", "ci"], ["lint", "ci"], ["typecheck", "ci"], ["unit_tests", "ci"], ["contract_tests", "ci"],
     ["sast", "ci"], ["sca", "ci"], ["license", "ci"], ["sbom", "ci"], ["reproducible_build", "ci"],
@@ -526,8 +526,10 @@ async function initializeGates(client: pg.PoolClient, jobId: string, correlation
     ["oauth_metadata", "trial"], ["audience_binding", "trial"], ["negative_auth", "trial"], ["mcp_initialize", "trial"],
     ["mcp_tools_list", "trial"], ["safe_tools_call", "trial"], ["cross_host", "trial"], ["schema_contract", "trial"],
     ["correlation_chain", "trial"], ["logging_redaction", "trial"], ["audit_persistence", "trial"], ["monitoring_probes", "trial"]
-  ];
-  for (const [name, stage] of gates) {
+  ] as const;
+
+async function initializeGates(client: pg.PoolClient, jobId: string, correlationId: string): Promise<void> {
+  for (const [name, stage] of MCP_ONBOARDING_GATES) {
     await client.query(
       `insert into onboarding_gate(job_id, gate_name, stage, status, correlation_id)
        values ($1,$2,$3,'PENDING',$4) on conflict (job_id, gate_name) do nothing`,

@@ -9,7 +9,7 @@ import { promisify } from "node:util";
 import Fastify, { type FastifyInstance } from "fastify";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { migrateLegacyMfaSecrets } from "../cli/migrate-mfa-secrets.js";
-import { loadConfig, type AppConfig } from "../config.js";
+import { loadBootstrapConfig, loadConfig, type AppConfig } from "../config.js";
 import { createDb, type Db, tx } from "../db.js";
 import {
   createKajaCredential,
@@ -25,6 +25,7 @@ import {
   validateExternalApiManifest
 } from "./external-api.js";
 import { managedServiceStateView, setManagedServiceApiState } from "./managed-service.js";
+import { loadConfigFromDb } from "./operational-config.js";
 import { authenticateIntegrationToken, createIntegrationToken } from "./onboarding.js";
 import { buildEgressProxy, listenEgressProxy } from "../onboarding/egress-proxy.js";
 import { registerAuthRoutes } from "../http/auth-routes.js";
@@ -792,15 +793,24 @@ describe.skipIf(!enabled)("EXTERNAL_API PostgreSQL integration", () => {
   });
 
   it("migrates legacy plaintext MFA secrets idempotently", async () => {
+    await db.query("alter table admin_account drop constraint admin_account_mfa_secret_ciphertext_check");
     await db.query(
       "update admin_account set mfa_enabled=true, mfa_secret=$2 where id=$1",
       [adminId, "JBSWY3DPEHPK3PXP"]
     );
+    await db.query(
+      `alter table admin_account add constraint admin_account_mfa_secret_ciphertext_check
+       check (mfa_secret is null or mfa_secret like 'enc:v2:%') not valid`
+    );
     const migrated = await migrateLegacyMfaSecrets();
     expect(migrated.migrated).toBe(1);
     const account = await db.query("select mfa_secret from admin_account where id=$1", [adminId]);
-    expect(String(account.rows[0].mfa_secret)).toMatch(/^enc:v1:/);
-    expect(decryptMfaSecret(String(account.rows[0].mfa_secret), config.MFA_ENCRYPTION_KEY_BASE64)).toBe("JBSWY3DPEHPK3PXP");
+    expect(String(account.rows[0].mfa_secret)).toMatch(/^enc:v2:/);
+    const effectiveConfig = await loadConfigFromDb(db, loadBootstrapConfig(process.env));
+    expect(decryptMfaSecret(String(account.rows[0].mfa_secret), effectiveConfig.MFA_ENCRYPTION_KEY_BASE64, {
+      subjectId: adminId,
+      purpose: "admin_totp"
+    })).toBe("JBSWY3DPEHPK3PXP");
     const rerun = await migrateLegacyMfaSecrets();
     expect(rerun.migrated).toBe(0);
   });

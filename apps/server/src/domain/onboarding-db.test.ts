@@ -73,14 +73,14 @@ describe.skipIf(!enabled)("onboarding PostgreSQL transactions", () => {
     const { manifest, digest: manifestDigest } = validateOnboardingManifest(manifestInput);
     const sourceDigest = `sha256:${"b".repeat(64)}`;
     const evidence = { archivePath: "/tmp/source.zip", sourceDigest, manifestDigest, requestDigest: requestDigest(manifestDigest, sourceDigest), validation: { fileCount: 5 } };
-    const idempotencyKey = "db-test-idempotency-0001";
+    const idempotencyKey = `db-test-${randomUUID()}`;
     const [first, retry] = await Promise.all([
       createOnboardingJob(db, config, principal, idempotencyKey, manifest, evidence, randomUUID()),
       createOnboardingJob(db, config, principal, idempotencyKey, manifest, evidence, randomUUID())
     ]);
     expect(retry.id).toBe(first.id);
     expect(first.code).toBe("KCML0001");
-    expect(first.hostname).toBe("kcml0001.hcasc.cz");
+    expect(first.hostname).toBe(`kcml0001.${config.PUBLIC_BASE_DOMAIN}`);
     expect((await db.query("select count(*)::int as count from onboarding_job")).rows[0].count).toBe(1);
     const failed = await transitionJob(
       db,

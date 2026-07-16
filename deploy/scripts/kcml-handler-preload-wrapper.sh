@@ -11,12 +11,14 @@ test "$(id -u)" = "0"
 test -r /etc/kcml/kcml.env
 
 set -a
+# shellcheck disable=SC1091
 . /etc/kcml/kcml.env
 set +a
 : "${DATABASE_URL:?DATABASE_URL is required}"
 
 auth_file=/var/lib/kcml/podman/auth.json
 docker_config=/var/lib/kcml/podman/.docker/config.json
+# shellcheck disable=SC2329
 cleanup() {
   rm -f "$auth_file" "$docker_config"
 }

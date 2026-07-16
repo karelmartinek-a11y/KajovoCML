@@ -14,7 +14,7 @@ describe.skipIf(!enabled)("audit PostgreSQL serialization", () => {
   });
 
   beforeEach(async () => {
-    await db.query("truncate table audit_event restart identity");
+    await db.query("truncate table audit_event restart identity cascade");
     await db.query("update audit_head set last_sequence=0,event_hash=null,updated_at=now() where singleton=true");
   });
 

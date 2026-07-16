@@ -5,7 +5,7 @@ import http from "node:http";
 import https from "node:https";
 import net from "node:net";
 import path from "node:path";
-import type { AppConfig } from "../config.js";
+import type { EgressProxyConfig } from "../config.js";
 import type { Db } from "../db.js";
 import { validateEgressCapability } from "../domain/egress.js";
 
@@ -47,11 +47,16 @@ export function isAllowedDestination(url: URL, allowlist: string[]): boolean {
   });
 }
 
-function canUseLoopbackForTests(config: AppConfig, hostname: string): boolean {
+export function tlsServername(hostname: string): string | undefined {
+  const normalized = hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
+  return net.isIP(normalized) ? undefined : normalized;
+}
+
+function canUseLoopbackForTests(config: EgressProxyConfig, hostname: string): boolean {
   return config.NODE_ENV === "test" && ["127.0.0.1", "::1"].includes(hostname);
 }
 
-async function publicAddresses(config: AppConfig, hostname: string): Promise<Array<{ address: string; family: number }>> {
+async function publicAddresses(config: EgressProxyConfig, hostname: string): Promise<Array<{ address: string; family: number }>> {
   if (net.isIP(hostname)) {
     if (isForbiddenAddress(hostname) && !canUseLoopbackForTests(config, hostname)) throw new Error("egress_private_address_blocked");
     return [{ address: hostname, family: net.isIP(hostname) }];
@@ -64,7 +69,7 @@ async function publicAddresses(config: AppConfig, hostname: string): Promise<Arr
 }
 
 function upstream(input: {
-  config: AppConfig;
+  config: EgressProxyConfig;
   url: URL;
   address: { address: string; family: number };
   method: string;
@@ -78,7 +83,7 @@ function upstream(input: {
     const request = https.request({
       host: input.address.address,
       family: input.address.family,
-      servername: input.url.hostname,
+      servername: tlsServername(input.url.hostname),
       port: Number(input.url.port || 443),
       path: `${input.url.pathname}${input.url.search}`,
       method: input.method,
@@ -107,7 +112,7 @@ function upstream(input: {
   });
 }
 
-export async function buildEgressProxy(db: Db, config: AppConfig): Promise<http.Server> {
+export async function buildEgressProxy(db: Db, config: EgressProxyConfig): Promise<http.Server> {
   return http.createServer((request, reply) => {
     void (async () => {
       if (request.method !== "POST" || request.url !== "/fetch") {

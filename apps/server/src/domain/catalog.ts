@@ -1,4 +1,5 @@
 import type { Db } from "../db.js";
+import { isKcmlHostname as isManagedKcmlHostname, resourceForHostname } from "./hostnames.js";
 import type { McpServer } from "./types.js";
 
 function asTimestamp(value: unknown): string | null {
@@ -131,9 +132,9 @@ export async function listServers(db: Db): Promise<McpServer[]> {
 }
 
 export function isKcmlHostname(hostname: string, baseDomain: string): boolean {
-  return new RegExp(`^kcml[0-9]{4,}\\.(${baseDomain.replaceAll(".", "\\.")})$`, "i").test(hostname);
+  return isManagedKcmlHostname(hostname, baseDomain);
 }
 
 export function resourceFor(hostname: string): string {
-  return `https://${hostname}/mcp`;
+  return resourceForHostname(hostname);
 }

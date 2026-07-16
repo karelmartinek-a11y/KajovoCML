@@ -101,6 +101,8 @@ insert into integration_token(
 ) select
   '20000000-0000-0000-0000-000000000002','Legacy production integration token',digest('legacy-token','sha256'),'v1','legacy0000000000',id,
   now()+interval '1 hour',now()+interval '1 hour',now()+interval '24 hours'
+-- The upgrade fixture intentionally anchors to the historical seed username from
+-- 001_initial.sql so the compatibility path exercises real production-shape data.
 from admin_account where username='karmar78';
 
 insert into onboarding_job(
@@ -146,12 +148,21 @@ select 'legacy.production.event','system','migration_fixture',series::text,
   from generate_series(1,1165) as series;
 SQL
 
-KCML_PROCESS_ROLE=migrate DATABASE_URL="$KCML_UPGRADE_DATABASE_URL" pnpm db:migrate
-KCML_PROCESS_ROLE=migrate DATABASE_URL="$KCML_UPGRADE_DATABASE_URL" pnpm db:migrate
+run_migrations() {
+  if [[ -x apps/server/node_modules/.bin/tsx ]]; then
+    KCML_PROCESS_ROLE=migrate DATABASE_URL="$KCML_UPGRADE_DATABASE_URL" \
+      apps/server/node_modules/.bin/tsx apps/server/src/cli/migrate.ts
+  else
+    KCML_PROCESS_ROLE=migrate DATABASE_URL="$KCML_UPGRADE_DATABASE_URL" pnpm db:migrate
+  fi
+}
+
+run_migrations
+run_migrations
 
 psql "$KCML_UPGRADE_DATABASE_URL" --no-psqlrc --set ON_ERROR_STOP=1 --tuples-only --no-align <<'SQL' | grep -Fx 'upgrade-ok'
 select case when
-  (select count(*) from schema_migration) = 24
+  (select count(*) from schema_migration) = 34
   and (select count(*) from legacy_schema_migration) = 9
   and (select count(*) from audit_event) = 1165
   and (select valid from verify_audit_chain()) is true

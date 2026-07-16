@@ -3,10 +3,24 @@ import {
   keylessVerificationArgs,
   rootlessContainerUserArgs,
   rootlessPodmanServiceInvocation,
+  runtimeCommandEnvironment,
   sanitizeCommandFailure,
   verifyAttestationEvidence,
   verifyLocalRuntimeEvidence
 } from "./oci.js";
+
+describe("OCI command environment", () => {
+  it("does not pass bootstrap or application secrets to child processes", () => {
+    const environment = runtimeCommandEnvironment({
+      PATH: "/usr/bin",
+      HOME: "/var/lib/kcml",
+      CONFIG_VAULT_MASTER_KEY_BASE64: "vault-secret",
+      DATABASE_URL: "postgres://secret",
+      GITHUB_TOKEN: "github-secret"
+    });
+    expect(environment).toEqual({ PATH: "/usr/bin", HOME: "/var/lib/kcml" });
+  });
+});
 
 function envelope(statement: unknown): string {
   return JSON.stringify({ payload: Buffer.from(JSON.stringify(statement)).toString("base64") });

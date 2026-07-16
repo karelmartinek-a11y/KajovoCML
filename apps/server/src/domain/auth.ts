@@ -447,25 +447,35 @@ export async function replaceManagedServicePermissions(
 }
 
 export async function renameKajaCredential(db: Db, actorId: string, correlationId: string, credentialId: string, label: string): Promise<void> {
+  const normalizedLabel = label.trim();
+  if (normalizedLabel.length < 1 || normalizedLabel.length > 120) {
+    throw Object.assign(new Error("invalid_label"), { statusCode: 400 });
+  }
   await tx(db, async (client) => {
+    const current = await client.query(
+      `select public_id,label,active,revoked_at,deleted_at
+         from kaja_credential
+        where id=$1
+        for update`,
+      [credentialId]
+    );
+    if (!current.rowCount || current.rows[0].deleted_at) throw Object.assign(new Error("not_found"), { statusCode: 404 });
+    if (!current.rows[0].active || current.rows[0].revoked_at) throw Object.assign(new Error("credential_immutable"), { statusCode: 409 });
     const result = await client.query(
       `update kaja_credential
-          set label=$2
+          set label=$2,updated_at=now()
         where id=$1 and deleted_at is null and revoked_at is null and active is true
         returning public_id, label`,
-      [credentialId, label]
+      [credentialId, normalizedLabel]
     );
-    if (!result.rowCount) {
-      const state = await client.query("select deleted_at, revoked_at, active from kaja_credential where id=$1", [credentialId]);
-      if (!state.rowCount || state.rows[0].deleted_at) throw Object.assign(new Error("not_found"), { statusCode: 404 });
-      throw Object.assign(new Error("credential_immutable"), { statusCode: 409 });
-    }
+    if (!result.rowCount) throw Object.assign(new Error("credential_immutable"), { statusCode: 409 });
     await appendAudit(client, {
       eventType: "kaja.label.updated",
       actorType: "admin",
       actorId,
       objectType: "kaja_credential",
       objectId: credentialId,
+      before: { publicId: current.rows[0].public_id, label: current.rows[0].label },
       after: { publicId: result.rows[0].public_id, label: result.rows[0].label },
       correlationId
     });

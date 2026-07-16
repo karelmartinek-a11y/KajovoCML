@@ -4,12 +4,23 @@ import fs from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
 import { promisify } from "node:util";
-import type { AppConfig } from "../config.js";
+import type { OciRuntimeConfig } from "../config.js";
 import type { OnboardingManifest } from "../domain/registration.js";
 
 const execFileAsync = promisify(execFile);
 
 type CommandInvocation = { binary: string; args: string[] };
+
+const COMMAND_ENVIRONMENT_ALLOWLIST = [
+  "PATH", "LANG", "LC_ALL", "HOME", "USER", "LOGNAME", "XDG_DATA_HOME", "XDG_CONFIG_HOME",
+  "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "REGISTRY_AUTH_FILE", "DOCKER_CONFIG"
+] as const;
+
+export function runtimeCommandEnvironment(environment: Readonly<NodeJS.ProcessEnv>): NodeJS.ProcessEnv {
+  return Object.fromEntries(
+    COMMAND_ENVIRONMENT_ALLOWLIST.flatMap((key) => environment[key] ? [[key, environment[key]]] : [])
+  );
+}
 
 export function rootlessPodmanServiceInvocation(input: {
   binary: string;
@@ -68,14 +79,16 @@ export function sanitizeCommandFailure(value: string): string {
 
 async function command(binary: string, args: string[], timeout = 120_000): Promise<string> {
   const label = path.basename(binary);
+  const commandEnvironment = runtimeCommandEnvironment(process.env);
   const invocation = label === "podman"
-    ? rootlessPodmanServiceInvocation({ binary, args, runtimeUid: process.getuid?.(), env: process.env })
+    ? rootlessPodmanServiceInvocation({ binary, args, runtimeUid: process.getuid?.(), env: commandEnvironment })
     : { binary, args };
   try {
     const result = await execFileAsync(invocation.binary, invocation.args, {
       timeout,
       maxBuffer: 10 * 1024 * 1024,
-      encoding: "utf8"
+      encoding: "utf8",
+      env: commandEnvironment
     });
     return result.stdout.trim();
   } catch (error) {
@@ -204,7 +217,7 @@ function socketHealth(socketPath: string): Promise<void> {
 }
 
 export class OciRuntime {
-  constructor(private readonly config: AppConfig) {}
+  constructor(private readonly config: OciRuntimeConfig) {}
 
   imageReference(code: string, sourceCommit: string): string {
     if (!this.config.OCI_IMAGE_NAMESPACE) throw new Error("oci_namespace_not_configured");

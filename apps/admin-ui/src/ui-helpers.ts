@@ -1,17 +1,38 @@
-import { isExpiredAdminSession, SESSION_EXPIRED_EVENT } from "./session-auth.js";
+import { isExpiredAdminSession, REAUTH_REQUIRED_EVENT, SESSION_EXPIRED_EVENT } from "./session-auth.js";
 import type { KajaCredential } from "./types.js";
+
+let uiTimeZone = "Europe/Prague";
+
+export function setUiTimeZone(value: string): void {
+  new Intl.DateTimeFormat("en", { timeZone: value }).format(0);
+  uiTimeZone = value;
+}
+
+type ApiErrorPayload = {
+  error?: string;
+  correlationId?: string;
+  message?: string;
+};
+
+export class ApiRequestError extends Error {
+  constructor(readonly code: string, readonly correlationId: string | null) {
+    super(describeApiError(code, correlationId));
+    this.name = "ApiRequestError";
+  }
+}
 
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, { ...init, credentials: "include", headers: { "content-type": "application/json", ...(init?.headers ?? {}) } });
   if (!res.ok) {
-    const body = await res.json().catch((): { error?: string } => ({ error: res.statusText })) as { error?: string };
+    const body = await res.json().catch((): ApiErrorPayload => ({ error: res.statusText })) as ApiErrorPayload;
     if (isExpiredAdminSession(res.status, body.error)) window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
-    throw new Error(describeApiError(body.error ?? res.statusText));
+    if (res.status === 428 && body.error === "reauthentication_required") window.dispatchEvent(new Event(REAUTH_REQUIRED_EVENT));
+    throw new ApiRequestError(body.error ?? res.statusText, body.correlationId ?? null);
   }
   return res.json() as Promise<T>;
 }
 
-export function describeApiError(code: string): string {
+export function describeApiError(code: string, correlationId: string | null = null): string {
   const map: Record<string, string> = {
     unauthorized: "Relace vypršela. Přihlaste se prosím znovu.",
     invalid_login: "Přihlášení se nepodařilo. Zkontrolujte jméno, heslo a MFA kód.",
@@ -21,13 +42,62 @@ export function describeApiError(code: string): string {
     invalid_label: "Zadané označení není platné.",
     invalid_expiration: "Datum expirace musí být v budoucnosti.",
     suppression_must_be_future: "Konec potlačení musí být v budoucnosti.",
+    config_version_conflict: "Konfigurace se mezitím změnila v jiné relaci. Nejprve obnovte stránku nebo seznam konfigurace.",
     handler_unavailable: "Server v této verzi aplikace nemá dostupný handler.",
     manifest_test_contract_missing: "Server nemá zaregistrovaný testovací kontrakt pro bezpečný test.",
     rate_limit_exceeded: "Byl překročen povolený limit volání. Zkuste to znovu později.",
     weak_password: "Nové heslo musí mít alespoň 12 znaků.",
-    invalid_mfa_secret: "MFA tajemství musí mít alespoň 16 znaků."
+    invalid_mfa_secret: "MFA tajemství musí mít alespoň 16 znaků.",
+    reauthentication_required: "Pro tuto změnu je nutné znovu potvrdit heslo a MFA.",
+    reauthentication_failed: "Opětovné ověření se nezdařilo.",
+    owner_role_required: "Tuto operaci může provést pouze vlastník systému.",
+    admin_role_forbidden: "Role auditora nepovoluje změny systému.",
+    last_owner_required: "Posledního aktivního vlastníka nelze deaktivovat ani převést na jinou roli.",
+    bootstrap_access_denied: "První nastavení je povoleno pouze z důvěryhodného rozhraní nebo s bootstrap secretem.",
+    bootstrap_input_invalid: "Vyplňte uživatelské jméno, heslo alespoň o 12 znacích a MFA tajemství alespoň o 16 znacích.",
+    bootstrap_completed: "První nastavení už bylo dokončeno.",
+    bootstrap_username_unavailable: "Zvolené uživatelské jméno už nelze použít.",
+    confirmation_code_mismatch: "Potvrzovací KCML kód nesouhlasí.",
+    server_disabled: "Server je vypnutý nebo není v provozním stavu.",
+    active_revision_required: "Operace vyžaduje aktivní registrační revizi.",
+    active_monitoring_profile_required: "Operace vyžaduje aktivní monitorovací profil.",
+    monitoring_profile_not_found: "Monitorovací profil nebyl nalezen.",
+    monitoring_profile_invalid: "Monitorovací profil není platný.",
+    monitoring_profile_version_conflict: "Monitorovací profil se mezitím změnil. Nejprve jej obnovte.",
+    monitoring_revision_required: "Změna monitoringu vyžaduje novou revizi serveru.",
+    manifest_not_found: "Aktivní registrační manifest nebyl nalezen.",
+    manifest_safe_input_schema_failed: "Bezpečný testovací vstup neodpovídá registrovanému schématu.",
+    unsafe_write_test_contract: "Zápisový nástroj nemá bezpečně izolovaný testovací kontrakt.",
+    test_compensation_policy_mismatch: "Kompenzační test neodpovídá politice ukončení handleru.",
+    output_schema_failed: "Výstup handleru neodpovídá registrovanému schématu.",
+    handler_timeout: "Handler překročil registrovaný časový limit.",
+    concurrency_limit_exceeded: "Server právě využívá celý povolený souběh.",
+    config_key_not_found: "Konfigurační klíč nebyl nalezen.",
+    config_value_required: "Konfigurační hodnota je povinná.",
+    config_invalid_hostname: "Hostname není platný.",
+    config_invalid_time_zone: "Časové pásmo není platné.",
+    config_invalid_interval: "Zadaný interval není platný.",
+    config_invalid_secret: "Tajná hodnota nemá požadovaný formát nebo délku.",
+    audit_cursor_invalid: "Stránkovací kurzor auditu není platný.",
+    audit_time_range_invalid: "Časový rozsah auditu není platný.",
+    audit_event_id_invalid: "Identifikátor auditní události není platný.",
+    alert_not_open: "Alert už není otevřený.",
+    alert_not_suppressible: "Alert v tomto stavu nelze potlačit.",
+    delivery_not_retryable: "Toto doručení už nelze opakovat.",
+    invalid_delete_request: "Požadavek na smazání není platný.",
+    invalid_disable_request: "Požadavek na vypnutí není platný.",
+    invalid_enable_request: "Požadavek na zapnutí není platný.",
+    invalid_integration_descriptor: "Popis integračního záměru není úplný.",
+    invalid_integration_token: "Integrační token není platný.",
+    job_not_found: "Onboarding úloha nebyla nalezena.",
+    job_not_resumable: "Onboarding úlohu v tomto stavu nelze obnovit.",
+    job_not_quarantined: "Onboarding úloha není v karanténě.",
+    lock_version_conflict: "Záznam se mezitím změnil. Obnovte stránku a akci zopakujte.",
+    operation_failed: "Operaci se nepodařilo dokončit.",
+    internal_error: "Operaci se nepodařilo dokončit kvůli interní chybě."
   };
-  return map[code] ?? code;
+  const base = map[code] ?? "Operaci se nepodařilo dokončit";
+  return correlationId ? `${base} (Correlation ID: ${correlationId})` : base;
 }
 
 export function csrf(): string {
@@ -39,9 +109,18 @@ export function formatDate(value: string | null): string {
     ? new Intl.DateTimeFormat("cs-CZ", {
       dateStyle: "medium",
       timeStyle: "short",
-      timeZone: "Europe/Prague"
+      timeZone: uiTimeZone
     }).format(new Date(value))
     : "-";
+}
+
+export function formatCzNumber(value: number): string {
+  return new Intl.NumberFormat("cs-CZ").format(value);
+}
+
+export function formatDateWithUtc(value: string | null): string {
+  if (!value) return "-";
+  return `${formatDate(value)} · ${new Date(value).toISOString()}`;
 }
 
 export function formatLocalDateTimeInput(value: Date): string {

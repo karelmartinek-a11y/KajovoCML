@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import { z } from "zod";
 import type { Db } from "../db.js";
+import { kcmlCodeFromNumber, kcmlHostnameForCode } from "./hostnames.js";
 
 const sha256Schema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 const evidenceRefSchema = z.string().regex(/^evidence\/[a-z0-9][a-z0-9_./-]{1,240}$/i);
@@ -109,7 +110,7 @@ const legacyOnboardingManifestSchema = z.object({
     operations: z.string().min(1).max(160)
   }).strict(),
   source: z.object({
-    runtime: z.literal("nodejs22-typescript"),
+    runtime: z.literal("nodejs24-typescript"),
     entrypoint: z.literal("src/index.ts"),
     testCommand: z.literal("pnpm test")
   }).strict(),
@@ -140,7 +141,8 @@ const legacyOnboardingManifestSchema = z.object({
   testContract: z.object({
     safeInput: z.record(z.string(), z.unknown()),
     expectedResult: z.record(z.string(), z.unknown()),
-    cleanupOrCompensation: z.string().min(1).max(1_000)
+    cleanupOrCompensation: z.string().min(1).max(1_000),
+    executionMode: z.enum(["READ_ONLY", "SANDBOX", "COMPENSATED"]).optional()
   }).strict(),
   protocol: legacyProtocolSchema.optional(),
   dependencies: legacyDependenciesSchema.optional(),
@@ -183,7 +185,7 @@ const registrationManifest15Schema = z.object({
     reviewDueAt: timestampSchema
   }).strict(),
   source: z.object({
-    runtime: z.literal("nodejs22-typescript"),
+    runtime: z.literal("nodejs24-typescript"),
     entrypoint: z.literal("src/index.ts"),
     testCommand: z.literal("pnpm test")
   }).strict(),
@@ -209,6 +211,7 @@ const registrationManifest15Schema = z.object({
     safeInput: z.record(z.string(), z.unknown()),
     expectedResult: z.record(z.string(), z.unknown()),
     cleanupOrCompensation: z.string().trim().min(5).max(1_000),
+    executionMode: z.enum(["READ_ONLY", "SANDBOX", "COMPENSATED"]).optional(),
     positiveEvidenceRef: evidenceRefSchema,
     negativeTests: z.array(z.object({
       name: z.string().trim().min(3).max(120),
@@ -481,6 +484,6 @@ export function evidenceReferencesForManifest(manifest: RegistrationManifest15):
 export async function allocateKcml(db: Db, baseDomain: string): Promise<{ code: string; hostname: string; number: number }> {
   const result = await db.query("select nextval('kcml_number_seq') as number");
   const number = Number(result.rows[0].number);
-  const code = `KCML${String(number).padStart(4, "0")}`;
-  return { number, code, hostname: `${code.toLowerCase()}.${baseDomain}` };
+  const code = kcmlCodeFromNumber(number);
+  return { number, code, hostname: kcmlHostnameForCode(code, baseDomain) };
 }

@@ -1,13 +1,13 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
-import type { AppConfig } from "../config.js";
+import type { ExternalApiGatewayConfig } from "../config.js";
 import type { Db } from "../db.js";
 import { authorizeManagedServiceToken } from "../domain/managed-service.js";
 import { loadExternalApiGatewayService, matchExternalApiOperation, proxyExternalApiOperation } from "../domain/external-api.js";
 import { hmacToken } from "../security/secrets.js";
 import { hostOf, sendError } from "./errors.js";
 
-export function registerExternalApiRoutes(app: FastifyInstance, db: Db, config: AppConfig): void {
+export function registerExternalApiRoutes(app: FastifyInstance, db: Db, config: ExternalApiGatewayConfig): void {
   app.all("/*", {
     constraints: {
       host: new RegExp(`^kcml[0-9]{4,}\\.${config.PUBLIC_BASE_DOMAIN.replaceAll(".", "\\.")}$`, "i")

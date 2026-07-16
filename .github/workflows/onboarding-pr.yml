@@ -36,7 +36,7 @@ jobs:
           const metadata = JSON.parse(fs.readFileSync(`${dir}/.kcml-onboarding.json`, "utf8"));
           const pkg = JSON.parse(fs.readFileSync(`${dir}/package.json`, "utf8"));
           if (!/^KCML\d{4,}$/.test(metadata.code) || !/^sha256:[a-f0-9]{64}$/.test(metadata.sourceDigest)) throw new Error("invalid onboarding metadata");
-          if (pkg.type !== "module" || !String(pkg.engines?.node).includes("22")) throw new Error("Node.js 22 ESM package required");
+          if (pkg.type !== "module" || !String(pkg.engines?.node).includes("24")) throw new Error("Node.js 24 ESM package required");
           for (const name of Object.keys(pkg.scripts ?? {})) if (!["test","lint","typecheck","build"].includes(name)) throw new Error(`forbidden script ${name}`);
           NODE
 
@@ -49,7 +49,7 @@ jobs:
       - uses: pnpm/action-setup@v4
         with: { version: 9.15.4 }
       - uses: actions/setup-node@v4
-        with: { node-version: 22 }
+        with: { node-version: 24 }
       - run: |
           dir="$(scripts/onboarding/handler-dir.sh "origin/${{ github.base_ref }}")"
           cd "$dir"
@@ -65,7 +65,7 @@ jobs:
       - uses: pnpm/action-setup@v4
         with: { version: 9.15.4 }
       - uses: actions/setup-node@v4
-        with: { node-version: 22 }
+        with: { node-version: 24 }
       - run: |
           dir="$(scripts/onboarding/handler-dir.sh "origin/${{ github.base_ref }}")"
           cd "$dir"
@@ -81,7 +81,7 @@ jobs:
       - uses: pnpm/action-setup@v4
         with: { version: 9.15.4 }
       - uses: actions/setup-node@v4
-        with: { node-version: 22 }
+        with: { node-version: 24 }
       - run: |
           dir="$(scripts/onboarding/handler-dir.sh "origin/${{ github.base_ref }}")"
           cd "$dir"
@@ -97,7 +97,7 @@ jobs:
       - uses: pnpm/action-setup@v4
         with: { version: 9.15.4 }
       - uses: actions/setup-node@v4
-        with: { node-version: 22 }
+        with: { node-version: 24 }
       - run: |
           dir="$(scripts/onboarding/handler-dir.sh "origin/${{ github.base_ref }}")"
           cd "$dir"
@@ -129,9 +129,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0, persist-credentials: false }
-      - uses: github/codeql-action/init@v3
+      - uses: github/codeql-action/init@v4
         with: { languages: javascript-typescript }
-      - uses: github/codeql-action/analyze@v3
+      - uses: github/codeql-action/analyze@v4
         with:
           upload: never
 
@@ -144,7 +144,7 @@ jobs:
       - uses: pnpm/action-setup@v4
         with: { version: 9.15.4 }
       - uses: actions/setup-node@v4
-        with: { node-version: 22 }
+        with: { node-version: 24 }
       - run: |
           dir="$(scripts/onboarding/handler-dir.sh "origin/${{ github.base_ref }}")"
           cd "$dir"
@@ -183,7 +183,7 @@ jobs:
       - uses: pnpm/action-setup@v4
         with: { version: 9.15.4 }
       - uses: actions/setup-node@v4
-        with: { node-version: 22 }
+        with: { node-version: 24 }
       - run: |
           dir="$(scripts/onboarding/handler-dir.sh "origin/${{ github.base_ref }}")"
           cd "$dir"

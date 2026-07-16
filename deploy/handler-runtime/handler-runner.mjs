@@ -122,5 +122,5 @@ try {
   const output = await module.invoke(payload.input, context);
   protocolWrite({ output, logs });
 } catch (error) {
-  protocolWrite({ error: { code: "handler_failed", message: error instanceof Error ? error.message : "Handler failed" }, logs });
+  protocolWrite({ error: { code: "handler_failed" }, logs });
 }

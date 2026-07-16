@@ -51,8 +51,8 @@ describe("external API gateway route", () => {
     state.service = {
       managedServiceId: "service-1",
       code: "KCML0007",
-      hostname: "kcml0007.hcasc.cz",
-      resourceUri: "https://kcml0007.hcasc.cz",
+      hostname: "kcml0007.example.invalid",
+      resourceUri: "https://kcml0007.example.invalid",
       manifest: { environment: "production" },
       upstreamBaseUrl: "https://upstream.example.com",
       loggingContract: { correlationHeader: "x-correlation-id", redactHeaders: ["authorization", "cookie", "set-cookie"] },
@@ -87,7 +87,7 @@ describe("external API gateway route", () => {
     const response = await app.inject({
       method: "GET",
       url: "/v1/shifts/emp-42",
-      headers: { host: "kcml0007.hcasc.cz" }
+      headers: { host: "kcml0007.example.invalid" }
     });
     expect(response.statusCode).toBe(401);
     expect(response.json()).toMatchObject({ error: "invalid_token" });
@@ -106,7 +106,7 @@ describe("external API gateway route", () => {
     const response = await app.inject({
       method: "POST",
       url: "/v1/time-off",
-      headers: { host: "kcml0007.hcasc.cz", authorization: "Bearer token" },
+      headers: { host: "kcml0007.example.invalid", authorization: "Bearer token" },
       payload: { employeeId: "emp-42", days: 2 }
     });
     expect(response.statusCode).toBe(413);
@@ -117,7 +117,7 @@ describe("external API gateway route", () => {
     const response = await app.inject({
       method: "GET",
       url: "/v1/shifts/emp-42",
-      headers: { host: "kcml0007.hcasc.cz", authorization: "Bearer token" }
+      headers: { host: "kcml0007.example.invalid", authorization: "Bearer token" }
     });
     expect(response.statusCode).toBe(200);
     expect(response.headers["x-correlation-id"]).toBeTruthy();
@@ -128,7 +128,7 @@ describe("external API gateway route", () => {
     const response = await app.inject({
       method: "GET",
       url: "/v1/shifts/emp-42",
-      headers: { host: "reference-api.hcasc.cz" }
+      headers: { host: "reference-api.example.invalid" }
     });
     expect(response.statusCode).toBe(403);
     expect(response.json()).toMatchObject({ code: "REFERENCE_DIRECT_BYPASS_BLOCKED" });

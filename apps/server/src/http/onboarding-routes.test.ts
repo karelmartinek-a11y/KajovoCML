@@ -63,7 +63,7 @@ describe("programmer onboarding API authorization", () => {
     expect(response.statusCode).toBe(404);
   });
 
-  it("serves the approved v1.5 onboarding catalog to an authenticated administrator", async () => {
+  it("serves the approved v1.7 onboarding catalog to an authenticated administrator", async () => {
     const response = await app.inject({
       method: "GET",
       url: "/api/onboarding-catalog",
@@ -71,7 +71,7 @@ describe("programmer onboarding API authorization", () => {
     });
     expect(response.statusCode).toBe(200);
     expect(response.headers["content-type"]).toContain("application/vnd.openxmlformats-officedocument.wordprocessingml.document");
-    expect(response.headers["content-disposition"]).toContain("Connect_in_Catalog_KajovoMCPCML_v1.5.docx");
+    expect(response.headers["content-disposition"]).toContain("Connect_in_Catalog_KajovoMCPCML_v1.7.docx");
     expect(response.rawPayload.subarray(0, 2).toString()).toBe("PK");
   });
 
@@ -103,8 +103,14 @@ describe("quarantine release MFA", () => {
     const key = Buffer.alloc(32, 9);
     const seed = "JBSWY3DPEHPK3PXP";
     const encrypted = encryptMfaSecret(seed, key);
-    expect(verifyEncryptedMfaTotp(authenticator.generate(seed), encrypted, key)).toBe(true);
-    expect(verifyEncryptedMfaTotp("000000", encrypted, key)).toBe(false);
+    expect(verifyEncryptedMfaTotp(authenticator.generate(seed), encrypted, {
+      MFA_ENCRYPTION_KEY_BASE64: key,
+      MFA_ALLOW_PLAINTEXT_LEGACY: false
+    })).toBe(true);
+    expect(verifyEncryptedMfaTotp("000000", encrypted, {
+      MFA_ENCRYPTION_KEY_BASE64: key,
+      MFA_ALLOW_PLAINTEXT_LEGACY: false
+    })).toBe(false);
   });
 });
 

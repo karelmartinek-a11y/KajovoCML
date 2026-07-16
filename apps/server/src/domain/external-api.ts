@@ -2,12 +2,13 @@ import { createHash, randomUUID } from "node:crypto";
 import type pg from "pg";
 import { Ajv2020, type AnySchema, type ValidateFunction } from "ajv/dist/2020.js";
 import { z } from "zod";
-import type { AppConfig } from "../config.js";
+import type { ExternalApiGatewayConfig, ExternalApiRegistrationConfig, EgressClientConfig } from "../config.js";
 import type { Db } from "../db.js";
 import { tx } from "../db.js";
 import { closeAlert, raiseAlert } from "./alerts.js";
 import { appendAudit } from "./audit.js";
 import { fetchThroughEgress } from "./egress-client.js";
+import { kcmlCodeFromNumber, kcmlHostnameForCode } from "./hostnames.js";
 import type { ExternalApiRegistrationManifest } from "./managed-service-types.js";
 import { digestCanonicalJson } from "./registration.js";
 
@@ -354,7 +355,7 @@ export function validateExternalApiResponse(operation: ExternalOperation, body: 
 }
 
 async function egressJsonRequest<T>(
-  config: AppConfig,
+  config: EgressClientConfig,
   manifest: ExternalApiRegistrationManifest,
   correlationId: string,
   purpose: string,
@@ -381,7 +382,7 @@ async function egressJsonRequest<T>(
 }
 
 export async function probeExternalApiManifest(
-  config: AppConfig,
+  config: ExternalApiRegistrationConfig,
   manifest: ExternalApiRegistrationManifest,
   context: ExternalApiIntentContext
 ): Promise<ExternalApiProbeGates> {
@@ -839,8 +840,8 @@ export async function probeExternalApiManifest(
 async function nextKcmlAllocation(client: pg.PoolClient, baseDomain: string): Promise<{ number: number; code: string; hostname: string }> {
   const result = await client.query("select nextval('kcml_number_seq') as number");
   const number = Number(result.rows[0].number);
-  const code = `KCML${String(number).padStart(4, "0")}`;
-  return { number, code, hostname: `${code.toLowerCase()}.${baseDomain}` };
+  const code = kcmlCodeFromNumber(number);
+  return { number, code, hostname: kcmlHostnameForCode(code, baseDomain) };
 }
 
 async function seedManagedServiceScopes(client: pg.PoolClient, managedServiceId: string, manifest: ExternalApiRegistrationManifest): Promise<void> {
@@ -920,7 +921,7 @@ async function upsertManagedServiceRevision(
 
 export async function createExternalApiManagedService(
   db: Db,
-  config: AppConfig,
+  config: ExternalApiRegistrationConfig,
   principal: { id: string; jobId: string | null; fingerprint: string },
   idempotencyKey: string,
   manifest: ExternalApiRegistrationManifest,
@@ -1141,7 +1142,7 @@ export async function createExternalApiManagedService(
 
 export async function updateExternalApiManagedService(
   db: Db,
-  config: AppConfig,
+  config: ExternalApiRegistrationConfig,
   principal: { id: string; jobId: string | null; fingerprint: string },
   jobId: string,
   lockVersion: number,
@@ -1428,7 +1429,7 @@ async function evaluateManagedServiceProbeAlert(
   });
 }
 
-export async function runExternalApiMonitoringTarget(db: Db, config: AppConfig, target: ExternalApiMonitoringTarget): Promise<void> {
+export async function runExternalApiMonitoringTarget(db: Db, config: EgressClientConfig, target: ExternalApiMonitoringTarget): Promise<void> {
   const correlationId = randomUUID();
   const latest = await latestManagedServiceProbes(db, target.managedServiceId, ["health", "readiness", "tls", "acceptance"]);
   const intervals = target.manifest.monitoringProfile.probeIntervals;
@@ -1659,7 +1660,7 @@ function responseJson(response: Buffer): unknown {
 }
 
 export async function proxyExternalApiOperation(db: Db, params: {
-  config: AppConfig;
+  config: ExternalApiGatewayConfig;
   service: ExternalApiGatewayService;
   operation: ExternalOperation;
   requestPath: string;

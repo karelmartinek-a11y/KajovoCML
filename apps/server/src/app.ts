@@ -6,7 +6,7 @@ import helmet from "@fastify/helmet";
 import multipart from "@fastify/multipart";
 import rateLimit from "@fastify/rate-limit";
 import fastifyStatic from "@fastify/static";
-import type { AppConfig } from "./config.js";
+import type { AppServerConfig } from "./config.js";
 import type { Db } from "./db.js";
 import { isKcmlHostname } from "./domain/catalog.js";
 import { isReferenceExternalApiHostname } from "./domain/reference-external-api.js";
@@ -19,9 +19,15 @@ import { registerReferenceExternalApiRoutes } from "./http/reference-external-ap
 import { hostOf, sendError } from "./http/errors.js";
 import { createPostgresRateLimitStore } from "./http/postgres-rate-limit-store.js";
 
-export async function buildApp(config: AppConfig, db: Db) {
+export async function buildApp(config: AppServerConfig, db: Db) {
   const app = Fastify({
-    logger: { level: config.LOG_LEVEL },
+    logger: {
+      level: config.LOG_LEVEL,
+      redact: {
+        paths: ["req.headers.authorization", "req.headers.cookie", "res.headers['set-cookie']"],
+        censor: "[REDACTED]"
+      }
+    },
     bodyLimit: 1024 * 1024,
     trustProxy: config.TRUSTED_PROXY_CIDRS
   });

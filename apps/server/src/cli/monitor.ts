@@ -1,9 +1,9 @@
-import { loadConfig } from "../config.js";
+import { loadBootstrapConfig } from "../config.js";
 import { createDb } from "../db.js";
 import { loadConfigFromDb } from "../domain/operational-config.js";
 import { MonitoringScheduler } from "../onboarding/monitoring.js";
 
-const bootstrapConfig = loadConfig();
+const bootstrapConfig = loadBootstrapConfig();
 const db = createDb(bootstrapConfig);
 const config = await loadConfigFromDb(db, bootstrapConfig);
 if (!config.MONITOR_ENABLED) throw new Error("MONITOR_ENABLED must be true for the monitor process");

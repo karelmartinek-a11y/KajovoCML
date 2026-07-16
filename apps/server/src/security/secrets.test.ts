@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { decryptMfaSecret, encryptMfaSecret, issueOpaqueSecret, SECRET_BYTES, fingerprintSecret, hmacToken, redact } from "./secrets.js";
+import { decryptMfaSecret, decryptVaultSecret, encryptMfaSecret, encryptVaultSecret, issueOpaqueSecret, SECRET_BYTES, fingerprintSecret, hmacToken, redact } from "./secrets.js";
 
 describe("KCML secrets", () => {
   it("issues client and bearer secrets from at least 64 random bytes", () => {
@@ -20,9 +20,9 @@ describe("KCML secrets", () => {
 
   it("encrypts MFA secrets and keeps enc:v1 ciphertext readable", () => {
     const key = Buffer.alloc(32, 9);
-    const encrypted = encryptMfaSecret("JBSWY3DPEHPK3PXP", key);
-    expect(encrypted).toMatch(/^enc:v1:/);
-    expect(decryptMfaSecret(encrypted, key)).toBe("JBSWY3DPEHPK3PXP");
+    const encrypted = encryptMfaSecret("JBSWY3DPEHPK3PXP", key, { subjectId: "admin-1", purpose: "admin_totp" });
+    expect(encrypted).toMatch(/^enc:v2:/);
+    expect(decryptMfaSecret(encrypted, key, { subjectId: "admin-1", purpose: "admin_totp" })).toBe("JBSWY3DPEHPK3PXP");
   });
 
   it("rejects plaintext MFA secrets unless an explicit legacy mode is enabled", () => {
@@ -31,8 +31,23 @@ describe("KCML secrets", () => {
     expect(decryptMfaSecret("JBSWY3DPEHPK3PXP", key, { allowLegacyPlaintext: true })).toBe("JBSWY3DPEHPK3PXP");
   });
 
+  it("encrypts operational secrets with versioned key-id and setting-bound AAD", () => {
+    const key = Buffer.alloc(32, 9);
+    const encrypted = encryptVaultSecret("top-secret", key, { keyId: "vault-2026", settingKey: "githubToken" });
+    expect(encrypted).toMatch(/^vault:v1:/);
+    expect(decryptVaultSecret(encrypted, new Map([["vault-2026", key]]), "githubToken")).toBe("top-secret");
+    expect(() => decryptVaultSecret(encrypted, new Map([["vault-2026", key]]), "sessionSecret")).toThrow();
+    expect(() => decryptVaultSecret(encrypted, new Map([["vault-2026", Buffer.alloc(32, 8)]]), "githubToken")).toThrow();
+  });
+
   it("fails closed on invalid MFA key length", () => {
     expect(() => encryptMfaSecret("JBSWY3DPEHPK3PXP", Buffer.alloc(31, 9))).toThrow(/invalid_mfa_encryption_key_length/);
+  });
+
+  it("detects MFA ciphertext tampering through bound subject and purpose", () => {
+    const key = Buffer.alloc(32, 9);
+    const encrypted = encryptMfaSecret("JBSWY3DPEHPK3PXP", key, { subjectId: "admin-1", purpose: "admin_totp" });
+    expect(() => decryptMfaSecret(encrypted, key, { subjectId: "admin-2", purpose: "admin_totp" })).toThrow(/mfa_secret_context_mismatch/);
   });
 
   it("redacts bearer credentials and atypical security field names while keeping public metadata", () => {

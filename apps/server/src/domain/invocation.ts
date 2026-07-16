@@ -76,7 +76,7 @@ export async function finalizeInvocation(db: Db, input: {
     if (input.outcome.idempotency) {
       await client.query(
         `update mcp_invocation_idempotency
-            set status='COMPLETED',response_json=$4,completed_at=now()
+            set status='COMPLETED',response_json=$4,completed_at=now(),updated_at=now()
           where server_id=$1 and credential_id=$2 and idempotency_key=$3`,
         [input.serverId, input.outcome.idempotency.credentialId, input.outcome.idempotency.key, JSON.stringify(input.outcome.response)]
       );

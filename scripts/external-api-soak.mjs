@@ -17,16 +17,20 @@ for (const key of required) {
     process.exit(1);
   }
 }
+if (process.env.KCML_ADMIN_PASSWORD && !process.env.KCML_ADMIN_HOST) {
+  process.stderr.write("missing_required_env:KCML_ADMIN_HOST\n");
+  process.exit(1);
+}
 
 const config = {
   baseUrl: process.env.KCML_BASE_URL,
   authHost: process.env.KCML_AUTH_HOST,
-  adminHost: process.env.KCML_ADMIN_HOST ?? "admin.hcasc.cz",
+  adminHost: process.env.KCML_ADMIN_HOST ?? "",
   publicHostname: process.env.KCML_PUBLIC_HOSTNAME,
   resourceUri: process.env.KCML_RESOURCE_URI,
   clientId: process.env.KCML_CLIENT_ID,
   clientSecret: process.env.KCML_CLIENT_SECRET,
-  adminUsername: process.env.KCML_ADMIN_USERNAME ?? "karmar78",
+  adminUsername: process.env.KCML_ADMIN_USERNAME ?? "owner",
   adminPassword: process.env.KCML_ADMIN_PASSWORD ?? null,
   managedServiceId: process.env.KCML_MANAGED_SERVICE_ID ?? null,
   credentialId: process.env.KCML_KAJA_CREDENTIAL_ID ?? null,
@@ -199,5 +203,6 @@ await writeFile(summaryPath, JSON.stringify({
   durationHoursRequested: config.durationHours,
   requestCount: state.requestCount,
   failureCount: state.failureCount,
-  implementationStatus: completed72h ? "COMPLETED" : "PARTIALLY_IMPLEMENTED"
+  harnessStatus: "READY",
+  runStatus: completed72h ? "COMPLETED" : "SHORT_RUN"
 }, null, 2));
