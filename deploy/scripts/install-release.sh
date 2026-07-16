@@ -17,6 +17,10 @@ set -a
 . /etc/kcml/kcml.env
 set +a
 export BUILD_ID="$release_id"
+# Older installations predate explicit control-plane host variables. Derive
+# only missing values from their configured base domain during the upgrade.
+# shellcheck source=/dev/null
+. "$source_dir/deploy/scripts/control-plane-hosts.sh"
 
 release_dir="/opt/kcml/releases/$release_id"
 previous_release="$(readlink -f /opt/kcml/current 2>/dev/null || true)"

@@ -22,6 +22,7 @@
 `install-release.sh` performs the following fail-closed sequence:
 
 1. Install nginx and systemd definitions, including the separate `kcml-monitor.service`.
+   Legacy installations missing explicit control-plane host variables derive `admin`, `auth` and `register` hostnames from `PUBLIC_BASE_DOMAIN`; explicitly configured custom hostnames remain unchanged.
 2. Materialize per-service environment and credential files with modes `0700/0600`.
 3. Run preflight for TLS SAN, rootless Podman, Cosign identity, two separately keyed signed HTTPS alert sinks, `age`, service credentials and writable isolated paths.
 4. Create an encrypted custom-format PostgreSQL backup plus checksum.

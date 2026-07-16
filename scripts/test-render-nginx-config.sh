@@ -28,3 +28,12 @@ if node deploy/scripts/render-nginx-config.mjs \
   /etc/kcml/tls/fullchain.pem /etc/kcml/tls/privkey.pem 2>/dev/null; then
   exit 1
 fi
+
+derived_hosts="$(env -i PUBLIC_BASE_DOMAIN=example.invalid bash -c \
+  '. deploy/scripts/control-plane-hosts.sh; printf "%s|%s|%s" "$ADMIN_HOST" "$AUTH_HOST" "$REGISTER_HOST"')"
+test "$derived_hosts" = 'admin.example.invalid|auth.example.invalid|register.example.invalid'
+
+custom_hosts="$(env -i PUBLIC_BASE_DOMAIN=example.invalid ADMIN_HOST=console.example.invalid \
+  AUTH_HOST=identity.example.invalid REGISTER_HOST=intake.example.invalid bash -c \
+  '. deploy/scripts/control-plane-hosts.sh; printf "%s|%s|%s" "$ADMIN_HOST" "$AUTH_HOST" "$REGISTER_HOST"')"
+test "$custom_hosts" = 'console.example.invalid|identity.example.invalid|intake.example.invalid'
