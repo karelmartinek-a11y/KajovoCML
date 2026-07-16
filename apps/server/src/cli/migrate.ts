@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type pg from "pg";
-import { loadConfig } from "../config.js";
+import { loadBootstrapConfig } from "../config.js";
 import { createDb } from "../db.js";
 
 const MIGRATION_NAME = /^(\d{3})_([a-z0-9_]+)[.]sql$/;
@@ -134,7 +134,7 @@ async function backfillLegacyChecksums(client: pg.PoolClient, migrations: Migrat
 }
 
 export async function runMigrations(): Promise<void> {
-  const config = loadConfig();
+  const config = loadBootstrapConfig();
   const db = createDb(config);
   const client = await db.connect();
   const currentDir = path.dirname(fileURLToPath(import.meta.url));

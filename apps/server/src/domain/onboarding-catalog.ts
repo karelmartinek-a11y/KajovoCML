@@ -1,0 +1,37 @@
+import { createHash } from "node:crypto";
+
+export const MCP_CATALOG_VERSION = "1.7";
+export const MCP_MANIFEST_SCHEMA_VERSION = "1.5";
+export const MCP_CATALOG_PATH = `docs/onboarding-catalogs/mcp-${MCP_CATALOG_VERSION}.json`;
+export const MCP_CONNECT_FILE = `Connect_in_Catalog_KajovoMCPCML_v${MCP_CATALOG_VERSION}.docx`;
+
+function canonicalize(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalize);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(([key]) => key !== "canonicalDigest")
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, nested]) => [key, canonicalize(nested)])
+    );
+  }
+  return value;
+}
+
+export function onboardingCatalogDigest(catalog: unknown): string {
+  const canonical = JSON.stringify(canonicalize(catalog));
+  return `sha256:${createHash("sha256").update(canonical).digest("hex")}`;
+}
+
+export function verifyMcpOnboardingCatalog(input: unknown): Record<string, unknown> {
+  if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("onboarding_catalog_invalid");
+  const catalog = input as Record<string, unknown>;
+  if (catalog.version !== MCP_CATALOG_VERSION
+    || catalog.serviceKind !== "MCP"
+    || catalog.manifestSchemaVersion !== MCP_MANIFEST_SCHEMA_VERSION
+    || typeof catalog.canonicalDigest !== "string"
+    || catalog.canonicalDigest !== onboardingCatalogDigest(catalog)) {
+    throw new Error("onboarding_catalog_invalid");
+  }
+  return catalog;
+}

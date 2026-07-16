@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "dev": "tsx watch src/index.ts",
+    "dev": "cd ../.. && tsx watch apps/server/src/index.ts",
     "start": "node dist/index.js",
     "start:worker": "node dist/cli/onboarding-worker.js",
     "worker": "tsx src/cli/onboarding-worker.ts",
@@ -15,6 +15,10 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "db:migrate": "tsx src/cli/migrate.ts",
     "db:migrate:release": "node dist/cli/migrate.js",
+    "factory-reset": "tsx src/cli/factory-reset.ts",
+    "factory-reset:release": "node dist/cli/factory-reset.js",
+    "config:import-env": "tsx src/cli/import-operational-config.ts",
+    "config:import-env:release": "node dist/cli/import-operational-config.js",
     "admin:sync-password": "tsx src/cli/sync-admin-password.ts",
     "admin:sync-password:release": "node dist/cli/sync-admin-password.js"
   },

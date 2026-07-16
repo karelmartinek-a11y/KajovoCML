@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { loadConfig } from "../config.js";
 import { createDb, tx, type Db } from "../db.js";
-import { transitionServerState } from "./server-state.js";
+import { setServerEnabled, transitionServerState } from "./server-state.js";
 
 const enabled = process.env.KCML_TEST_DATABASE === "1";
 
@@ -14,7 +14,7 @@ describe.skipIf(!enabled)("server state PostgreSQL transitions", () => {
   });
 
   beforeEach(async () => {
-    await db.query("truncate table mcp_server,audit_event restart identity cascade");
+    await db.query("truncate table kaja_credential,mcp_server,audit_event restart identity cascade");
     await db.query("update audit_head set last_sequence=0,event_hash=null,updated_at=now() where singleton=true");
   });
 
@@ -26,7 +26,7 @@ describe.skipIf(!enabled)("server state PostgreSQL transitions", () => {
          kcml_number,code,hostname,tool_name,display_name,description,enabled,
          registration_state,operational_state,input_schema,output_schema,handler_key,
          handler_version,contract_version,artifact_digest,manifest_digest
-       ) values (1,'KCML0001','kcml0001.hcasc.cz','test_tool','Test','Test',true,
+       ) values (1,'KCML0001','kcml0001.example.invalid','test_tool','Test','Test',true,
          'ACTIVE','HEALTHY','{}','{}','test','1.0.0','1.0.0',$1,$2) returning id`,
       [`sha256:${"a".repeat(64)}`, `sha256:${"b".repeat(64)}`]
     );
@@ -44,6 +44,27 @@ describe.skipIf(!enabled)("server state PostgreSQL transitions", () => {
       "insert into monitoring_profile(server_id,profile,enabled,registration_revision_id,profile_digest) values ($1,'{}',true,$2,$3)",
       [serverId, revision.rows[0].id, `sha256:${"c".repeat(64)}`]
     );
+    const credential = await db.query(
+      "insert into kaja_credential(public_id,secret_hash,secret_fingerprint,label) values ('Kaja9001','hash','fingerprint','State test') returning id,revocation_epoch,principal_token_epoch"
+    );
+    await db.query(
+      `insert into access_token(lookup_digest,key_id,fingerprint,credential_id,server_id,audience,expires_at,credential_revocation_epoch,server_revocation_epoch)
+       select decode('01','hex'),'v1','access-fingerprint',$1,id,'https://kcml0001.example.invalid/mcp',now()+interval '1 hour',$2,revocation_epoch
+         from mcp_server where id=$3`,
+      [credential.rows[0].id, credential.rows[0].revocation_epoch, serverId]
+    );
+    const managed = await db.query(
+      `insert into managed_service(legacy_mcp_server_id,code,slug,display_name,description,service_kind,lifecycle_state,operational_state,enabled,public_hostname,base_url,resource_uri,api_state)
+       values ($1,'KCML0001','kcml0001','Test','Test','MCP','ACTIVE','HEALTHY',true,'kcml0001.example.invalid','https://kcml0001.example.invalid','https://kcml0001.example.invalid/mcp','ENABLED') returning id,revocation_epoch,service_token_epoch,permission_epoch,active_revision_epoch`,
+      [serverId]
+    );
+    await db.query(
+      `insert into managed_service_access_token(lookup_digest,key_id,fingerprint,credential_id,managed_service_id,audience,expires_at,credential_revocation_epoch,service_revocation_epoch,principal_token_epoch,service_token_epoch,permission_epoch_snapshot,active_revision_epoch_snapshot)
+       values (decode('02','hex'),'v1','managed-fingerprint',$1,$2,'https://kcml0001.example.invalid/mcp',now()+interval '1 hour',$3,$4,$5,$6,$7,$8)`,
+      [credential.rows[0].id, managed.rows[0].id, credential.rows[0].revocation_epoch, managed.rows[0].revocation_epoch,
+        credential.rows[0].principal_token_epoch, managed.rows[0].service_token_epoch, managed.rows[0].permission_epoch, managed.rows[0].active_revision_epoch]
+    );
+    const previousEpoch = String((await db.query("select revocation_epoch from mcp_server where id=$1", [serverId])).rows[0].revocation_epoch);
 
     await tx(db, (client) => transitionServerState(client, {
       serverId,
@@ -53,7 +74,39 @@ describe.skipIf(!enabled)("server state PostgreSQL transitions", () => {
       correlationId: randomUUID()
     }));
 
-    const state = await db.query("select registration_state,operational_state,enabled from mcp_server where id=$1", [serverId]);
+    const state = await db.query("select registration_state,operational_state,enabled,revocation_epoch from mcp_server where id=$1", [serverId]);
     expect(state.rows[0]).toMatchObject({ registration_state: "SUSPENDED", operational_state: "DISABLED", enabled: false });
+    expect(String(state.rows[0].revocation_epoch)).not.toBe(previousEpoch);
+    await expect(db.query("select revoked_at is not null as revoked from access_token where server_id=$1", [serverId]))
+      .resolves.toMatchObject({ rows: [{ revoked: true }] });
+    await expect(db.query("select lifecycle_state,operational_state,enabled,api_state from managed_service where id=$1", [managed.rows[0].id]))
+      .resolves.toMatchObject({ rows: [{ lifecycle_state: "SUSPENDED", operational_state: "DISABLED", enabled: false, api_state: "DISABLED" }] });
+    await expect(db.query("select revoked_at is not null as revoked from managed_service_access_token where managed_service_id=$1", [managed.rows[0].id]))
+      .resolves.toMatchObject({ rows: [{ revoked: true }] });
+  });
+
+  it("serializes concurrent disable requests into one effective transition", async () => {
+    const server = await db.query(
+      `insert into mcp_server(
+         kcml_number,code,hostname,tool_name,display_name,description,enabled,
+         registration_state,operational_state,input_schema,output_schema,handler_key,
+         handler_version,contract_version,artifact_digest,manifest_digest
+       ) values (2,'KCML0002','kcml0002.example.invalid','concurrent_disable','Concurrent','Concurrent',true,
+         'ACTIVE','HEALTHY','{}','{}','test','1.0.0','1.0.0',$1,$2) returning id`,
+      [`sha256:${"d".repeat(64)}`, `sha256:${"e".repeat(64)}`]
+    );
+    const serverId = String(server.rows[0].id);
+
+    await Promise.all([
+      setServerEnabled(db, "admin-1", randomUUID(), serverId, false),
+      setServerEnabled(db, "admin-1", randomUUID(), serverId, false)
+    ]);
+
+    await expect(db.query("select registration_state,operational_state,enabled from mcp_server where id=$1", [serverId]))
+      .resolves.toMatchObject({ rows: [{ registration_state: "REGISTERED_DISABLED", operational_state: "DISABLED", enabled: false }] });
+    await expect(db.query("select count(*)::int as count from server_state_history where server_id=$1 and reason='manual_disable'", [serverId]))
+      .resolves.toMatchObject({ rows: [{ count: 1 }] });
+    await expect(db.query("select count(*)::int as count from audit_event where object_id=$1 and event_type='mcp_server.state.registered_disabled'", [serverId]))
+      .resolves.toMatchObject({ rows: [{ count: 1 }] });
   });
 });

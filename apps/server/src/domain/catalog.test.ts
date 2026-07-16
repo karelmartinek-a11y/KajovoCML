@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { isKcmlHostname, resourceFor } from "./catalog.js";
+import { kcmlCodeFromNumber, kcmlHostnameForCode } from "./hostnames.js";
 
 describe("host routing invariants", () => {
   it("accepts only canonical kcml hostnames under the configured base domain", () => {
@@ -12,5 +13,10 @@ describe("host routing invariants", () => {
 
   it("binds OAuth resource to exact MCP URI", () => {
     expect(resourceFor("kcml0001.hcasc.cz")).toBe("https://kcml0001.hcasc.cz/mcp");
+  });
+
+  it("builds KCML code and hostname through the shared helper", () => {
+    expect(kcmlCodeFromNumber(7)).toBe("KCML0007");
+    expect(kcmlHostnameForCode("KCML0007", "example.test")).toBe("kcml0007.example.test");
   });
 });

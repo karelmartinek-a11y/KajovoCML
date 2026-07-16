@@ -71,7 +71,7 @@ describe("stored production manifest 1.4 compatibility", () => {
     displayName: "Seznam zařízení Home Assistant",
     businessPurpose: "Poskytuje úplný aktuální katalog zařízení pro produkční agenty.",
     owners: { service: "Karel Martinek", technical: "Karel Martinek", security: "Karel Martinek", operations: "Karel Martinek" },
-    source: { runtime: "nodejs22-typescript", entrypoint: "src/index.ts", testCommand: "pnpm test" },
+    source: { runtime: "nodejs24-typescript", entrypoint: "src/index.ts", testCommand: "pnpm test" },
     runtime: { memoryMb: 256, cpuCores: 0.5, pidsLimit: 64, egressAllowlist: ["ha-inventory.hcasc.cz:443"] },
     tool: {
       title: "Vyžádat kompletní seznam zařízení Home Assistant",

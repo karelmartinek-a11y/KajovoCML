@@ -1,12 +1,11 @@
-import { randomUUID } from "node:crypto";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import argon2 from "argon2";
 import { authenticator } from "otplib";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z, ZodError } from "zod";
-import type { AppConfig } from "../config.js";
+import type { AdminReauthConfig, HostRoutingConfig, OnboardingRouteConfig } from "../config.js";
 import type { Db } from "../db.js";
 import { createExternalApiManagedService, updateExternalApiManagedService, validateExternalApiManifest } from "../domain/external-api.js";
 import {
@@ -24,6 +23,12 @@ import {
   requestDigest,
   revokeIntegrationToken
 } from "../domain/onboarding.js";
+import {
+  MCP_CATALOG_PATH,
+  MCP_CATALOG_VERSION,
+  MCP_CONNECT_FILE,
+  verifyMcpOnboardingCatalog
+} from "../domain/onboarding-catalog.js";
 import { evidenceReferencesForManifest, validateOnboardingManifest } from "../domain/registration.js";
 import { MAX_ARCHIVE_BYTES, validateAndQuarantineArchive } from "../domain/upload-validation.js";
 import { decryptMfaSecret } from "../security/secrets.js";
@@ -31,7 +36,6 @@ import { requireCsrf, sessionAccount } from "./admin-routes.js";
 import { hostOf, sendError } from "./errors.js";
 
 const IDEMPOTENCY_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/;
-const ONBOARDING_CATALOG_FILE = "Connect_in_Catalog_KajovoMCPCML_v1.5.docx";
 const onboardingDescriptorSchema = z.object({
   summary: z.string().trim().min(3).max(240),
   businessPurpose: z.string().trim().min(20).max(2_000),
@@ -46,9 +50,15 @@ const integrationTokenRequestSchema = z.object({
   resumeJobId: z.string().uuid().optional()
 }).strict();
 
-export function verifyEncryptedMfaTotp(totp: string, encryptedSecret: string, encryptionKey: Buffer): boolean {
+export function verifyEncryptedMfaTotp(
+  totp: string,
+  encryptedSecret: string,
+  config: AdminReauthConfig
+): boolean {
   try {
-    return authenticator.check(totp, decryptMfaSecret(encryptedSecret, encryptionKey));
+    return authenticator.check(totp, decryptMfaSecret(encryptedSecret, config.MFA_ENCRYPTION_KEY_BASE64, {
+      allowLegacyPlaintext: config.MFA_ALLOW_PLAINTEXT_LEGACY
+    }));
   } catch {
     return false;
   }
@@ -59,7 +69,7 @@ function bearer(request: FastifyRequest): string | null {
   return authorization?.startsWith("Bearer ") ? authorization.slice("Bearer ".length) : null;
 }
 
-async function programmerPrincipal(db: Db, config: AppConfig, request: FastifyRequest, reply: FastifyReply) {
+async function programmerPrincipal(db: Db, config: Pick<OnboardingRouteConfig, "INTEGRATION_TOKEN_HMAC_KEY_BASE64" | "INTEGRATION_TOKEN_HMAC_KEY_ID">, request: FastifyRequest, reply: FastifyReply) {
   const value = bearer(request);
   if (!value) {
     sendError(reply, 401, "invalid_integration_token", "Invalid integration token");
@@ -111,7 +121,7 @@ async function multipartPayload(request: FastifyRequest): Promise<{ manifestInpu
   return { manifestInput, archive };
 }
 
-async function validatedUpload(request: FastifyRequest, config: AppConfig) {
+async function validatedUpload(request: FastifyRequest, config: Pick<OnboardingRouteConfig, "QUARANTINE_ROOT">) {
   const { manifestInput, archive } = await multipartPayload(request);
   const { manifest, digest: manifestDigest } = validateOnboardingManifest(manifestInput);
   const validation = await validateAndQuarantineArchive(archive, config.QUARANTINE_ROOT);
@@ -139,13 +149,13 @@ async function validatedUpload(request: FastifyRequest, config: AppConfig) {
   };
 }
 
-function adminHost(config: AppConfig, request: FastifyRequest, reply: FastifyReply, correlationId?: string): boolean {
+function adminHost(config: Pick<HostRoutingConfig, "ADMIN_HOST">, request: FastifyRequest, reply: FastifyReply, correlationId?: string): boolean {
   if (hostOf(request.headers.host) === config.ADMIN_HOST) return true;
   sendError(reply, 404, "not_found", undefined, correlationId);
   return false;
 }
 
-async function adminIdentity(db: Db, config: AppConfig, request: FastifyRequest, reply: FastifyReply, correlationId?: string, csrfRequired = false): Promise<string | null> {
+async function adminIdentity(db: Db, config: OnboardingRouteConfig, request: FastifyRequest, reply: FastifyReply, correlationId?: string, csrfRequired = false): Promise<string | null> {
   if (!adminHost(config, request, reply, correlationId)) return null;
   const session = await sessionAccount(db, request, config);
   if (!session) {
@@ -159,7 +169,7 @@ async function adminIdentity(db: Db, config: AppConfig, request: FastifyRequest,
   return session.accountId;
 }
 
-export function registerOnboardingRoutes(app: FastifyInstance, db: Db, config: AppConfig): void {
+export function registerOnboardingRoutes(app: FastifyInstance, db: Db, config: OnboardingRouteConfig): void {
   const createExternalApiOnboarding = async (request: FastifyRequest, reply: FastifyReply) => {
     const correlationId = randomUUID();
     if (hostOf(request.headers.host) !== config.REGISTER_HOST) return sendError(reply, 404, "not_found", undefined, correlationId);
@@ -227,9 +237,9 @@ export function registerOnboardingRoutes(app: FastifyInstance, db: Db, config: A
       return sendError(reply, 400, "invalid_integration_descriptor", error instanceof Error ? error.message : undefined, correlationId);
     }
     try {
-      await fs.access(path.resolve(process.cwd(), ONBOARDING_CATALOG_FILE));
+      await fs.access(path.resolve(process.cwd(), MCP_CONNECT_FILE));
     } catch {
-      return sendError(reply, 503, "onboarding_catalog_unavailable", "Onboarding katalog v1.5 není na serveru dostupný.", correlationId);
+      return sendError(reply, 503, "onboarding_catalog_unavailable", `Onboarding katalog v${MCP_CATALOG_VERSION} není na serveru dostupný.`, correlationId);
     }
     try {
       reply.header("cache-control", "no-store");
@@ -239,7 +249,7 @@ export function registerOnboardingRoutes(app: FastifyInstance, db: Db, config: A
           allowedPipeline: parsed.serviceKind === "EXTERNAL_API" ? "EXTERNAL_API_REGISTRATION" : "MCP_ONBOARDING"
         }),
         onboardingCatalogUrl: "/api/onboarding-catalog",
-        onboardingCatalogFileName: ONBOARDING_CATALOG_FILE,
+        onboardingCatalogFileName: MCP_CONNECT_FILE,
         programmerApiUrl: `https://${config.REGISTER_HOST}/v1/onboardings`
       };
     } catch (error) {
@@ -270,7 +280,7 @@ export function registerOnboardingRoutes(app: FastifyInstance, db: Db, config: A
         serviceKind: parsed.serviceKind,
         expiresAt: intent.expiresAt,
         intakeUrl: `https://${config.REGISTER_HOST}/v1/service-onboardings`,
-        catalogUrl: `https://${config.REGISTER_HOST}/api/onboarding-catalogs/${parsed.serviceKind === "EXTERNAL_API" ? "external-api" : "mcp"}/${parsed.serviceKind === "EXTERNAL_API" ? "1.0" : "1.6"}`
+        catalogUrl: `https://${config.REGISTER_HOST}/api/onboarding-catalogs/${parsed.serviceKind === "EXTERNAL_API" ? "external-api/1.0" : `mcp/${MCP_CATALOG_VERSION}`}`
       };
     } catch (error) {
       return sendError(reply, statusCode(error), errorCode(error), undefined, correlationId);
@@ -290,16 +300,21 @@ export function registerOnboardingRoutes(app: FastifyInstance, db: Db, config: A
       return sendError(reply, 404, "not_found");
     }
     const { kind, version } = request.params as { kind: string; version: string };
-    const file = kind === "mcp" && version === "1.6"
-      ? path.resolve(process.cwd(), "docs/onboarding-catalogs/mcp-1.6.json")
+    const file = kind === "mcp" && version === MCP_CATALOG_VERSION
+      ? path.resolve(process.cwd(), MCP_CATALOG_PATH)
       : kind === "external-api" && version === "1.0"
         ? path.resolve(process.cwd(), "docs/onboarding-catalogs/external-api-1.0.json")
         : null;
     if (!file) return sendError(reply, 404, "catalog_not_found");
-    const text = await fs.readFile(file, "utf8");
-    const parsed = JSON.parse(text) as Record<string, unknown>;
-    parsed.canonicalDigest = `sha256:${createHash("sha256").update(text).digest("hex")}`;
-    return reply.header("cache-control", "private, no-store").type("application/json").send(parsed);
+    try {
+      const text = await fs.readFile(file, "utf8");
+      const parsed = JSON.parse(text) as Record<string, unknown>;
+      if (kind === "mcp") verifyMcpOnboardingCatalog(parsed);
+      else parsed.canonicalDigest = `sha256:${createHash("sha256").update(text).digest("hex")}`;
+      return reply.header("cache-control", "private, no-store").type("application/json").send(parsed);
+    } catch {
+      return sendError(reply, 503, "onboarding_catalog_invalid");
+    }
   });
 
   app.get("/api/onboarding-catalog", {
@@ -307,10 +322,10 @@ export function registerOnboardingRoutes(app: FastifyInstance, db: Db, config: A
   }, async (request, reply) => {
     if (!await adminIdentity(db, config, request, reply)) return;
     try {
-      const catalog = await fs.readFile(path.resolve(process.cwd(), ONBOARDING_CATALOG_FILE));
+      const catalog = await fs.readFile(path.resolve(process.cwd(), MCP_CONNECT_FILE));
       return reply
         .header("cache-control", "private, no-store")
-        .header("content-disposition", `attachment; filename="${ONBOARDING_CATALOG_FILE}"`)
+        .header("content-disposition", `attachment; filename="${MCP_CONNECT_FILE}"`)
         .type("application/vnd.openxmlformats-officedocument.wordprocessingml.document")
         .send(catalog);
     } catch {
@@ -396,7 +411,7 @@ export function registerOnboardingRoutes(app: FastifyInstance, db: Db, config: A
     const account = await db.query("select password_hash,mfa_enabled,mfa_secret from admin_account where id=$1", [accountId]);
     const passwordOk = Boolean(account.rowCount && account.rows[0].password_hash) && await argon2.verify(String(account.rows[0].password_hash), password);
     const mfaOk = account.rowCount && account.rows[0].mfa_enabled
-      ? verifyEncryptedMfaTotp(totp, String(account.rows[0].mfa_secret), config.MFA_ENCRYPTION_KEY_BASE64)
+      ? verifyEncryptedMfaTotp(totp, String(account.rows[0].mfa_secret), config)
       : true;
     if (!passwordOk || !mfaOk) return sendError(reply, 403, "reauthentication_failed", "Opětovné ověření administrátora selhalo.", correlationId);
     try {

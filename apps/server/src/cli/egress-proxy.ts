@@ -1,9 +1,9 @@
-import { loadConfig } from "../config.js";
+import { loadBootstrapConfig } from "../config.js";
 import { createDb } from "../db.js";
 import { loadConfigFromDb } from "../domain/operational-config.js";
 import { buildEgressProxy, listenEgressProxy } from "../onboarding/egress-proxy.js";
 
-const bootstrapConfig = loadConfig();
+const bootstrapConfig = loadBootstrapConfig();
 const db = createDb(bootstrapConfig);
 const config = await loadConfigFromDb(db, bootstrapConfig);
 const server = await buildEgressProxy(db, config);

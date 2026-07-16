@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
-import type { AppConfig } from "../config.js";
+import type { WorkerConfig } from "../config.js";
 import type { Db } from "../db.js";
 import {
   heartbeatJob,
@@ -68,7 +68,7 @@ export class OnboardingWorker {
   private readonly oci: OciRuntime;
   private lastMaintenanceAt = 0;
 
-  constructor(private readonly db: Db, private readonly config: AppConfig) {
+  constructor(private readonly db: Db, private readonly config: WorkerConfig) {
     this.github = new GitHubOnboardingClient(config);
     this.oci = new OciRuntime(config);
   }

@@ -1,11 +1,11 @@
 import { createSign } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { AppConfig } from "../config.js";
+import type { GitHubOnboardingConfig } from "../config.js";
 
 type GitHubResponse = Record<string, unknown>;
 
-const REQUIRED_CHECKS = [
+export const REQUIRED_ONBOARDING_CHECKS = [
   "path-policy",
   "manifest-schema",
   "lint",
@@ -23,7 +23,7 @@ function base64url(value: string): string {
   return Buffer.from(value).toString("base64url");
 }
 
-function githubAppJwt(config: AppConfig): string {
+function githubAppJwt(config: GitHubOnboardingConfig): string {
   if (!config.GITHUB_APP_ID || !config.GITHUB_APP_PRIVATE_KEY_BASE64) throw new Error("github_app_not_configured");
   const now = Math.floor(Date.now() / 1000);
   const header = base64url(JSON.stringify({ alg: "RS256", typ: "JWT" }));
@@ -38,7 +38,7 @@ function githubAppJwt(config: AppConfig): string {
 export class GitHubOnboardingClient {
   private token: { value: string; expiresAt: number } | null = null;
 
-  constructor(private readonly config: AppConfig) {}
+  constructor(private readonly config: GitHubOnboardingConfig) {}
 
   private async accessToken(): Promise<string> {
     if (this.config.GITHUB_TOKEN) return this.config.GITHUB_TOKEN;
@@ -162,7 +162,7 @@ export class GitHubOnboardingClient {
     }));
     if (String(pull.state) !== "open") return { state: "fail", headSha, checks };
     const byName = new Map(checks.map((check) => [check.name, check]));
-    const required = REQUIRED_CHECKS.map((name) => byName.get(name));
+    const required = REQUIRED_ONBOARDING_CHECKS.map((name) => byName.get(name));
     if (required.some((check) => !check || check.status !== "completed")) return { state: "pending", headSha, checks };
     if (required.some((check) => check?.conclusion !== "success")) return { state: "fail", headSha, checks };
     return { state: "pass", headSha, checks };

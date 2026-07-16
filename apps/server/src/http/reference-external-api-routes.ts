@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import type { AppConfig } from "../config.js";
+import type { ReferenceExternalApiConfig } from "../config.js";
 import {
   acceptReferenceTimeOff,
   appendReferenceRequestLog,
@@ -12,7 +12,7 @@ import {
 } from "../domain/reference-external-api.js";
 import { hostOf, sendError } from "./errors.js";
 
-export function registerReferenceExternalApiRoutes(app: FastifyInstance, config: AppConfig): void {
+export function registerReferenceExternalApiRoutes(app: FastifyInstance, config: ReferenceExternalApiConfig): void {
   const routeOptions = {
     constraints: {
       host: referenceExternalApiHostname(config.PUBLIC_BASE_DOMAIN)

@@ -4,6 +4,10 @@ set -euo pipefail
 nginx -t
 ss -ltnp | grep -E ':(80|443)\s' >/dev/null
 test -n "${DATABASE_URL:-}"
+test -n "${PUBLIC_BASE_DOMAIN:-}"
+test -n "${ADMIN_HOST:-}"
+test -n "${AUTH_HOST:-}"
+test -n "${REGISTER_HOST:-}"
 test -n "${ACCESS_TOKEN_HMAC_KEY_BASE64:-}"
 test -n "${INTEGRATION_TOKEN_HMAC_KEY_BASE64:-}"
 test -n "${EGRESS_CAPABILITY_HMAC_KEY_BASE64:-}"
@@ -31,9 +35,12 @@ test -n "${ALERT_PRIMARY_HMAC_KEY_BASE64:-}"
 test -n "${ALERT_BACKUP_WEBHOOK_URL:-}"
 test -n "${ALERT_BACKUP_HMAC_KEY_BASE64:-}"
 test "${ALERT_PRIMARY_WEBHOOK_URL}" != "${ALERT_BACKUP_WEBHOOK_URL}"
-test -f "${WILDCARD_TLS_CERT_PATH:-/etc/letsencrypt/live/wildcard.hcasc.cz/fullchain.pem}"
-openssl x509 -in "${WILDCARD_TLS_CERT_PATH:-/etc/letsencrypt/live/wildcard.hcasc.cz/fullchain.pem}" -checkend 86400 -noout
-openssl x509 -in "${WILDCARD_TLS_CERT_PATH:-/etc/letsencrypt/live/wildcard.hcasc.cz/fullchain.pem}" -noout -text | grep -F 'DNS:*.hcasc.cz' >/dev/null
+tls_cert_path="${WILDCARD_TLS_CERT_PATH:-/etc/kcml/tls/fullchain.pem}"
+tls_key_path="${WILDCARD_TLS_KEY_PATH:-${tls_cert_path%/*}/privkey.pem}"
+test -f "$tls_cert_path"
+test -f "$tls_key_path"
+openssl x509 -in "$tls_cert_path" -checkend 86400 -noout
+openssl x509 -in "$tls_cert_path" -noout -text | grep -F "DNS:*.${PUBLIC_BASE_DOMAIN}" >/dev/null
 command -v "${PODMAN_BINARY:-podman}" >/dev/null
 command -v systemd-run >/dev/null
 command -v "${COSIGN_BINARY:-cosign}" >/dev/null

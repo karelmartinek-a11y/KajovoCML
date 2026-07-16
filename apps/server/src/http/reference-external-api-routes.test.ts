@@ -33,7 +33,7 @@ describe("reference external API routes", () => {
     const response = await app.inject({
       method: "GET",
       url: "/state/api-acceptance",
-      headers: { host: "reference-api.hcasc.cz" }
+      headers: { host: "reference-api.example.invalid" }
     });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({
@@ -47,7 +47,7 @@ describe("reference external API routes", () => {
     const response = await app.inject({
       method: "GET",
       url: "/v1/shifts/emp-42",
-      headers: { host: "reference-api.hcasc.cz" }
+      headers: { host: "reference-api.example.invalid" }
     });
     expect(response.statusCode).toBe(403);
     expect(response.json()).toMatchObject({ code: "REFERENCE_DIRECT_BYPASS_BLOCKED" });
@@ -58,7 +58,7 @@ describe("reference external API routes", () => {
       method: "GET",
       url: "/v1/shifts/emp-42",
       headers: {
-        host: "reference-api.hcasc.cz",
+        host: "reference-api.example.invalid",
         "x-kcml-gateway-mode": "managed-service",
         "x-kcml-managed-service": "KCML0001",
         "x-kcml-principal-id": "principal-1",

@@ -82,9 +82,8 @@ describe("Kaja permission revocation", () => {
   it("does not rename revoked credentials", async () => {
     const query = vi.fn(async (sql: string) => {
       if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") return { rowCount: 0, rows: [] };
-      if (sql.startsWith("update kaja_credential")) return { rowCount: 0, rows: [] };
-      if (sql.startsWith("select deleted_at, revoked_at, active from kaja_credential")) {
-        return { rowCount: 1, rows: [{ deleted_at: null, revoked_at: "2026-07-15T00:00:00.000Z", active: false }] };
+      if (sql.includes("select public_id,label,active,revoked_at,deleted_at")) {
+        return { rowCount: 1, rows: [{ public_id: "Kaja0001", label: "Old", deleted_at: null, revoked_at: "2026-07-15T00:00:00.000Z", active: false }] };
       }
       return { rowCount: 0, rows: [] };
     });

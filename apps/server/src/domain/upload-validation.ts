@@ -10,8 +10,19 @@ export const MAX_ARCHIVE_BYTES = 10 * 1024 * 1024;
 export const MAX_EXPANDED_BYTES = 50 * 1024 * 1024;
 export const MAX_FILES = 1_000;
 
-const RUNTIME_DEPENDENCIES = new Set(["@kcml/handler-sdk", "zod"]);
-const DEVELOPMENT_DEPENDENCIES = new Set(["@types/node", "eslint", "typescript", "vitest"]);
+export const MCP_ARCHIVE_POLICY = {
+  maxArchiveBytes: MAX_ARCHIVE_BYTES,
+  maxExpandedBytes: MAX_EXPANDED_BYTES,
+  maxFiles: MAX_FILES,
+  runtimeDependencies: ["@kcml/handler-sdk", "zod"],
+  developmentDependencies: ["@types/node", "eslint", "typescript", "vitest"],
+  allowedScripts: ["test", "lint", "typecheck", "build"],
+  requiredFiles: ["package.json", "pnpm-lock.yaml", "tsconfig.json", "src/index.ts", "src/**/*.test.ts|src/**/*.spec.ts"],
+  nodeMajor: 24
+} as const;
+
+const RUNTIME_DEPENDENCIES = new Set<string>(MCP_ARCHIVE_POLICY.runtimeDependencies);
+const DEVELOPMENT_DEPENDENCIES = new Set<string>(MCP_ARCHIVE_POLICY.developmentDependencies);
 const EXACT_VERSION = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?$/;
 const TEXT_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".mjs", ".cjs", ".json", ".md", ".txt", ".yaml", ".yml", ".sarif", ".spdx"]);
 const BINARY_EXTENSIONS = new Set([".node", ".so", ".dll", ".dylib", ".exe", ".bin", ".wasm", ".jar", ".class"]);
@@ -129,10 +140,10 @@ function validatePackageJson(content: Buffer): { packageName: string; dependency
   }
   if (typeof parsed.name !== "string" || !/^@[a-z0-9-]+\/[a-z0-9-]+$/.test(parsed.name)) throw invalid("invalid_package_name");
   if (parsed.type !== "module") throw invalid("package_must_use_esm");
-  if (!parsed.engines || typeof parsed.engines.node !== "string" || !parsed.engines.node.includes("22")) throw invalid("node22_engine_required");
+  if (!parsed.engines || typeof parsed.engines.node !== "string" || !parsed.engines.node.includes("24")) throw invalid("node24_engine_required");
   const scriptNames = Object.keys(parsed.scripts ?? {});
   if (!scriptNames.includes("test")) throw invalid("test_script_required");
-  if (scriptNames.some((name) => !["test", "lint", "typecheck", "build"].includes(name))) throw invalid("package_script_not_allowed");
+  if (scriptNames.some((name) => !(MCP_ARCHIVE_POLICY.allowedScripts as readonly string[]).includes(name))) throw invalid("package_script_not_allowed");
   if (Object.values(parsed.scripts ?? {}).some((value) => typeof value !== "string" || value.length > 300)) throw invalid("invalid_package_script");
   const dependencyCount = assertDependencies(parsed.dependencies, RUNTIME_DEPENDENCIES, "runtime")
     + assertDependencies(parsed.devDependencies, DEVELOPMENT_DEPENDENCIES, "development");

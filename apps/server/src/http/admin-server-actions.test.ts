@@ -24,6 +24,24 @@ vi.mock("../handlers/registry.js", () => ({
 }));
 
 const secret = (byte: number) => Buffer.alloc(32, byte).toString("base64");
+const monitoringProfileFixture = {
+  sloTargets: { availabilityPercent: 99.9, p95LatencyMs: 1_500, maxErrorRatePercent: 1 },
+  probeIntervals: {
+    readinessSeconds: 60,
+    tlsSeconds: 3_600,
+    routingSeconds: 60,
+    oauthMcpSeconds: 60,
+    syntheticCallSeconds: 300,
+    integritySeconds: 300,
+    dependenciesSeconds: 300
+  },
+  staleAfterSeconds: 3_600,
+  alertRules: [{ probeType: "synthetic_call", severity: "CRITICAL", consecutiveFailures: 2 }],
+  runbookRef: "docs/runbook",
+  primaryAlertChannel: "ops-primary",
+  backupAlertChannel: "ops-backup",
+  retentionDays: 30
+};
 
 describe("admin server actions", () => {
   let app: FastifyInstance;
@@ -137,8 +155,143 @@ describe("admin server actions", () => {
 
   it("runs the registered safe test contract for a server", async () => {
     handlerState.invoke = async (input) => ({ ok: true, echoed: input });
+    let serverEnabled = true;
+    let timeoutMs = 1000;
     const sessionHash = await argon2.hash(sessionValue, { type: argon2.argon2id, memoryCost: 4096, timeCost: 2, parallelism: 1 });
     const query = vi.fn(async (sql: string) => {
+      if (sql.includes("from admin_session")) {
+        return { rowCount: 1, rows: [{ id: "session-id", account_id: "account-id", session_hash: sessionHash, username: "admin" }] };
+      }
+      if (sql.includes("from mcp_server ms") && sql.includes("where ms.id=$1")) {
+        return {
+          rowCount: 1,
+          rows: [{
+            id: "server-id",
+            code: "KCML0001",
+            kcml_number: 1,
+            hostname: "kcml0001.hcasc.cz",
+            tool_name: "example_tool",
+            display_name: "Example",
+            description: "Example",
+            enabled: serverEnabled,
+            registration_state: "ACTIVE",
+            operational_state: "HEALTHY",
+            input_schema: { type: "object", additionalProperties: false, properties: { name: { type: "string" } }, required: ["name"] },
+            output_schema: { type: "object", additionalProperties: true },
+            handler_key: "mock",
+            handler_version: "1.0.0",
+            contract_version: "rev-1",
+            artifact_digest: "sha256:artifact",
+            manifest_digest: "sha256:manifest",
+            registration_revision: "rev-1",
+            active_revision_id: "revision-id",
+            registration_schema_version: "1.5",
+            registration_validation_state: "VALID",
+            review_approved_at: "2026-01-01T00:00:00.000Z",
+            review_due_at: "2027-01-01T00:00:00.000Z",
+            review_interval_days: 365,
+            monitoring_enabled: true,
+            monitoring_profile_digest: "sha256:monitoring",
+            image_reference: null,
+            image_digest: "sha256:image",
+            sbom_digest: null,
+            provenance_digest: null,
+            runtime_socket: "/tmp/socket",
+            timeout_ms: timeoutMs,
+            max_concurrency: 1,
+            request_max_bytes: 1024,
+            response_max_bytes: 1024,
+            rate_window_seconds: 60,
+            rate_max_requests: 10,
+            read_only_hint: true,
+            destructive_hint: false,
+            idempotent_hint: true,
+            open_world_hint: false,
+            effect_class: "READ_ONLY",
+            shutdown_policy: "COMPLETE_IN_FLIGHT",
+            idempotency_policy: "read only",
+            revocation_epoch: "epoch",
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          }]
+        };
+      }
+      if (sql.includes("from registration_revision")) {
+        return {
+          rowCount: 1,
+          rows: [{ manifest: { testContract: { safeInput: { name: "Alice" }, expectedResult: { ok: true } } } }]
+        };
+      }
+      if (sql.includes("select max_concurrency, timeout_ms")) return { rowCount: 1, rows: [{ max_concurrency: 1, timeout_ms: timeoutMs }] };
+      if (sql.includes("select count(*)::int as count from function_concurrency_lease")) return { rowCount: 1, rows: [{ count: 0 }] };
+      if (sql.includes("insert into function_concurrency_lease")) return { rowCount: 1, rows: [{ lease_id: "test-lease" }] };
+      return { rowCount: 1, rows: [] };
+    });
+    const db = { query, connect: vi.fn(async () => ({ query, release: vi.fn() })) } as unknown as Db;
+    app = Fastify();
+    await app.register(cookie, { secret: config.SESSION_SECRET_BASE64.toString("base64url") });
+    registerAdminRoutes(app, db, config);
+    await app.ready();
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/mcp-servers/server-id/test",
+      headers: {
+        host: config.ADMIN_HOST,
+        cookie: `__Host-kcml_session=${sessionValue}; __Host-kcml_csrf=${csrfValue}`,
+        "x-csrf-token": csrfValue
+      },
+      payload: {}
+    });
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json()).toMatchObject({ ok: true });
+
+    handlerState.invoke = async () => ({ ok: false });
+    const mismatch = await app.inject({
+      method: "POST",
+      url: "/api/mcp-servers/server-id/test",
+      headers: { host: config.ADMIN_HOST, cookie: `__Host-kcml_session=${sessionValue}; __Host-kcml_csrf=${csrfValue}`, "x-csrf-token": csrfValue },
+      payload: {}
+    });
+    expect(mismatch.statusCode).toBe(200);
+    expect(mismatch.json()).toMatchObject({ ok: false, status: "EXPECTED_RESULT_MISMATCH" });
+
+    handlerState.invoke = async () => "invalid-output";
+    const invalidOutput = await app.inject({
+      method: "POST",
+      url: "/api/mcp-servers/server-id/test",
+      headers: { host: config.ADMIN_HOST, cookie: `__Host-kcml_session=${sessionValue}; __Host-kcml_csrf=${csrfValue}`, "x-csrf-token": csrfValue },
+      payload: {}
+    });
+    expect(invalidOutput.statusCode).toBe(409);
+    expect(invalidOutput.json()).toMatchObject({ error: "output_schema_failed" });
+
+    timeoutMs = 5;
+    handlerState.invoke = async () => new Promise((resolve) => setTimeout(() => resolve({ ok: true }), 30));
+    const timeout = await app.inject({
+      method: "POST",
+      url: "/api/mcp-servers/server-id/test",
+      headers: { host: config.ADMIN_HOST, cookie: `__Host-kcml_session=${sessionValue}; __Host-kcml_csrf=${csrfValue}`, "x-csrf-token": csrfValue },
+      payload: {}
+    });
+    expect(timeout.statusCode).toBe(504);
+    expect(timeout.json()).toMatchObject({ error: "handler_timeout" });
+
+    serverEnabled = false;
+    const disabled = await app.inject({
+      method: "POST",
+      url: "/api/mcp-servers/server-id/test",
+      headers: { host: config.ADMIN_HOST, cookie: `__Host-kcml_session=${sessionValue}; __Host-kcml_csrf=${csrfValue}`, "x-csrf-token": csrfValue },
+      payload: {}
+    });
+    expect(disabled.statusCode).toBe(409);
+    expect(disabled.json()).toMatchObject({ error: "server_disabled" });
+  });
+
+  it("uses the active revision for server test instead of the latest arbitrary revision", async () => {
+    handlerState.invoke = async () => ({ ok: true });
+    const sessionHash = await argon2.hash(sessionValue, { type: argon2.argon2id, memoryCost: 4096, timeCost: 2, parallelism: 1 });
+    const query = vi.fn(async (sql: string, params?: unknown[]) => {
       if (sql.includes("from admin_session")) {
         return { rowCount: 1, rows: [{ id: "session-id", account_id: "account-id", session_hash: sessionHash, username: "admin" }] };
       }
@@ -156,15 +309,15 @@ describe("admin server actions", () => {
             enabled: true,
             registration_state: "ACTIVE",
             operational_state: "HEALTHY",
-            input_schema: { type: "object", additionalProperties: false },
-            output_schema: { type: "object", additionalProperties: true },
+            input_schema: { type: "object", additionalProperties: false, properties: { name: { type: "string" } }, required: ["name"] },
+            output_schema: { type: "object", additionalProperties: false, properties: { ok: { type: "boolean" } }, required: ["ok"] },
             handler_key: "mock",
             handler_version: "1.0.0",
             contract_version: "rev-1",
             artifact_digest: "sha256:artifact",
             manifest_digest: "sha256:manifest",
             registration_revision: "rev-1",
-            active_revision_id: "revision-id",
+            active_revision_id: "active-revision-id",
             registration_schema_version: "1.5",
             registration_validation_state: "VALID",
             review_approved_at: "2026-01-01T00:00:00.000Z",
@@ -197,11 +350,15 @@ describe("admin server actions", () => {
         };
       }
       if (sql.includes("from registration_revision")) {
+        expect(params?.[1]).toBe("active-revision-id");
         return {
           rowCount: 1,
           rows: [{ manifest: { testContract: { safeInput: { name: "Alice" }, expectedResult: { ok: true } } } }]
         };
       }
+      if (sql.includes("select max_concurrency, timeout_ms")) return { rowCount: 1, rows: [{ max_concurrency: 1, timeout_ms: 1000 }] };
+      if (sql.includes("select count(*)::int as count from function_concurrency_lease")) return { rowCount: 1, rows: [{ count: 0 }] };
+      if (sql.includes("insert into function_concurrency_lease")) return { rowCount: 1, rows: [{ lease_id: "test-lease" }] };
       return { rowCount: 1, rows: [] };
     });
     const db = { query, connect: vi.fn(async () => ({ query, release: vi.fn() })) } as unknown as Db;
@@ -220,8 +377,7 @@ describe("admin server actions", () => {
       },
       payload: {}
     });
-    expect(response.statusCode, response.body).toBe(200);
-    expect(response.json()).toMatchObject({ ok: true });
+    expect(response.statusCode).toBe(200);
   });
 
   it("reads and updates monitoring profile for a server", async () => {
@@ -232,19 +388,13 @@ describe("admin server actions", () => {
         return { rowCount: 1, rows: [{ id: "session-id", account_id: "account-id", session_hash: sessionHash, username: "admin" }] };
       }
       if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") return { rowCount: 0, rows: [] };
-      if (sql.includes("select enabled, profile from monitoring_profile")) {
+      if (sql.includes("select enabled,profile,version from monitoring_profile")) {
         return {
           rowCount: 1,
           rows: [{
             enabled: true,
-            profile: {
-              sloTargets: { availability: 99.9 },
-              probeIntervals: { readiness: "5m" },
-              alertRules: [{ severity: "critical" }],
-              runbookRef: "docs/runbook",
-              primaryAlertChannel: "ops-primary",
-              backupAlertChannel: "ops-backup"
-            }
+            version: 2,
+            profile: monitoringProfileFixture
           }]
         };
       }
@@ -277,18 +427,12 @@ describe("admin server actions", () => {
       },
       payload: {
         enabled: false,
-        profile: {
-          sloTargets: {},
-          probeIntervals: {},
-          alertRules: [],
-          runbookRef: "runbook",
-          primaryAlertChannel: "primary",
-          backupAlertChannel: "backup"
-        }
+        expectedVersion: 2,
+        profile: monitoringProfileFixture
       }
     });
     expect(write.statusCode, write.body).toBe(200);
-    expect(write.json()).toMatchObject({ enabled: false, profile: { runbookRef: "runbook" } });
+    expect(write.json()).toMatchObject({ enabled: false, version: 3, profile: { runbookRef: "docs/runbook" } });
 
     registrationState = "ACTIVE";
     const blocked = await app.inject({
@@ -301,10 +445,8 @@ describe("admin server actions", () => {
       },
       payload: {
         enabled: true,
-        profile: {
-          sloTargets: {}, probeIntervals: {}, alertRules: [], runbookRef: "runbook",
-          primaryAlertChannel: "primary", backupAlertChannel: "backup"
-        }
+        expectedVersion: 2,
+        profile: monitoringProfileFixture
       }
     });
     expect(blocked.statusCode).toBe(409);
@@ -390,8 +532,8 @@ describe("admin server actions", () => {
         if (sql.includes("from admin_session s")) {
           return { rowCount: 1, rows: [{ id: "session-id", account_id: "account-id", session_hash: sessionHash, username: "karel" }] };
         }
-        if (sql === "select username, password_changed_at from admin_account where id=$1") {
-          return { rowCount: 1, rows: [{ username: "karel", password_changed_at: "2026-07-14T10:00:00.000Z" }] };
+        if (sql === "select username,role,active,password_changed_at from admin_account where id=$1") {
+          return { rowCount: 1, rows: [{ username: "karel", role: "OWNER", active: true, password_changed_at: "2026-07-14T10:00:00.000Z" }] };
         }
         if (sql.includes("from admin_session") && sql.includes("order by created_at desc")) {
           return {
@@ -418,6 +560,9 @@ describe("admin server actions", () => {
     expect(response.statusCode, response.body).toBe(200);
     expect(response.json()).toMatchObject({
       username: "karel",
+      role: "OWNER",
+      active: true,
+      deploymentManaged: false,
       passwordChangedAt: "2026-07-14T10:00:00.000Z",
       sessions: [
         expect.objectContaining({ id: "session-id", current: true }),
@@ -460,7 +605,7 @@ describe("admin server actions", () => {
     expect(query.mock.calls.some(([sql]) => String(sql).includes("update admin_account set password_hash"))).toBe(true);
     expect(query.mock.calls.some(([sql]) => String(sql).includes("update admin_session set revoked_at=now() where account_id=$1 and id<>$2"))).toBe(true);
 
-    accountUsername = "karmar78";
+    accountUsername = config.ADMIN_BOOTSTRAP_USERNAME;
     const deploymentManaged = await app.inject({
       method: "POST",
       url: "/api/admin-password",
@@ -507,22 +652,25 @@ describe("admin server actions", () => {
   it("authenticates login with encrypted MFA seed", async () => {
     const passwordHash = await argon2.hash("correct horse battery staple", { type: argon2.argon2id, memoryCost: 4096, timeCost: 2, parallelism: 1 });
     const totpSecret = "JBSWY3DPEHPK3PXP";
-    const encrypted = encryptMfaSecret(totpSecret, config.MFA_ENCRYPTION_KEY_BASE64);
+    const encrypted = encryptMfaSecret(totpSecret, config.MFA_ENCRYPTION_KEY_BASE64, { subjectId: "account-id", purpose: "admin_totp" });
+    const query = vi.fn(async (sql: string) => {
+      if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") return { rowCount: 0, rows: [] };
+      if (sql.startsWith("select * from admin_account where username=$1")) {
+        return {
+          rowCount: 1,
+          rows: [{
+            id: "account-id",
+            password_hash: passwordHash,
+            mfa_enabled: true,
+            mfa_secret: encrypted
+          }]
+        };
+      }
+      return { rowCount: 1, rows: [] };
+    });
     const db = {
-      query: vi.fn(async (sql: string) => {
-        if (sql.startsWith("select * from admin_account where username=$1")) {
-          return {
-            rowCount: 1,
-            rows: [{
-              id: "account-id",
-              password_hash: passwordHash,
-              mfa_enabled: true,
-              mfa_secret: encrypted
-            }]
-          };
-        }
-        return { rowCount: 1, rows: [] };
-      })
+      query,
+      connect: async () => ({ query, release: () => undefined })
     } as unknown as Db;
     app = Fastify();
     await app.register(cookie, { secret: config.SESSION_SECRET_BASE64.toString("base64url") });
@@ -556,7 +704,7 @@ describe("admin server actions", () => {
       correlationId: "00000000-0000-0000-0000-000000000001"
     });
     const db = {
-      query: vi.fn(async (sql: string) => {
+      query: vi.fn(async (sql: string, params?: unknown[]) => {
         if (sql.includes("from admin_session s")) {
           return { rowCount: 1, rows: [{ id: "session-id", account_id: "account-id", session_hash: sessionHash, username: "karel" }] };
         }
@@ -581,10 +729,31 @@ describe("admin server actions", () => {
             }]
           };
         }
-        if (sql.includes("encode(prev_hash, 'hex')")) {
+        if (sql.includes("from audit_event") && sql.includes("event_type = $1")) {
+          expect(params?.[0]).toBe("admin.login.succeeded");
+          if (sql.includes("order by id asc")) expect(params?.[1]).toBe(501);
           return {
             rowCount: 1,
             rows: [{
+              id: 1,
+              event_type: "admin.login.succeeded",
+              actor_type: "admin",
+              actor_id: "account-id",
+              object_type: "admin_account",
+              object_id: "account-id",
+              correlation_id: "00000000-0000-0000-0000-000000000001",
+              created_at: "2026-07-14T10:00:00.000Z",
+              before_json: null,
+              after_json: null,
+              prev_hash_hex: null,
+              event_hash_hex: hash.toString("hex")
+            }]
+          };
+        }
+        if (sql.includes("encode(prev_hash")) {
+        return {
+          rowCount: 1,
+          rows: [{
               id: 1,
               event_type: "admin.login.succeeded",
               actor_type: "admin",
@@ -616,13 +785,30 @@ describe("admin server actions", () => {
     expect(integrity.statusCode).toBe(200);
     expect(integrity.json()).toMatchObject({ valid: true, eventCount: 1 });
 
+    const list = await app.inject({
+      method: "GET",
+      url: "/api/audit",
+      headers: { host: config.ADMIN_HOST, cookie: `__Host-kcml_session=${sessionValue}` }
+    });
+    expect(list.statusCode).toBe(200);
+    expect(list.json().events[0]).not.toHaveProperty("before_json");
+
+    const detail = await app.inject({
+      method: "GET",
+      url: "/api/audit/events/1",
+      headers: { host: config.ADMIN_HOST, cookie: `__Host-kcml_session=${sessionValue}` }
+    });
+    expect(detail.statusCode).toBe(200);
+    expect(detail.json().event).toHaveProperty("before_json");
+
     const exported = await app.inject({
       method: "GET",
-      url: "/api/audit/export",
+      url: "/api/audit/export?eventType=admin.login.succeeded",
       headers: { host: config.ADMIN_HOST, cookie: `__Host-kcml_session=${sessionValue}` }
     });
     expect(exported.statusCode).toBe(200);
     expect(exported.headers["content-disposition"]).toContain("audit-export.json");
+    expect(exported.json()).toMatchObject({ eventCount: 1, filters: { eventType: "admin.login.succeeded" } });
   });
 
   it("lists and creates admin accounts", async () => {
@@ -663,7 +849,7 @@ describe("admin server actions", () => {
       headers: { host: config.ADMIN_HOST, cookie: `__Host-kcml_session=${sessionValue}` }
     });
     expect(listed.statusCode).toBe(200);
-    expect(listed.json()).toMatchObject({ accounts: [expect.objectContaining({ username: "karel" })] });
+    expect(listed.json()).toMatchObject({ accounts: [expect.objectContaining({ username: "karel", deploymentManaged: false })] });
 
     const created = await app.inject({
       method: "POST",
@@ -692,9 +878,13 @@ describe("admin server actions", () => {
             key: "logLevel",
             value_json: "debug",
             value_ciphertext: null,
+            version: 4,
             updated_at: "2026-07-14T10:00:00.000Z"
           }]
         };
+      }
+      if (sql.includes("from operational_config_setting") && sql.includes("for update")) {
+        return { rowCount: 1, rows: [{ value_json: "debug", version: 4 }] };
       }
       if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") return { rowCount: 0, rows: [] };
       if (sql.includes("select event_hash from audit_event")) return { rowCount: 0, rows: [] };
@@ -715,9 +905,11 @@ describe("admin server actions", () => {
     expect(listed.json().settings).toContainEqual(expect.objectContaining({
       key: "logLevel",
       value: "debug",
-      source: "database"
+      source: "database",
+      version: 4,
+      category: "observability"
     }));
-    expect(listed.json().settings).toHaveLength(3);
+    expect(listed.json().settings).toHaveLength(45);
 
     const updated = await app.inject({
       method: "PUT",
@@ -727,11 +919,43 @@ describe("admin server actions", () => {
         cookie: `__Host-kcml_session=${sessionValue}; __Host-kcml_csrf=${csrfValue}`,
         "x-csrf-token": csrfValue
       },
-      payload: { value: "warn" }
+      payload: { value: "warn", expectedVersion: 4 }
     });
     expect(updated.statusCode).toBe(200);
     expect(query.mock.calls.some(([sql]) => String(sql).includes("insert into operational_config_setting"))).toBe(true);
     expect(query.mock.calls.some(([sql]) => String(sql).includes("append_audit_event"))).toBe(true);
+  });
+
+  it("rejects stale operational config updates", async () => {
+    const sessionHash = await argon2.hash(sessionValue, { type: argon2.argon2id, memoryCost: 4096, timeCost: 2, parallelism: 1 });
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes("from admin_session s")) {
+        return { rowCount: 1, rows: [{ id: "session-id", account_id: "account-id", session_hash: sessionHash, username: "karel" }] };
+      }
+      if (sql.includes("from operational_config_setting") && sql.includes("for update")) {
+        return { rowCount: 1, rows: [{ value_json: "debug", version: 4 }] };
+      }
+      if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") return { rowCount: 0, rows: [] };
+      return { rowCount: 0, rows: [] };
+    });
+    const db = { query, connect: vi.fn(async () => ({ query, release: vi.fn() })) } as unknown as Db;
+    app = Fastify();
+    await app.register(cookie, { secret: config.SESSION_SECRET_BASE64.toString("base64url") });
+    registerAdminRoutes(app, db, config);
+    await app.ready();
+
+    const updated = await app.inject({
+      method: "PUT",
+      url: "/api/operational-config/logLevel",
+      headers: {
+        host: config.ADMIN_HOST,
+        cookie: `__Host-kcml_session=${sessionValue}; __Host-kcml_csrf=${csrfValue}`,
+        "x-csrf-token": csrfValue
+      },
+      payload: { value: "warn", expectedVersion: 3 }
+    });
+    expect(updated.statusCode).toBe(409);
+    expect(updated.json()).toMatchObject({ error: "config_version_conflict" });
   });
 
   it("updates managed admin password, MFA and sessions", async () => {
@@ -828,7 +1052,10 @@ describe("admin server actions", () => {
       }
       return { rowCount: 1, rows: [] };
     });
-    const db = { query } as unknown as Db;
+    const db = {
+      query,
+      connect: async () => ({ query, release: () => undefined })
+    } as unknown as Db;
     app = Fastify();
     await app.register(cookie, { secret: config.SESSION_SECRET_BASE64.toString("base64url") });
     registerAdminRoutes(app, db, config);

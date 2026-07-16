@@ -5,21 +5,34 @@ umask 022
 destination="${1:?release destination required}"
 build_id="${BUILD_ID:-$(git rev-parse HEAD)}"
 source_commit="${GITHUB_SHA:-$(git rev-parse HEAD)}"
+workspace_restore_required=false
+
+restore_workspace_dependencies() {
+  if [ "$workspace_restore_required" = "true" ]; then
+    CI=true pnpm install --frozen-lockfile
+    find node_modules -type f -name '._*' -delete
+  fi
+}
+trap restore_workspace_dependencies EXIT
 
 rm -rf "$destination"
 install -d -m 0755 "$destination/apps" "$destination/deploy" "$destination/docs" "$destination/docs/onboarding-catalogs"
 pnpm_major="$(pnpm --version | cut -d. -f1)"
+workspace_restore_required=true
 if [ "$pnpm_major" -ge 10 ]; then
   pnpm --filter @kcml/server deploy --prod --legacy "$destination/apps/server"
 else
   pnpm --filter @kcml/server deploy --prod "$destination/apps/server"
 fi
+restore_workspace_dependencies
+workspace_restore_required=false
+trap - EXIT
 install -d -m 0755 "$destination/apps/admin-ui"
 cp -R apps/admin-ui/dist "$destination/apps/admin-ui/dist"
 install -d -m 0755 "$destination/apps/server/dist/migrations"
 cp apps/server/src/migrations/*.sql "$destination/apps/server/dist/migrations/"
 cp -R deploy/alert-sink deploy/nginx deploy/scripts deploy/systemd "$destination/deploy/"
-cp Connect_in_Catalog_KajovoMCPCML_v1.5.docx "$destination/"
+cp Connect_in_Catalog_KajovoMCPCML_v1.7.docx "$destination/"
 cp docs/onboarding-manifest-v1.5.example.json "$destination/docs/"
 cp docs/service-manifest-external-api-v1.0.example.json "$destination/docs/"
 cp docs/onboarding-catalogs/*.json "$destination/docs/onboarding-catalogs/"

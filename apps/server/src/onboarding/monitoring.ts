@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import dns from "node:dns/promises";
 import http from "node:http";
 import tls from "node:tls";
-import type { AppConfig } from "../config.js";
+import type { MonitoringConfig } from "../config.js";
 import type { Db } from "../db.js";
 import { tx } from "../db.js";
 import { closeAlert, deliverNextAlert, expireAlertSuppressions, raiseAlert } from "../domain/alerts.js";
@@ -15,6 +15,9 @@ import {
 import { evaluateRecertification, type RecertificationDecision } from "../domain/recertification.js";
 import { digestCanonicalJson, validateStoredOnboardingManifest, type OnboardingManifest } from "../domain/registration.js";
 import { setComputedOperationalState, transitionServerState } from "../domain/server-state.js";
+import { archivePendingAuditEvents } from "../domain/audit-archive.js";
+import { verifyAuditChain } from "../domain/audit.js";
+import { evaluateOperationalState } from "../domain/monitoring-policy.js";
 import { runSyntheticMonitoringProbe } from "./activation.js";
 import { OciRuntime } from "./oci.js";
 
@@ -182,7 +185,7 @@ export class MonitoringScheduler {
   private readonly oci: OciRuntime;
   private readonly workerId = `monitor-${randomUUID()}`;
 
-  constructor(private readonly db: Db, private readonly config: AppConfig) {
+  constructor(private readonly db: Db, private readonly config: MonitoringConfig) {
     this.oci = new OciRuntime(config);
   }
 
@@ -197,6 +200,22 @@ export class MonitoringScheduler {
     try {
       await expireAlertSuppressions(this.db);
       await this.db.query("delete from http_rate_bucket where updated_at < clock_timestamp()-interval '1 day'");
+      const auditIntegrity = await verifyAuditChain(this.db);
+      const auditCorrelationId = randomUUID();
+      await tx(this.db, async (client) => {
+        if (auditIntegrity.valid) {
+          await closeAlert(client, { alertType: "audit.integrity", reason: "audit_chain_valid", correlationId: auditCorrelationId });
+        } else {
+          await raiseAlert(client, {
+            severity: "CRITICAL",
+            alertType: "audit.integrity",
+            title: "Integrita auditního řetězce je porušená",
+            detail: auditIntegrity,
+            correlationId: auditCorrelationId
+          });
+        }
+      });
+      await archivePendingAuditEvents(this.db, this.config.AUDIT_ARCHIVE_PATH);
       const result = await this.db.query(`
         select ms.*,rr.id as active_revision_id,rr.manifest,rr.manifest_digest as revision_manifest_digest,
                rr.artifact_digest as revision_artifact_digest,rr.validation_state,rr.approved_at,rr.review_due_at,
@@ -412,6 +431,15 @@ export class MonitoringScheduler {
     }, manifest));
 
     const securityDrift = probes.find((probe) => probe.status === "FAIL" && ["artifact_integrity", "contract_profile_drift"].includes(probe.name));
+    const stateEvaluation = evaluateOperationalState({
+      currentState: String(row.operational_state) as import("../domain/types.js").OperationalState,
+      samples: probes.map((probe) => ({
+        status: probe.status,
+        critical: ["liveness", "readiness", "tls", "routing", "oauth_mcp"].includes(probe.name)
+      })),
+      previousFailureStreak: Number(row.consecutive_failures ?? 0),
+      evaluatedAt: new Date().toISOString()
+    });
     await tx(this.db, async (client) => {
       for (const probe of probes) {
         await client.query(
@@ -445,11 +473,10 @@ export class MonitoringScheduler {
           [serverId, securityDrift.name, (typeof securityDrift.evidence.error === "string" ? securityDrift.evidence.error : "security drift").slice(0, 1_000)]
         );
       } else if (probes.length) {
-        const criticalFailure = failures.some((probe) => ["liveness", "readiness", "tls", "routing", "oauth_mcp"].includes(probe.name));
         await setComputedOperationalState(client, {
           serverId,
-          state: failures.length === 0 ? "HEALTHY" : criticalFailure ? "UNHEALTHY" : "DEGRADED",
-          reason: failures.length === 0 ? "monitoring_all_due_probes_passed" : `monitoring_failures:${failures.map((probe) => probe.name).join(",")}`,
+          state: stateEvaluation.state,
+          reason: `${stateEvaluation.reasonCode}:${failures.map((probe) => probe.name).join(",") || "none"}`,
           correlationId,
           recertification
         });

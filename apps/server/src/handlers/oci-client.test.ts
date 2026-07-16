@@ -18,7 +18,7 @@ describe("ociHandler", () => {
     socketPath = null;
   });
 
-  it("surfaces the worker error message for admin and release diagnostics", async () => {
+  it("does not expose worker error messages or log payloads to the host process", async () => {
     socketDir = await mkdtemp(join(tmpdir(), "kcml-oci-client-"));
     socketPath = join(socketDir, "worker.sock");
     server = http.createServer((request, reply) => {
@@ -100,16 +100,16 @@ describe("ociHandler", () => {
         updatedAt: new Date().toISOString()
       },
       logger: { info, error }
-    })).rejects.toThrow("home_assistant_catalog_contract_mismatch");
+    })).rejects.toThrow("handler_failed");
 
     expect(info).toHaveBeenCalledWith(
       expect.objectContaining({
-        operation: "list_home_assistant_devices",
         serverCode: "KCML0002",
-        imageDigest: "[REDACTED]",
-        correlationId: "00000000-0000-4000-8000-000000000000"
+        imageDigest: "sha256:image",
+        correlationId: "00000000-0000-4000-8000-000000000000",
+        handlerLogDigest: expect.stringMatching(/^[a-f0-9]{64}$/)
       }),
-      "catalog.requested"
+      "handler.info"
     );
     expect(error).not.toHaveBeenCalled();
   });

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import http from "node:http";
-import { loadConfig } from "../config.js";
+import { loadBootstrapConfig } from "../config.js";
 import { createDb, tx } from "../db.js";
 import { createKajaCredential, replaceKajaPermissions, revokeKajaCredential } from "../domain/auth.js";
 import { appendAudit } from "../domain/audit.js";
@@ -161,11 +161,11 @@ async function syncManagedServiceLifecycle(db: ReturnType<typeof createDb>, para
 }
 
 async function main(): Promise<void> {
-  const bootstrapConfig = loadConfig();
+  const bootstrapConfig = loadBootstrapConfig();
   const db = createDb(bootstrapConfig);
   try {
     const config = await loadConfigFromDb(db, bootstrapConfig);
-    const baseUrl = process.env.KCML_RELEASE_BASE_URL ?? `http://127.0.0.1:${process.env.PORT || "3010"}`;
+    const baseUrl = process.env.KCML_RELEASE_BASE_URL ?? `http://127.0.0.1:${config.PORT}`;
     const correlationId = randomUUID();
     const serverResult = await db.query(
       `select
@@ -223,7 +223,7 @@ async function main(): Promise<void> {
       db,
       "release-smoke",
       correlationId,
-      `kcml0002-release-smoke-${process.env.BUILD_ID ?? "local"}`.slice(0, 120),
+      `kcml0002-release-smoke-${config.BUILD_ID}`.slice(0, 120),
       new Date(Date.now() + 15 * 60_000).toISOString()
     );
     const credentialResult = await db.query(

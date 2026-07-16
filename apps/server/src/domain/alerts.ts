@@ -1,6 +1,6 @@
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import type pg from "pg";
-import type { AppConfig } from "../config.js";
+import type { AlertDeliveryConfig } from "../config.js";
 import type { Db } from "../db.js";
 import { tx } from "../db.js";
 import { appendAudit } from "./audit.js";
@@ -204,7 +204,7 @@ async function leaseDelivery(db: Db): Promise<DeliveryLease | null> {
   });
 }
 
-function webhookCredential(config: AppConfig, channel: DeliveryLease["channel"]): { url: string; key: Buffer } {
+function webhookCredential(config: AlertDeliveryConfig, channel: DeliveryLease["channel"]): { url: string; key: Buffer } {
   const url = channel === "PRIMARY" ? config.ALERT_PRIMARY_WEBHOOK_URL : config.ALERT_BACKUP_WEBHOOK_URL;
   const key = channel === "PRIMARY" ? config.ALERT_PRIMARY_HMAC_KEY_BASE64 : config.ALERT_BACKUP_HMAC_KEY_BASE64;
   if (!url || !key) throw new Error(`alert_webhook_credential_missing:${channel.toLowerCase()}`);
@@ -215,7 +215,7 @@ export function signAlertWebhookBody(body: string, timestamp: string, key: Buffe
   return `v1=${createHmac("sha256", key).update(`${timestamp}.${body}`).digest("hex")}`;
 }
 
-export async function deliverNextAlert(db: Db, config: AppConfig): Promise<boolean> {
+export async function deliverNextAlert(db: Db, config: AlertDeliveryConfig): Promise<boolean> {
   const delivery = await leaseDelivery(db);
   if (!delivery) return false;
   const correlationId = randomUUID();

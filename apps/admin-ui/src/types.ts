@@ -1,5 +1,6 @@
 export type Page = "monitoring" | "integration" | "tokens" | "permissions" | "audit" | "config" | "security" | "admins";
-export type Session = { authenticated: boolean; account: string | null; bootstrapRequired?: boolean };
+export type AdminRole = "OWNER" | "ADMIN" | "AUDITOR";
+export type Session = { authenticated: boolean; account: string | null; role: AdminRole | null; bootstrapRequired?: boolean };
 export type Server = {
   id: string;
   code: string;
@@ -85,6 +86,11 @@ export type AuditEvent = {
   created_at: string;
   before_json?: unknown;
   after_json?: unknown;
+  chain: {
+    sequence: number | null;
+    previousHash: string | null;
+    eventHash: string | null;
+  };
 };
 export type SecretResult = { publicId: string; label: string; clientSecret: string; fingerprint: string; expiresAt: string | null };
 export type IntegrationToken = {
@@ -200,6 +206,9 @@ export type AuditIntegrity = {
 };
 export type AdminSecurity = {
   username: string;
+  role: AdminRole;
+  active: boolean;
+  deploymentManaged: boolean;
   passwordChangedAt: string | null;
   sessions: Array<{
     id: string;
@@ -211,15 +220,19 @@ export type AdminSecurity = {
 export type AdminAccount = {
   id: string;
   username: string;
+  deploymentManaged: boolean;
   passwordChangedAt: string | null;
   mfaEnabled: boolean;
   createdAt: string;
   activeSessionCount: number;
   recoveryCodeCount: number;
   current: boolean;
+  role: AdminRole;
+  active: boolean;
 };
 export type MonitoringProfile = {
   enabled: boolean;
+  version: number;
   profile: {
     sloTargets: Record<string, unknown>;
     probeIntervals: Record<string, unknown>;
@@ -227,18 +240,26 @@ export type MonitoringProfile = {
     runbookRef: string;
     primaryAlertChannel: string;
     backupAlertChannel: string;
+    staleAfterSeconds: number;
+    retentionDays: number;
   };
 };
 export type OperationalConfigSetting = {
   key: string;
   envKey: string;
   label: string;
-  kind: "string" | "number";
+  description: string;
+  kind: "string" | "number" | "boolean" | "stringList" | "secret";
+  category: "network" | "security" | "runtime" | "integrations" | "observability" | "presentation";
+  appliesTo: Array<"web" | "worker" | "monitor" | "egress">;
   restartRequired: boolean;
   bootstrapOnly: boolean;
-  source: "database" | "bootstrap";
-  value: string | number;
-  fingerprint: null;
+  source: "database" | "default";
+  value: string | number | boolean | string[] | null;
+  configured: boolean;
+  version: number;
+  fingerprint: string;
+  restartPending: boolean;
   updatedAt: string | null;
 };
 export type OnboardingDescriptor = {

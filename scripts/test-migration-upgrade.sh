@@ -101,6 +101,8 @@ insert into integration_token(
 ) select
   '20000000-0000-0000-0000-000000000002','Legacy production integration token',digest('legacy-token','sha256'),'v1','legacy0000000000',id,
   now()+interval '1 hour',now()+interval '1 hour',now()+interval '24 hours'
+-- The upgrade fixture intentionally anchors to the historical seed username from
+-- 001_initial.sql so the compatibility path exercises real production-shape data.
 from admin_account where username='karmar78';
 
 insert into onboarding_job(
@@ -146,15 +148,61 @@ select 'legacy.production.event','system','migration_fixture',series::text,
   from generate_series(1,1165) as series;
 SQL
 
-KCML_PROCESS_ROLE=migrate DATABASE_URL="$KCML_UPGRADE_DATABASE_URL" pnpm db:migrate
-KCML_PROCESS_ROLE=migrate DATABASE_URL="$KCML_UPGRADE_DATABASE_URL" pnpm db:migrate
+run_migrations() {
+  if [[ -x apps/server/node_modules/.bin/tsx ]]; then
+    KCML_PROCESS_ROLE=migrate DATABASE_URL="$KCML_UPGRADE_DATABASE_URL" \
+      apps/server/node_modules/.bin/tsx apps/server/src/cli/migrate.ts
+  else
+    KCML_PROCESS_ROLE=migrate DATABASE_URL="$KCML_UPGRADE_DATABASE_URL" pnpm db:migrate
+  fi
+}
+
+run_migrations
+run_migrations
+
+psql "$KCML_UPGRADE_DATABASE_URL" --no-psqlrc --set ON_ERROR_STOP=1 <<'SQL'
+do $$
+begin
+  if not exists (select 1 from pg_roles where rolname='kcml_audit_writer_fixture') then
+    create role kcml_audit_writer_fixture nologin;
+  end if;
+  if not exists (select 1 from pg_roles where rolname='kcml_audit_caller_fixture') then
+    create role kcml_audit_caller_fixture nologin;
+  end if;
+end $$;
+grant usage,create on schema public to kcml_audit_writer_fixture;
+alter function append_audit_event(text,text,text,text,text,jsonb,jsonb,uuid) owner to kcml_audit_writer_fixture;
+alter function append_audit_event(text,text,text,text,text,jsonb,jsonb,uuid) security invoker;
+revoke create on schema public from kcml_audit_writer_fixture;
+revoke all on table audit_event,audit_head from kcml_audit_writer_fixture;
+revoke all on sequence audit_event_id_seq from kcml_audit_writer_fixture;
+grant usage on schema public to kcml_audit_caller_fixture;
+grant execute on function append_audit_event(text,text,text,text,text,jsonb,jsonb,uuid) to kcml_audit_caller_fixture;
+SQL
+psql "$KCML_UPGRADE_DATABASE_URL" --no-psqlrc --set ON_ERROR_STOP=1 --file "$migrations/034_audit_writer_owner_privileges.sql" >/dev/null
+psql "$KCML_UPGRADE_DATABASE_URL" --no-psqlrc --set ON_ERROR_STOP=1 --file "$migrations/035_audit_writer_returning_privilege.sql" >/dev/null
+psql "$KCML_UPGRADE_DATABASE_URL" --no-psqlrc --set ON_ERROR_STOP=1 --file "$migrations/036_audit_writer_security_contract.sql" >/dev/null
+psql "$KCML_UPGRADE_DATABASE_URL" --no-psqlrc --set ON_ERROR_STOP=1 <<'SQL'
+begin;
+set local role kcml_audit_caller_fixture;
+select append_audit_event('migration.role_split.test','system',null,null,null,'null','null',gen_random_uuid());
+rollback;
+SQL
 
 psql "$KCML_UPGRADE_DATABASE_URL" --no-psqlrc --set ON_ERROR_STOP=1 --tuples-only --no-align <<'SQL' | grep -Fx 'upgrade-ok'
 select case when
-  (select count(*) from schema_migration) = 24
+  (select count(*) from schema_migration) = 37
   and (select count(*) from legacy_schema_migration) = 9
   and (select count(*) from audit_event) = 1165
   and (select valid from verify_audit_chain()) is true
+  and (
+    select pg_get_userbyid(proowner) <> 'kcml_app'
+       and prosecdef
+       and has_table_privilege(pg_get_userbyid(proowner), 'public.audit_event', 'INSERT')
+       and has_column_privilege(pg_get_userbyid(proowner), 'public.audit_event', 'id', 'SELECT')
+      from pg_proc
+     where oid='public.append_audit_event(text,text,text,text,text,jsonb,jsonb,uuid)'::regprocedure
+  )
   and exists (
     select 1
       from mcp_server server

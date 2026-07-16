@@ -1,0 +1,77 @@
+import type { AlertDelivery, MonitoringProfile, OperationalAlert, Server } from "./types.js";
+import { api, csrf } from "./ui-helpers.js";
+
+const mutationHeaders = (): HeadersInit => ({ "x-csrf-token": csrf() });
+
+export type ServerTestResult = {
+  ok: boolean;
+  status: "PASSED" | "EXPECTED_RESULT_MISMATCH";
+  correlationId: string;
+  latencyMs: number;
+  activeRevisionId: string;
+  manifestDigest: string;
+  output?: unknown;
+};
+
+export async function setServerEnabled(server: Server, enabled: boolean): Promise<void> {
+  await api(`/api/mcp-servers/${server.id}/enabled`, {
+    method: "POST",
+    headers: mutationHeaders(),
+    body: JSON.stringify({ enabled })
+  });
+}
+
+export async function runRegisteredServerTest(server: Server): Promise<ServerTestResult> {
+  return api<ServerTestResult>(`/api/mcp-servers/${server.id}/test`, {
+    method: "POST",
+    headers: mutationHeaders(),
+    body: "{}"
+  });
+}
+
+export function getMonitoringProfile(server: Server): Promise<MonitoringProfile> {
+  return api<MonitoringProfile>(`/api/mcp-servers/${server.id}/monitoring-profile`);
+}
+
+export async function persistMonitoringProfile(server: Server, profile: MonitoringProfile): Promise<void> {
+  const body = JSON.stringify({ enabled: true, expectedVersion: profile.version, profile: profile.profile });
+  await api(`/api/mcp-servers/${server.id}/monitoring-profile/preview`, {
+    method: "POST",
+    headers: mutationHeaders(),
+    body
+  });
+  await api(`/api/mcp-servers/${server.id}/monitoring-profile`, {
+    method: "PUT",
+    headers: mutationHeaders(),
+    body
+  });
+}
+
+export async function createServerRevision(server: Server): Promise<string> {
+  const result = await api<{ jobId: string }>(`/api/mcp-servers/${server.id}/revisions`, {
+    method: "POST",
+    headers: mutationHeaders(),
+    body: "{}"
+  });
+  return result.jobId;
+}
+
+export async function testAlertChannels(): Promise<void> {
+  await api("/api/alerts/test", { method: "POST", headers: mutationHeaders(), body: "{}" });
+}
+
+export async function acknowledgeOperationalAlert(alert: OperationalAlert): Promise<void> {
+  await api(`/api/alerts/${alert.id}/acknowledge`, { method: "POST", headers: mutationHeaders(), body: "{}" });
+}
+
+export async function suppressOperationalAlert(alert: OperationalAlert, reason: string, until: string): Promise<void> {
+  await api(`/api/alerts/${alert.id}/suppress`, {
+    method: "POST",
+    headers: mutationHeaders(),
+    body: JSON.stringify({ reason, until })
+  });
+}
+
+export async function retryAlertDelivery(delivery: AlertDelivery): Promise<void> {
+  await api(`/api/alert-deliveries/${delivery.id}/retry`, { method: "POST", headers: mutationHeaders(), body: "{}" });
+}

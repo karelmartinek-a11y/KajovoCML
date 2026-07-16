@@ -503,3 +503,15 @@ input[type="checkbox"] { width: 17px; height: 17px; min-height: 17px; padding: 0
   *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; }
   .integration-run-state.running .integration-run-dot { animation: none; }
 }
+/* Accessible text that remains available to assistive technology. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}

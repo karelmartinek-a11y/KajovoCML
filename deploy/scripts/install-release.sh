@@ -13,9 +13,14 @@ test -f /etc/kcml/kcml.env
 : "${PASS:?PASS is required}"
 
 set -a
+# shellcheck source=/dev/null
 . /etc/kcml/kcml.env
 set +a
 export BUILD_ID="$release_id"
+# Older installations predate explicit control-plane host variables. Derive
+# only missing values from their configured base domain during the upgrade.
+# shellcheck source=/dev/null
+. "$source_dir/deploy/scripts/control-plane-hosts.sh"
 
 release_dir="/opt/kcml/releases/$release_id"
 previous_release="$(readlink -f /opt/kcml/current 2>/dev/null || true)"
@@ -56,6 +61,17 @@ stage_registry_auth() {
   install -m 0600 -o kcml -g kcml /var/lib/kcml/podman/auth.json /var/lib/kcml/podman/.docker/config.json
   registry_auth_staged=true
 }
+render_nginx_config() {
+  local template="$1" target="$2"
+  : "${PUBLIC_BASE_DOMAIN:?PUBLIC_BASE_DOMAIN is required}"
+  : "${ADMIN_HOST:?ADMIN_HOST is required}"
+  : "${AUTH_HOST:?AUTH_HOST is required}"
+  : "${REGISTER_HOST:?REGISTER_HOST is required}"
+  local tls_cert_path="${WILDCARD_TLS_CERT_PATH:-/etc/kcml/tls/fullchain.pem}"
+  local tls_key_path="${WILDCARD_TLS_KEY_PATH:-${tls_cert_path%/*}/privkey.pem}"
+  node "$source_dir/deploy/scripts/render-nginx-config.mjs" \
+    "$template" "$target" "$PUBLIC_BASE_DOMAIN" "$ADMIN_HOST" "$AUTH_HOST" "$REGISTER_HOST" "$tls_cert_path" "$tls_key_path"
+}
 run_kcml0002_runtime_refresh() {
   local worker_env_args=()
   local key value
@@ -72,7 +88,7 @@ run_kcml0002_runtime_refresh() {
     ONBOARDING_WORKER_ENABLED=false \
     MONITOR_ENABLED=false \
     DATABASE_URL_FILE=/etc/kcml/credentials/worker/database_url \
-    EGRESS_CAPABILITY_HMAC_KEY_BASE64_FILE=/etc/kcml/credentials/worker/egress_capability_hmac \
+    CONFIG_VAULT_MASTER_KEY_BASE64_FILE=/etc/kcml/credentials/config_vault_master_key \
     HOME=/var/lib/kcml/podman \
     XDG_DATA_HOME=/var/lib/kcml/podman/data \
     XDG_CONFIG_HOME=/var/lib/kcml/podman/config \
@@ -109,7 +125,7 @@ rollback_on_error() {
 }
 trap rollback_on_error ERR
 
-install -m 0644 "$source_dir/deploy/nginx/kcml.conf" /etc/nginx/sites-available/kcml.conf
+render_nginx_config "$source_dir/deploy/nginx/kcml.conf" /etc/nginx/sites-available/kcml.conf
 ln -sfn /etc/nginx/sites-available/kcml.conf /etc/nginx/sites-enabled/kcml.conf
 install -m 0755 "$source_dir/deploy/scripts/kcml-deploy-wrapper.sh" /usr/local/sbin/kcml-deploy-wrapper
 install -m 0755 "$source_dir/deploy/scripts/kcml-handler-preload-wrapper.sh" /usr/local/sbin/kcml-handler-preload-wrapper
@@ -145,33 +161,36 @@ BUILD_ID="$release_id" \
 
 step configure-db-roles
 bash "$source_dir/deploy/scripts/configure-db-roles.sh"
-export DATABASE_APP_URL="$(cat /etc/kcml/database-app.url)"
+DATABASE_APP_URL="$(cat /etc/kcml/database-app.url)"
+export DATABASE_APP_URL
 step split-config-final
 bash "$source_dir/deploy/scripts/split-service-config.sh" "$release_id"
 stage_registry_auth
 
+step import-operational-config
+KCML_PROCESS_ROLE=admin-sync \
+DATABASE_URL_FILE=/etc/kcml/credentials/admin-sync/database_url \
+CONFIG_VAULT_MASTER_KEY_BASE64_FILE=/etc/kcml/credentials/config_vault_master_key \
+NODE_ENV=production \
+BUILD_ID="$release_id" \
+  node "$source_dir/apps/server/dist/cli/import-operational-config.js" --refresh-build-id
+
 step migrate-mfa-secrets
 KCML_PROCESS_ROLE=admin-sync \
 DATABASE_URL_FILE=/etc/kcml/credentials/admin-sync/database_url \
-MFA_ENCRYPTION_KEY_BASE64_FILE=/etc/kcml/credentials/admin-sync/mfa_encryption \
+CONFIG_VAULT_MASTER_KEY_BASE64_FILE=/etc/kcml/credentials/config_vault_master_key \
 NODE_ENV=production \
 BUILD_ID="$release_id" \
   node "$source_dir/apps/server/dist/cli/migrate-mfa-secrets.js"
 
 step sync-admin-password
-admin_sync_totp_file=/etc/kcml/credentials/admin-sync/admin_totp
-admin_sync_env=(
-  "PASS=$PASS"
-  "KCML_PROCESS_ROLE=admin-sync"
-  "DATABASE_URL_FILE=/etc/kcml/credentials/admin-sync/database_url"
-  "MFA_ENCRYPTION_KEY_BASE64_FILE=/etc/kcml/credentials/admin-sync/mfa_encryption"
-  "NODE_ENV=production"
-  "BUILD_ID=$release_id"
-)
-if [ -s "$admin_sync_totp_file" ]; then
-  admin_sync_env+=("ADMIN_TOTP_SECRET_FILE=$admin_sync_totp_file")
-fi
-env "${admin_sync_env[@]}" node "$source_dir/apps/server/dist/cli/sync-admin-password.js"
+PASS="$PASS" \
+KCML_PROCESS_ROLE=admin-sync \
+DATABASE_URL_FILE=/etc/kcml/credentials/admin-sync/database_url \
+CONFIG_VAULT_MASTER_KEY_BASE64_FILE=/etc/kcml/credentials/config_vault_master_key \
+NODE_ENV=production \
+BUILD_ID="$release_id" \
+  node "$source_dir/apps/server/dist/cli/sync-admin-password.js"
 
 mv "$source_dir" "$release_dir"
 chown -R root:kcml "$release_dir"
@@ -215,7 +234,7 @@ systemctl restart kcml-egress-proxy
 systemctl restart kcml-onboarding-worker
 systemctl restart kcml-monitor
 
-admin_host="${ADMIN_HOST:-admin.hcasc.cz}"
+admin_host="${ADMIN_HOST:?ADMIN_HOST is required}"
 healthy=false
 step wait-runtime-health
 for _attempt in $(seq 1 45); do
@@ -269,18 +288,18 @@ while IFS='|' read -r channel delivery_id; do
 done < <(psql "$app_database_url" --no-psqlrc --tuples-only --no-align --quiet --command \
   "select channel,idempotency_key from alert_webhook_delivery where alert_id='$test_alert_id' order by channel")
 
-admin_username="${ADMIN_BOOTSTRAP_USERNAME:-karmar78}"
+admin_username="${ADMIN_BOOTSTRAP_USERNAME:-owner}"
 step verify-core-hosts
 login_payload="$(jq -nc --arg username "$admin_username" --arg password "$PASS" '{username:$username,password:$password}')"
 curl -fsS -H "Host: $admin_host" -H 'content-type: application/json' \
   --data "$login_payload" "http://127.0.0.1:${PORT:-3010}/api/login" | jq -e '.ok == true' >/dev/null
 unset login_payload
-curl -fsS -H "Host: ${AUTH_HOST:-auth.hcasc.cz}" \
+curl -fsS -H "Host: ${AUTH_HOST:?AUTH_HOST is required}" \
   "http://127.0.0.1:${PORT:-3010}/.well-known/oauth-authorization-server" \
-  | jq -e --arg issuer "https://${AUTH_HOST:-auth.hcasc.cz}" '.issuer == $issuer' >/dev/null
-curl -fsS -H "Host: kcml0002.${PUBLIC_BASE_DOMAIN:-hcasc.cz}" \
+  | jq -e --arg issuer "https://${AUTH_HOST}" '.issuer == $issuer' >/dev/null
+curl -fsS -H "Host: kcml0002.${PUBLIC_BASE_DOMAIN:?PUBLIC_BASE_DOMAIN is required}" \
   "http://127.0.0.1:${PORT:-3010}/.well-known/oauth-protected-resource/mcp" \
-  | jq -e --arg resource "https://kcml0002.${PUBLIC_BASE_DOMAIN:-hcasc.cz}/mcp" '.resource == $resource' >/dev/null
+  | jq -e --arg resource "https://kcml0002.${PUBLIC_BASE_DOMAIN}/mcp" '.resource == $resource' >/dev/null
 test "$(curl -sS -o /dev/null -w '%{http_code}' -H 'Host: unknown.invalid' \
   "http://127.0.0.1:${PORT:-3010}/health")" = "404"
 step smoke-reference-external-api
@@ -312,12 +331,7 @@ echo "release-check:mcp_kcml0002_initial_state=$kcml0002_state"
 run_kcml0002_runtime_refresh
 KCML_PROCESS_ROLE=web \
 DATABASE_URL_FILE=/etc/kcml/credentials/web/database_url \
-ACCESS_TOKEN_HMAC_KEY_BASE64_FILE=/etc/kcml/credentials/web/access_token_hmac \
-INTEGRATION_TOKEN_HMAC_KEY_BASE64_FILE=/etc/kcml/credentials/web/integration_token_hmac \
-SESSION_SECRET_BASE64_FILE=/etc/kcml/credentials/web/session_secret \
-CSRF_SECRET_BASE64_FILE=/etc/kcml/credentials/web/csrf_secret \
-MFA_ENCRYPTION_KEY_BASE64_FILE=/etc/kcml/credentials/web/mfa_encryption \
-EGRESS_CAPABILITY_HMAC_KEY_BASE64_FILE=/etc/kcml/credentials/web/egress_capability_hmac \
+CONFIG_VAULT_MASTER_KEY_BASE64_FILE=/etc/kcml/credentials/config_vault_master_key \
 NODE_ENV=production \
 BUILD_ID="$release_id" \
   node "$release_dir/apps/server/dist/cli/release-kcml0002-smoke.js"
@@ -331,6 +345,9 @@ fi
 wait_for_sql_equals "mcp_kcml0002_state" "ACTIVE/HEALTHY" "select registration_state::text || '/' || operational_state::text from mcp_server where code='KCML0002'" 90 2
 wait_for_sql_equals "migration_019" "1" "select count(*) from schema_migration where version='019_postgres_http_rate_limiting.sql'"
 wait_for_sql_equals "migration_022" "1" "select count(*) from schema_migration where version='022_runtime_egress_capability_backfill.sql'"
+wait_for_sql_equals "migration_034" "1" "select count(*) from schema_migration where version='034_audit_writer_owner_privileges.sql'"
+wait_for_sql_equals "migration_035" "1" "select count(*) from schema_migration where version='035_audit_writer_returning_privilege.sql'"
+wait_for_sql_equals "migration_036" "1" "select count(*) from schema_migration where version='036_audit_writer_security_contract.sql'"
 
 trap - ERR
 cleanup_registry_auth

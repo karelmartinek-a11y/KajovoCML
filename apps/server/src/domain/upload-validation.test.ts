@@ -11,10 +11,10 @@ const validFiles: Record<string, string | Buffer> = {
   "package.json": JSON.stringify({
     name: "@example/handler",
     type: "module",
-    engines: { node: ">=22" },
+    engines: { node: ">=24" },
     scripts: { test: "vitest run", lint: "eslint src", typecheck: "tsc --noEmit", build: "tsc" },
     dependencies: { zod: "3.25.76" },
-    devDependencies: { "@types/node": "22.10.2", eslint: "9.30.1", typescript: "5.8.3", vitest: "3.2.4" }
+    devDependencies: { "@types/node": "24.0.0", eslint: "9.30.1", typescript: "5.8.3", vitest: "3.2.4" }
   }),
   "tsconfig.json": JSON.stringify({ compilerOptions: { target: "ES2022", module: "NodeNext", moduleResolution: "NodeNext", strict: true, rootDir: "src", outDir: "dist" }, include: ["src/**/*.ts"] }),
   "pnpm-lock.yaml": "lockfileVersion: '9.0'\n",
@@ -42,7 +42,7 @@ afterEach(async () => {
 });
 
 describe("handler ZIP quarantine", () => {
-  it("accepts the fixed Node.js 22 TypeScript contract and records evidence", async () => {
+  it("accepts the fixed Node.js 24 TypeScript contract and records evidence", async () => {
     const result = await validateAndQuarantineArchive(await zip(validFiles), await root());
     expect(result.sourceDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
     expect(result.files).toContain("src/index.ts");

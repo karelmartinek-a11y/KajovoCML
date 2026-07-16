@@ -9,7 +9,7 @@ each runs in a separately constrained rootless OCI worker.
 
 The production stack is:
 
-- Node.js 22 LTS, Fastify, TypeScript.
+- Node.js 24 LTS, Fastify, TypeScript.
 - React 19 + Vite for the admin UI.
 - PostgreSQL 16+ as the only authoritative state store.
 - SQL migrations committed in `apps/server/src/migrations`.

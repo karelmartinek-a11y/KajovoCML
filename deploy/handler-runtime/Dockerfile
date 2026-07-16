@@ -1,4 +1,4 @@
-FROM node:22.16.0-alpine3.22 AS build
+FROM node:24-alpine3.22 AS build
 ARG HANDLER_DIR
 WORKDIR /build/handler
 RUN corepack enable && corepack prepare pnpm@9.15.4 --activate
@@ -7,7 +7,7 @@ RUN pnpm install --frozen-lockfile --ignore-scripts
 COPY ${HANDLER_DIR}/src ./src
 RUN pnpm exec tsc -p tsconfig.json && pnpm prune --prod --ignore-scripts
 
-FROM node:22.16.0-alpine3.22
+FROM node:24-alpine3.22
 ENV NODE_ENV=production
 WORKDIR /app
 COPY --from=build --chown=node:node /build/handler/dist /app/handler/dist

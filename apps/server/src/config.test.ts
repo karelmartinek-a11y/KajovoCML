@@ -2,16 +2,17 @@ import { mkdtemp, rm, symlink, writeFile, chmod } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { loadConfig } from "./config.js";
+import { loadBootstrapConfig, loadConfig, mutableRuntimeConfigEnvKeys } from "./config.js";
 
 const secret = Buffer.alloc(32, 1).toString("base64");
 const envBase = {
   DATABASE_URL: "postgres://localhost/kcml"
 };
 const tempDirs: string[] = [];
+const configTestTmpdir = process.env.KCML_CONFIG_TEST_TMPDIR ?? tmpdir();
 
 async function tempFile(name: string, value: string, mode = 0o600): Promise<string> {
-  const dir = await mkdtemp(path.join(tmpdir(), "kcml-config-test-"));
+  const dir = await mkdtemp(path.join(configTestTmpdir, "kcml-config-test-"));
   tempDirs.push(dir);
   const file = path.join(dir, name);
   await writeFile(file, value, "utf8");
@@ -20,7 +21,7 @@ async function tempFile(name: string, value: string, mode = 0o600): Promise<stri
 }
 
 async function tempCredentialFile(name: string, value: string, directoryMode = 0o700, fileMode = 0o440): Promise<{ directory: string; file: string }> {
-  const directory = await mkdtemp(path.join(tmpdir(), "kcml-credentials-test-"));
+  const directory = await mkdtemp(path.join(configTestTmpdir, "kcml-credentials-test-"));
   tempDirs.push(directory);
   await chmod(directory, directoryMode);
   const file = path.join(directory, name);
@@ -132,11 +133,33 @@ describe("configuration gates", () => {
     })).toThrow();
   });
 
+  it("accepts a configurable bootstrap admin username and rejects unsafe variants", () => {
+    expect(() => loadConfig({
+      ...envBase,
+      ACCESS_TOKEN_HMAC_KEY_BASE64: secret,
+      INTEGRATION_TOKEN_HMAC_KEY_BASE64: Buffer.alloc(32, 2).toString("base64"),
+      EGRESS_CAPABILITY_HMAC_KEY_BASE64: Buffer.alloc(32, 3).toString("base64"),
+      SESSION_SECRET_BASE64: Buffer.alloc(32, 4).toString("base64"),
+      CSRF_SECRET_BASE64: Buffer.alloc(32, 5).toString("base64"),
+      MFA_ENCRYPTION_KEY_BASE64: Buffer.alloc(32, 6).toString("base64"),
+      ADMIN_BOOTSTRAP_USERNAME: "owner.admin"
+    })).not.toThrow();
+    expect(() => loadConfig({
+      ...envBase,
+      ACCESS_TOKEN_HMAC_KEY_BASE64: secret,
+      INTEGRATION_TOKEN_HMAC_KEY_BASE64: Buffer.alloc(32, 2).toString("base64"),
+      EGRESS_CAPABILITY_HMAC_KEY_BASE64: Buffer.alloc(32, 3).toString("base64"),
+      SESSION_SECRET_BASE64: Buffer.alloc(32, 4).toString("base64"),
+      CSRF_SECRET_BASE64: Buffer.alloc(32, 5).toString("base64"),
+      MFA_ENCRYPTION_KEY_BASE64: Buffer.alloc(32, 6).toString("base64"),
+      ADMIN_BOOTSTRAP_USERNAME: "Owner Admin"
+    })).toThrow();
+  });
+
   it("requires explicit production hosts and rejects invalid hostnames and ports", () => {
     expect(() => loadConfig({
       ...envBase,
       NODE_ENV: "production",
-      KCML_PROCESS_ROLE: "web",
       ACCESS_TOKEN_HMAC_KEY_BASE64: secret,
       INTEGRATION_TOKEN_HMAC_KEY_BASE64: Buffer.alloc(32, 2).toString("base64"),
       EGRESS_CAPABILITY_HMAC_KEY_BASE64: Buffer.alloc(32, 3).toString("base64"),
@@ -148,7 +171,6 @@ describe("configuration gates", () => {
     expect(() => loadConfig({
       ...envBase,
       NODE_ENV: "production",
-      KCML_PROCESS_ROLE: "web",
       PUBLIC_BASE_DOMAIN: "hcasc.cz",
       ADMIN_HOST: "https://admin.hcasc.cz",
       AUTH_HOST: "auth.hcasc.cz",
@@ -175,7 +197,7 @@ describe("configuration gates", () => {
 
   it("rejects direct production ADMIN_TOTP_SECRET env and accepts secure *_FILE input", async () => {
     const totpFile = await tempFile("admin_totp", "JBSWY3DPEHPK3PXP");
-    expect(() => loadConfig({
+    const productionBase = {
       ...envBase,
       NODE_ENV: "production",
       KCML_PROCESS_ROLE: "web",
@@ -183,36 +205,6 @@ describe("configuration gates", () => {
       ADMIN_HOST: "admin.hcasc.cz",
       AUTH_HOST: "auth.hcasc.cz",
       REGISTER_HOST: "register.hcasc.cz",
-      BUILD_ID: "release-1",
-      ACCESS_TOKEN_HMAC_KEY_BASE64: secret,
-      INTEGRATION_TOKEN_HMAC_KEY_BASE64: Buffer.alloc(32, 2).toString("base64"),
-      EGRESS_CAPABILITY_HMAC_KEY_BASE64: Buffer.alloc(32, 3).toString("base64"),
-      SESSION_SECRET_BASE64: Buffer.alloc(32, 4).toString("base64"),
-      CSRF_SECRET_BASE64: Buffer.alloc(32, 5).toString("base64"),
-      MFA_ENCRYPTION_KEY_BASE64: Buffer.alloc(32, 6).toString("base64"),
-      ADMIN_TOTP_SECRET: "JBSWY3DPEHPK3PXP"
-    })).toThrow();
-    expect(() => loadConfig({
-      ...envBase,
-      NODE_ENV: "production",
-      KCML_PROCESS_ROLE: "web",
-      PUBLIC_BASE_DOMAIN: "hcasc.cz",
-      ADMIN_HOST: "admin.hcasc.cz",
-      AUTH_HOST: "auth.hcasc.cz",
-      REGISTER_HOST: "register.hcasc.cz",
-      BUILD_ID: "release-1",
-      ACCESS_TOKEN_HMAC_KEY_BASE64: secret,
-      INTEGRATION_TOKEN_HMAC_KEY_BASE64: Buffer.alloc(32, 2).toString("base64"),
-      EGRESS_CAPABILITY_HMAC_KEY_BASE64: Buffer.alloc(32, 3).toString("base64"),
-      SESSION_SECRET_BASE64: Buffer.alloc(32, 4).toString("base64"),
-      CSRF_SECRET_BASE64: Buffer.alloc(32, 5).toString("base64"),
-      MFA_ENCRYPTION_KEY_BASE64: Buffer.alloc(32, 6).toString("base64"),
-      ADMIN_TOTP_SECRET_FILE: totpFile
-    })).not.toThrow();
-    expect(() => loadConfig({
-      ...envBase,
-      NODE_ENV: "production",
-      KCML_PROCESS_ROLE: "migrate",
       BUILD_ID: "release-1",
       ACCESS_TOKEN_HMAC_KEY_BASE64: secret,
       INTEGRATION_TOKEN_HMAC_KEY_BASE64: Buffer.alloc(32, 2).toString("base64"),
@@ -220,14 +212,26 @@ describe("configuration gates", () => {
       SESSION_SECRET_BASE64: Buffer.alloc(32, 4).toString("base64"),
       CSRF_SECRET_BASE64: Buffer.alloc(32, 5).toString("base64"),
       MFA_ENCRYPTION_KEY_BASE64: Buffer.alloc(32, 6).toString("base64")
+    };
+    expect(() => loadConfig({
+      ...productionBase,
+      ADMIN_TOTP_SECRET: "JBSWY3DPEHPK3PXP"
+    })).toThrow();
+    expect(() => loadConfig({
+      ...productionBase,
+      ADMIN_TOTP_SECRET_FILE: totpFile
     })).not.toThrow();
+    expect(() => loadConfig({
+      ...productionBase,
+      ADMIN_TOTP_SECRET: "JBSWY3DPEHPK3PXP"
+    }, { allowAdminTotpSecret: true })).not.toThrow();
   });
 
   it("rejects unsafe production secret files", async () => {
     const worldReadable = await tempFile("secret", secret, 0o644);
     const oversized = await tempFile("oversized", "A".repeat(SECRET_FILE_BYTES));
     const { directory: systemdCredentialsDirectory, file: systemdCredentialFile } = await tempCredentialFile("secret", secret, 0o755);
-    const symlinkDir = await mkdtemp(path.join(tmpdir(), "kcml-config-symlink-"));
+    const symlinkDir = await mkdtemp(path.join(configTestTmpdir, "kcml-config-symlink-"));
     tempDirs.push(symlinkDir);
     const symlinkPath = path.join(symlinkDir, "secret-link");
     await symlink(worldReadable, symlinkPath);
@@ -287,6 +291,51 @@ describe("configuration gates", () => {
       CSRF_SECRET_BASE64: Buffer.alloc(32, 5).toString("base64"),
       MFA_ENCRYPTION_KEY_BASE64: Buffer.alloc(32, 6).toString("base64")
     })).toThrow();
+  });
+
+  it("exposes a bootstrap-only loader without mutable runtime keys", () => {
+    const bootstrap = loadBootstrapConfig({
+      ...envBase,
+      ACCESS_TOKEN_HMAC_KEY_BASE64: secret,
+      INTEGRATION_TOKEN_HMAC_KEY_BASE64: Buffer.alloc(32, 2).toString("base64"),
+      EGRESS_CAPABILITY_HMAC_KEY_BASE64: Buffer.alloc(32, 3).toString("base64"),
+      SESSION_SECRET_BASE64: Buffer.alloc(32, 4).toString("base64"),
+      CSRF_SECRET_BASE64: Buffer.alloc(32, 5).toString("base64"),
+      MFA_ENCRYPTION_KEY_BASE64: Buffer.alloc(32, 6).toString("base64"),
+      LOG_LEVEL: "debug",
+      MONITOR_INTERVAL_MS: "30000",
+      ONBOARDING_WORKER_INTERVAL_MS: "25000"
+    });
+
+    expect(mutableRuntimeConfigEnvKeys).toEqual([
+      "ONBOARDING_WORKER_INTERVAL_MS",
+      "MONITOR_INTERVAL_MS",
+      "LOG_LEVEL",
+      "UI_TIME_ZONE"
+    ]);
+    expect("LOG_LEVEL" in bootstrap).toBe(false);
+    expect("MONITOR_INTERVAL_MS" in bootstrap).toBe(false);
+    expect("ONBOARDING_WORKER_INTERVAL_MS" in bootstrap).toBe(false);
+    expect("UI_TIME_ZONE" in bootstrap).toBe(false);
+  });
+
+  it("keeps the compatibility runtime loader including mutable values", () => {
+    const config = loadConfig({
+      ...envBase,
+      ACCESS_TOKEN_HMAC_KEY_BASE64: secret,
+      INTEGRATION_TOKEN_HMAC_KEY_BASE64: Buffer.alloc(32, 2).toString("base64"),
+      EGRESS_CAPABILITY_HMAC_KEY_BASE64: Buffer.alloc(32, 3).toString("base64"),
+      SESSION_SECRET_BASE64: Buffer.alloc(32, 4).toString("base64"),
+      CSRF_SECRET_BASE64: Buffer.alloc(32, 5).toString("base64"),
+      MFA_ENCRYPTION_KEY_BASE64: Buffer.alloc(32, 6).toString("base64"),
+      LOG_LEVEL: "debug",
+      MONITOR_INTERVAL_MS: "30000",
+      ONBOARDING_WORKER_INTERVAL_MS: "25000"
+    });
+
+    expect(config.LOG_LEVEL).toBe("debug");
+    expect(config.MONITOR_INTERVAL_MS).toBe(30000);
+    expect(config.ONBOARDING_WORKER_INTERVAL_MS).toBe(25000);
   });
 });
 

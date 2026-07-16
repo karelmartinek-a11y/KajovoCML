@@ -96,6 +96,7 @@ export function referenceAcceptanceContract(baseDomain: string): Record<string, 
 
 export function referenceExternalApiManifest(baseDomain: string): ExternalApiRegistrationManifest {
   const host = referenceExternalApiHostname(baseDomain);
+  const contactDomain = baseDomain.toLowerCase();
   return {
     schemaVersion: "1.0",
     serviceKind: "EXTERNAL_API",
@@ -115,9 +116,9 @@ export function referenceExternalApiManifest(baseDomain: string): ExternalApiReg
       operations: "KCML Operations"
     },
     contacts: {
-      serviceEmail: "service@hcasc.cz",
-      technicalEmail: "platform@hcasc.cz",
-      securityEmail: "security@hcasc.cz",
+      serviceEmail: `service@${contactDomain}`,
+      technicalEmail: `platform@${contactDomain}`,
+      securityEmail: `security@${contactDomain}`,
       operationsOnCall: "KCML on-call"
     },
     governance: {

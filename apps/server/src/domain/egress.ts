@@ -1,5 +1,5 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import type { AppConfig } from "../config.js";
+import type { EgressClientConfig } from "../config.js";
 import type { Db } from "../db.js";
 import { fingerprintSecret, hmacToken } from "../security/secrets.js";
 
@@ -15,7 +15,7 @@ export type ValidatedEgressCapability = {
   correlationId: string | null;
 };
 
-export async function createEgressCapability(db: Queryable, config: AppConfig, jobId: string, allowlist: string[]): Promise<string | null> {
+export async function createEgressCapability(db: Queryable, config: EgressClientConfig, jobId: string, allowlist: string[]): Promise<string | null> {
   await db.query("update egress_capability set revoked_at=coalesce(revoked_at,now()) where job_id=$1 and revoked_at is null", [jobId]);
   if (allowlist.length === 0) return null;
   const token = `kce_${randomBytes(64).toString("base64url")}`;
@@ -41,7 +41,7 @@ export async function revokeEgressCapabilities(db: Queryable, jobId: string): Pr
   await db.query("update egress_capability set revoked_at=coalesce(revoked_at,now()) where job_id=$1", [jobId]);
 }
 
-export function createEphemeralEgressCapability(config: AppConfig, params: {
+export function createEphemeralEgressCapability(config: EgressClientConfig, params: {
   allowlist: string[];
   managedServiceId?: string | null;
   correlationId?: string | null;
@@ -60,7 +60,7 @@ export function createEphemeralEgressCapability(config: AppConfig, params: {
   return `${EPHEMERAL_PREFIX}${payload}.${signature}`;
 }
 
-function validateEphemeralEgressCapability(config: AppConfig, token: string): ValidatedEgressCapability {
+function validateEphemeralEgressCapability(config: EgressClientConfig, token: string): ValidatedEgressCapability {
   const encoded = token.slice(EPHEMERAL_PREFIX.length);
   const separator = encoded.lastIndexOf(".");
   if (separator <= 0) throw new Error("invalid_egress_capability");
@@ -93,7 +93,7 @@ function validateEphemeralEgressCapability(config: AppConfig, token: string): Va
   };
 }
 
-export async function validateEgressCapability(db: Queryable, config: AppConfig, token: string): Promise<ValidatedEgressCapability> {
+export async function validateEgressCapability(db: Queryable, config: EgressClientConfig, token: string): Promise<ValidatedEgressCapability> {
   if (token.startsWith(EPHEMERAL_PREFIX)) return validateEphemeralEgressCapability(config, token);
   const digest = hmacToken(token, config.EGRESS_CAPABILITY_HMAC_KEY_BASE64);
   const result = await db.query(

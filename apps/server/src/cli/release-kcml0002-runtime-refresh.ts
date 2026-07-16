@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { loadConfig } from "../config.js";
+import { loadBootstrapConfig } from "../config.js";
 import { createDb } from "../db.js";
 import { appendAudit } from "../domain/audit.js";
+import { loadConfigFromDb } from "../domain/operational-config.js";
 import { attachEgressCapabilityToServer, createEgressCapability } from "../domain/egress.js";
 import { validateStoredOnboardingManifest } from "../domain/registration.js";
 import { OciRuntime } from "../onboarding/oci.js";
@@ -11,8 +12,9 @@ function writeReleaseCheck(message: string): void {
 }
 
 async function main(): Promise<void> {
-  const config = loadConfig();
-  const db = createDb(config);
+  const bootstrapConfig = loadBootstrapConfig();
+  const db = createDb(bootstrapConfig);
+  const config = await loadConfigFromDb(db, bootstrapConfig);
   const correlationId = randomUUID();
   try {
     const result = await db.query(

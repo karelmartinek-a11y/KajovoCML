@@ -1,6 +1,6 @@
 {
   "schemaVersion": "1.5",
-  "registrationRevision": "2026-07-14.1",
+  "registrationRevision": "2026-07-16.1",
   "environment": "production",
   "handlerKey": "example-handler",
   "handlerVersion": "1.0.0",
@@ -21,11 +21,11 @@
   "criticality": "MEDIUM",
   "review": {
     "intervalDays": 365,
-    "approvedAt": "2026-07-14T00:00:00.000Z",
-    "reviewDueAt": "2027-07-14T00:00:00.000Z"
+    "approvedAt": "2026-07-16T00:00:00.000Z",
+    "reviewDueAt": "2027-07-16T00:00:00.000Z"
   },
   "source": {
-    "runtime": "nodejs22-typescript",
+    "runtime": "nodejs24-typescript",
     "entrypoint": "src/index.ts",
     "testCommand": "pnpm test"
   },
@@ -158,8 +158,8 @@
     "runtime": [
       {
         "name": "node",
-        "version": "22.17.0",
-        "checksum": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "version": "24.0.0",
+        "checksum": "sha256:61df8c17ef87f64d8bea5e68e6f19ed9bdaf904cbc70c9b2597e9293758d9944",
         "evidenceRef": "evidence/dependencies/node.json"
       }
     ],
@@ -269,32 +269,32 @@
     "sbomRef": "evidence/build/sbom.spdx.json",
     "provenanceRef": "evidence/build/provenance.json",
     "rollbackTestRef": "evidence/tests/rollback.json",
-    "compatibilityWindowEndsAt": "2027-07-14T00:00:00.000Z"
+    "compatibilityWindowEndsAt": "2027-07-16T00:00:00.000Z"
   },
   "approvals": {
     "architecture": {
       "approver": "Architecture Approval Board",
-      "approvedAt": "2026-07-14T00:00:00.000Z",
+      "approvedAt": "2026-07-16T00:00:00.000Z",
       "evidenceRef": "evidence/approvals/architecture.json"
     },
     "security": {
       "approver": "Security Approval Board",
-      "approvedAt": "2026-07-14T00:00:00.000Z",
+      "approvedAt": "2026-07-16T00:00:00.000Z",
       "evidenceRef": "evidence/approvals/security.json"
     },
     "operations": {
       "approver": "Operations Approval Board",
-      "approvedAt": "2026-07-14T00:00:00.000Z",
+      "approvedAt": "2026-07-16T00:00:00.000Z",
       "evidenceRef": "evidence/approvals/operations.json"
     },
     "dataOwner": {
       "approver": "Data Owner Approval Board",
-      "approvedAt": "2026-07-14T00:00:00.000Z",
+      "approvedAt": "2026-07-16T00:00:00.000Z",
       "evidenceRef": "evidence/approvals/data-owner.json"
     },
     "changeManagement": {
       "approver": "Change Approval Board",
-      "approvedAt": "2026-07-14T00:00:00.000Z",
+      "approvedAt": "2026-07-16T00:00:00.000Z",
       "evidenceRef": "evidence/approvals/change-management.json"
     }
   },

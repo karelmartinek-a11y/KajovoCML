@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { AppConfig } from "../config.js";
+import type { ReadinessConfig } from "../config.js";
 import type { Db } from "../db.js";
 import { appendAudit, verifyAuditChain } from "./audit.js";
 import { listServers } from "./catalog.js";
@@ -29,7 +29,20 @@ const EXPECTED_MIGRATIONS = [
   "020_managed_service_runtime_control.sql",
   "021_external_api_runtime_enforcement.sql",
   "022_runtime_egress_capability_backfill.sql",
-  "023_access_token_compatibility_and_mfa.sql"
+  "023_access_token_compatibility_and_mfa.sql",
+  "024_admin_session_lookup_and_login_throttle_hardening.sql",
+  "025_operational_config_versioning.sql",
+  "026_mcp_runtime_invariants.sql",
+  "027_admin_roles_and_bootstrap.sql",
+  "028_monitoring_profile_versioning.sql",
+  "029_operational_config_vault.sql",
+  "030_audit_archive_outbox.sql",
+  "031_admin_session_epoch.sql",
+  "032_runtime_domain_migration.sql",
+  "033_mfa_ciphertext_constraint.sql",
+  "034_audit_writer_owner_privileges.sql",
+  "035_audit_writer_returning_privilege.sql",
+  "036_audit_writer_security_contract.sql"
 ] as const;
 
 export type ReadinessReport = {
@@ -64,7 +77,7 @@ async function rollbackAuditWriteProbe(db: Db): Promise<boolean> {
   }
 }
 
-export async function buildReadinessReport(db: Db, config: AppConfig): Promise<ReadinessReport> {
+export async function buildReadinessReport(db: Db, config: ReadinessConfig): Promise<ReadinessReport> {
   const checkedAt = new Date().toISOString();
   await db.query("select 1");
   const migrationResult = await db.query("select version from schema_migration order by sequence_number,version");

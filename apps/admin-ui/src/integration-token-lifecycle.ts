@@ -105,5 +105,6 @@ export function formatMinuteSecondCountdown(remainingMs: number): string {
   const totalSeconds = Math.max(0, Math.ceil(remainingMs / 1000));
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
-  return `${minutes.toLocaleString("cs-CZ")} min ${String(seconds).padStart(2, "0")} s`;
+  return `${formatCzNumber(minutes)} min ${String(seconds).padStart(2, "0")} s`;
 }
+import { formatCzNumber } from "./ui-helpers.js";

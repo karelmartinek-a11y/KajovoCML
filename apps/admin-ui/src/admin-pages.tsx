@@ -1,59 +1,61 @@
 import React, { useState } from "react";
 import {
-  AlertTriangle,
   CheckCircle2,
   LockKeyhole,
   LogOut,
   Plus,
   RefreshCw,
   Save,
-  Search,
-  SlidersHorizontal
 } from "lucide-react";
 import { Modal, PageHeader } from "./common.js";
 import { formatDate } from "./ui-helpers.js";
-import type { AdminAccount, AdminSecurity, OperationalConfigSetting } from "./types.js";
+import type { AdminAccount, AdminRole, AdminSecurity } from "./types.js";
+
+type ActionNotice = { tone: "success" | "error"; text: string };
 
 export function SecurityPage({
   security,
   onRefresh,
   onChangePassword,
-  onRevokeOtherSessions
+  onRevokeOtherSessions,
+  onRevokeSession,
+  onRevokeAllSessions
 }: {
   security: AdminSecurity | null;
   onRefresh: () => Promise<void>;
   onChangePassword: (currentPassword: string, nextPassword: string) => Promise<void>;
   onRevokeOtherSessions: () => Promise<void>;
+  onRevokeSession: (sessionId: string) => Promise<void>;
+  onRevokeAllSessions: () => Promise<void>;
 }) {
   const [currentPassword, setCurrentPassword] = useState("");
   const [nextPassword, setNextPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState("");
-  const [error, setError] = useState("");
-  const deploymentManaged = security?.username === "karmar78";
+  const [passwordNotice, setPasswordNotice] = useState<ActionNotice | null>(null);
+  const [sessionNotice, setSessionNotice] = useState<ActionNotice | null>(null);
+  const deploymentManaged = Boolean(security?.deploymentManaged);
 
   async function submitPassword(event: React.FormEvent) {
     event.preventDefault();
     if (nextPassword.length < 12) {
-      setError("Nové heslo musí mít alespoň 12 znaků.");
+      setPasswordNotice({ tone: "error", text: "Nové heslo musí mít alespoň 12 znaků." });
       return;
     }
     if (nextPassword !== confirmPassword) {
-      setError("Potvrzení hesla se neshoduje.");
+      setPasswordNotice({ tone: "error", text: "Potvrzení hesla se neshoduje." });
       return;
     }
     setBusy(true);
-    setError("");
-    setMessage("");
+    setPasswordNotice(null);
     try {
       await onChangePassword(currentPassword, nextPassword);
       setCurrentPassword("");
       setNextPassword("");
       setConfirmPassword("");
-      setMessage("Heslo bylo změněno a ostatní relace byly odhlášeny.");
+      setPasswordNotice({ tone: "success", text: "Heslo bylo změněno a ostatní relace byly odhlášeny." });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Změna hesla selhala.");
+      setPasswordNotice({ tone: "error", text: err instanceof Error ? err.message : "Změna hesla selhala." });
     } finally {
       setBusy(false);
     }
@@ -61,13 +63,38 @@ export function SecurityPage({
 
   async function revokeOthers() {
     setBusy(true);
-    setError("");
-    setMessage("");
+    setSessionNotice(null);
     try {
       await onRevokeOtherSessions();
-      setMessage("Ostatní aktivní relace byly revokovány.");
+      setSessionNotice({ tone: "success", text: "Ostatní aktivní relace byly revokovány." });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Revokace relací selhala.");
+      setSessionNotice({ tone: "error", text: err instanceof Error ? err.message : "Revokace relací selhala." });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function revokeAll() {
+    setBusy(true);
+    setSessionNotice(null);
+    try {
+      await onRevokeAllSessions();
+      setSessionNotice({ tone: "success", text: "Všechny relace byly revokovány." });
+    } catch (err) {
+      setSessionNotice({ tone: "error", text: err instanceof Error ? err.message : "Revokace všech relací selhala." });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function revokeSession(sessionId: string) {
+    setBusy(true);
+    setSessionNotice(null);
+    try {
+      await onRevokeSession(sessionId);
+      setSessionNotice({ tone: "success", text: `Relace ${sessionId} byla revokována.` });
+    } catch (err) {
+      setSessionNotice({ tone: "error", text: err instanceof Error ? err.message : "Revokace relace selhala." });
     } finally {
       setBusy(false);
     }
@@ -88,12 +115,11 @@ export function SecurityPage({
               <div><dt>Uživatel</dt><dd>{security?.username ?? "Načítám…"}</dd></div>
               <div><dt>Heslo změněno</dt><dd>{security ? formatDate(security.passwordChangedAt) : "Načítám…"}</dd></div>
             </dl>
-            {deploymentManaged ? <div className="notice"><LockKeyhole size={18} /><span>Heslo a MFA účtu karmar78 synchronizuje výhradně produkční deployment z chráněného PASS.</span></div> : <form className="security-form" onSubmit={(event) => { void submitPassword(event); }}>
+            {deploymentManaged ? <div className="notice"><LockKeyhole size={18} /><span>Heslo a MFA tohoto účtu synchronizuje výhradně produkční deployment z chráněného PASS.</span></div> : <form className="security-form" onSubmit={(event) => { void submitPassword(event); }}>
               <label>Současné heslo<input type="password" autoComplete="current-password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} /></label>
               <label>Nové heslo<input type="password" autoComplete="new-password" value={nextPassword} onChange={(event) => setNextPassword(event.target.value)} /></label>
               <label>Potvrzení nového hesla<input type="password" autoComplete="new-password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} /></label>
-              {error ? <p className="error">{error}</p> : null}
-              {message ? <div className="notice success"><CheckCircle2 size={18} /><span>{message}</span></div> : null}
+              {passwordNotice ? <div className={`notice ${passwordNotice.tone === "success" ? "success" : "error"}`}><CheckCircle2 size={18} /><span>{passwordNotice.text}</span></div> : null}
               <div className="modal-actions">
                 <button type="submit" disabled={busy}><Save size={16} /> Změnit heslo</button>
               </div>
@@ -104,11 +130,13 @@ export function SecurityPage({
           <div className="panel-head">
             <div><h2>Aktivní relace</h2><p>Přehled otevřených relací tohoto účtu a možnost odhlásit ostatní zařízení.</p></div>
             <button className="secondary" disabled={busy || !security || security.sessions.length <= 1} onClick={() => { void revokeOthers(); }}><LogOut size={16} /> Odhlásit ostatní</button>
+            <button className="danger-button" disabled={busy || !security?.sessions.length} onClick={() => { void revokeAll(); }}><LogOut size={16} /> Odhlásit všechna zařízení</button>
           </div>
+          {sessionNotice ? <div className={`notice ${sessionNotice.tone === "success" ? "success" : "error"}`}><CheckCircle2 size={18} /><span>{sessionNotice.text}</span></div> : null}
           {!security ? <div className="empty-state"><LockKeyhole size={34} /><strong>Načítám bezpečnostní profil</strong></div> : (
             <div className="table-scroll">
               <table>
-                <thead><tr><th>Relace</th><th>Vznik</th><th>Expirace</th><th>Stav</th></tr></thead>
+                <thead><tr><th>Relace</th><th>Vznik</th><th>Expirace</th><th>Stav</th><th>Akce</th></tr></thead>
                 <tbody>
                   {security.sessions.map((session) => (
                     <tr key={session.id}>
@@ -116,6 +144,7 @@ export function SecurityPage({
                       <td>{formatDate(session.createdAt)}</td>
                       <td>{formatDate(session.expiresAt)}</td>
                       <td><span className={`badge ${session.current ? "ok" : "neutral"}`}>{session.current ? "Aktuální zařízení" : "Aktivní"}</span></td>
+                      <td>{session.current ? "-" : <button className="small-button" disabled={busy} onClick={() => { void revokeSession(session.id); }}>Odvolat</button>}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -135,39 +164,68 @@ export function AdminAccountsPage({
   onSetPassword,
   onSetMfa,
   onRevokeSessions,
-  onRotateRecovery
+  onRotateRecovery,
+  onUpdate
 }: {
   accounts: AdminAccount[];
   onRefresh: () => Promise<void>;
-  onCreate: (input: { username: string; password: string; mfaSecret: string }) => Promise<void>;
+  onCreate: (input: { username: string; password: string; mfaSecret: string; role: AdminRole }) => Promise<void>;
   onSetPassword: (accountId: string, nextPassword: string) => Promise<void>;
   onSetMfa: (accountId: string, enabled: boolean, secret: string) => Promise<void>;
   onRevokeSessions: (accountId: string) => Promise<void>;
   onRotateRecovery: (accountId: string) => Promise<string[]>;
+  onUpdate: (accountId: string, input: { role?: AdminRole; active?: boolean }) => Promise<void>;
 }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [mfaSecret, setMfaSecret] = useState("");
+  const [role, setRole] = useState<AdminRole>("ADMIN");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [passwordDrafts, setPasswordDrafts] = useState<Record<string, string>>({});
   const [mfaDrafts, setMfaDrafts] = useState<Record<string, string>>({});
   const [recoveryCodes, setRecoveryCodes] = useState<{ username: string; codes: string[] } | null>(null);
+  const [actionNotice, setActionNotice] = useState<ActionNotice | null>(null);
 
   async function submitCreate(event: React.FormEvent) {
     event.preventDefault();
+    if (username.trim().length < 3) {
+      setError("Uživatelské jméno musí mít alespoň 3 znaky.");
+      return;
+    }
+    if (password.length < 12) {
+      setError("Počáteční heslo musí mít alespoň 12 znaků.");
+      return;
+    }
     setBusy(true);
     setError("");
     setMessage("");
+    setActionNotice(null);
     try {
-      await onCreate({ username, password, mfaSecret });
+      await onCreate({ username: username.trim(), password, mfaSecret: mfaSecret.trim(), role });
       setUsername("");
       setPassword("");
       setMfaSecret("");
+      setRole("ADMIN");
       setMessage("Administrátorský účet byl založen.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Založení účtu selhalo.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function runAccountAction(action: () => Promise<void>, successMessage: string, failureMessage: string) {
+    setBusy(true);
+    setError("");
+    setMessage("");
+    setActionNotice(null);
+    try {
+      await action();
+      setActionNotice({ tone: "success", text: successMessage });
+    } catch (err) {
+      setActionNotice({ tone: "error", text: err instanceof Error ? err.message : failureMessage });
     } finally {
       setBusy(false);
     }
@@ -186,7 +244,8 @@ export function AdminAccountsPage({
           <form className="security-stack security-form" onSubmit={(event) => { void submitCreate(event); }}>
             <label>Uživatelské jméno<input value={username} onChange={(event) => setUsername(event.target.value)} /></label>
             <label>Počáteční heslo<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} /></label>
-            <label>MFA tajemství (volitelné)<textarea rows={3} value={mfaSecret} onChange={(event) => setMfaSecret(event.target.value)} placeholder="Base32 seed pro TOTP" /></label>
+            <label>MFA tajemství (volitelné)<input type="password" value={mfaSecret} onChange={(event) => setMfaSecret(event.target.value)} autoComplete="new-password" placeholder="Base32 seed pro TOTP" /></label>
+            <label>Role<select value={role} onChange={(event) => setRole(event.target.value as AdminRole)}><option value="ADMIN">Administrátor</option><option value="AUDITOR">Auditor</option><option value="OWNER">Vlastník</option></select></label>
             {error ? <p className="error">{error}</p> : null}
             {message ? <div className="notice success"><CheckCircle2 size={18} /><span>{message}</span></div> : null}
             <div className="modal-actions"><button type="submit" disabled={busy}><Plus size={16} /> Založit účet</button></div>
@@ -196,13 +255,16 @@ export function AdminAccountsPage({
           <div className="panel-head">
             <div><h2>Existující účty</h2><p>Reset hesla, zapnutí nebo vypnutí MFA a revokace všech relací účtu.</p></div>
           </div>
+          {actionNotice ? <div className={`notice ${actionNotice.tone === "success" ? "success" : "error"}`}><CheckCircle2 size={18} /><span>{actionNotice.text}</span></div> : null}
           <div className="admin-account-list">
             {accounts.map((account) => {
-              const deploymentManaged = account.username === "karmar78";
+              const deploymentManaged = account.deploymentManaged;
               return <article key={account.id} className="admin-account-card">
                 <div className="admin-account-head">
                   <div><strong>{account.username}</strong><small>{account.current ? "Aktuální účet" : "Administrátor"}</small></div>
                   <div className="row-actions">
+                    <span className={`badge ${account.active ? "ok" : "danger"}`}>{account.active ? "Aktivní" : "Deaktivován"}</span>
+                    <span className="badge neutral">{account.role}</span>
                     <span className={`badge ${account.mfaEnabled ? "ok" : "warn"}`}>{account.mfaEnabled ? "MFA zapnuto" : "Bez MFA"}</span>
                     {deploymentManaged ? <span className="badge ok">Řízeno deploymentem</span> : null}
                     <span className="badge neutral">{account.activeSessionCount} relací</span>
@@ -214,18 +276,34 @@ export function AdminAccountsPage({
                   <div><dt>Heslo změněno</dt><dd>{formatDate(account.passwordChangedAt)}</dd></div>
                 </dl>
                 <div className="security-stack">
+                  <label>Role<select value={account.role} disabled={busy} onChange={(event) => { void runAccountAction(() => onUpdate(account.id, { role: event.target.value as AdminRole }), `Role účtu ${account.username} byla změněna.`, "Změna role selhala."); }}><option value="OWNER">Vlastník</option><option value="ADMIN">Administrátor</option><option value="AUDITOR">Auditor</option></select></label>
+                  <div className="row-actions"><button className={`secondary ${account.active ? "danger-link" : ""}`} disabled={busy} onClick={() => { void runAccountAction(() => onUpdate(account.id, { active: !account.active }), account.active ? `Účet ${account.username} byl deaktivován.` : `Účet ${account.username} byl aktivován.`, "Změna aktivity selhala."); }}>{account.active ? "Deaktivovat účet" : "Aktivovat účet"}</button></div>
                   {deploymentManaged ? <div className="notice"><LockKeyhole size={18} /><span>Heslo a MFA spravuje deployment; v UI je nelze přepsat.</span></div> : <><label>Nové heslo účtu<input type="password" value={passwordDrafts[account.id] ?? ""} onChange={(event) => setPasswordDrafts((current) => ({ ...current, [account.id]: event.target.value }))} /></label>
                   <div className="row-actions">
-                    <button className="secondary" onClick={() => { void onSetPassword(account.id, passwordDrafts[account.id] ?? ""); }}>Nastavit heslo</button>
+                    <button className="secondary" disabled={busy || (passwordDrafts[account.id] ?? "").length < 12} onClick={() => { void runAccountAction(() => onSetPassword(account.id, passwordDrafts[account.id] ?? ""), `Heslo účtu ${account.username} bylo změněno.`, "Změna hesla selhala."); }}>Nastavit heslo</button>
                   </div>
-                  <label>MFA seed<input value={mfaDrafts[account.id] ?? ""} onChange={(event) => setMfaDrafts((current) => ({ ...current, [account.id]: event.target.value }))} placeholder="Vyplňte pro zapnutí nebo rotaci MFA" /></label>
+                  <label>MFA seed<input type="password" value={mfaDrafts[account.id] ?? ""} onChange={(event) => setMfaDrafts((current) => ({ ...current, [account.id]: event.target.value }))} autoComplete="new-password" placeholder="Vyplňte pro zapnutí nebo rotaci MFA" /></label>
                   <div className="row-actions">
-                    <button className="secondary" onClick={() => { void onSetMfa(account.id, true, mfaDrafts[account.id] ?? ""); }}>Zapnout/rotovat MFA</button>
-                    <button className="secondary danger-link" onClick={() => { void onSetMfa(account.id, false, ""); }}>Vypnout MFA</button>
+                    <button className="secondary" disabled={busy || !(mfaDrafts[account.id] ?? "").trim()} onClick={() => { void runAccountAction(() => onSetMfa(account.id, true, mfaDrafts[account.id] ?? ""), `MFA účtu ${account.username} bylo nastaveno.`, "Nastavení MFA selhalo."); }}>Zapnout/rotovat MFA</button>
+                    <button className="secondary danger-link" disabled={busy} onClick={() => { void runAccountAction(() => onSetMfa(account.id, false, ""), `MFA účtu ${account.username} bylo vypnuto.`, "Vypnutí MFA selhalo."); }}>Vypnout MFA</button>
                   </div></>}
                   <div className="row-actions">
-                    <button className="secondary" onClick={() => { void onRevokeSessions(account.id); }}>Revokovat relace</button>
-                    <button className="secondary" onClick={() => { void onRotateRecovery(account.id).then((codes) => setRecoveryCodes({ username: account.username, codes })); }}>Rotovat recovery kódy</button>
+                    <button className="secondary" disabled={busy} onClick={() => { void runAccountAction(() => onRevokeSessions(account.id), `Relace účtu ${account.username} byly revokovány.`, "Revokace relací selhala."); }}>Revokovat relace</button>
+                    <button className="secondary" disabled={busy} onClick={() => { void (async () => {
+                      setBusy(true);
+                      setError("");
+                      setMessage("");
+                      setActionNotice(null);
+                      try {
+                        const codes = await onRotateRecovery(account.id);
+                        setRecoveryCodes({ username: account.username, codes });
+                        setActionNotice({ tone: "success", text: `Recovery kódy účtu ${account.username} byly rotovány.` });
+                      } catch (err) {
+                        setActionNotice({ tone: "error", text: err instanceof Error ? err.message : "Rotace recovery kódů selhala." });
+                      } finally {
+                        setBusy(false);
+                      }
+                    })(); }}>Rotovat recovery kódy</button>
                   </div>
                 </div>
               </article>
@@ -240,85 +318,6 @@ export function AdminAccountsPage({
           <footer className="modal-actions"><button className="secondary" onClick={() => setRecoveryCodes(null)}>Zavřít</button></footer>
         </div>
       </Modal> : null}
-    </>
-  );
-}
-
-export function OperationalConfigPage({
-  settings,
-  onRefresh,
-  onSave
-}: {
-  settings: OperationalConfigSetting[];
-  onRefresh: () => Promise<void>;
-  onSave: (setting: OperationalConfigSetting, value: string | number | boolean) => Promise<void>;
-}) {
-  const [query, setQuery] = useState("");
-  const [drafts, setDrafts] = useState<Record<string, string>>({});
-  const [savingKey, setSavingKey] = useState<string | null>(null);
-  const [message, setMessage] = useState("");
-  const [error, setError] = useState("");
-  const filtered = settings.filter((setting) =>
-    `${setting.key} ${setting.envKey} ${setting.label}`.toLowerCase().includes(query.toLowerCase())
-  );
-
-  async function save(setting: OperationalConfigSetting) {
-    const raw = drafts[setting.key] ?? (setting.value === null ? "" : String(setting.value));
-    const value = setting.kind === "number" ? Number(raw) : raw;
-    setSavingKey(setting.key);
-    setError("");
-    setMessage("");
-    try {
-      await onSave(setting, value);
-      setDrafts((current) => ({ ...current, [setting.key]: "" }));
-      setMessage(`${setting.label} bylo uloženo. Změna se projeví po restartu příslušného procesu.`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Uložení konfigurace selhalo.");
-    } finally {
-      setSavingKey(null);
-    }
-  }
-
-  return (
-    <>
-      <PageHeader title="Konfigurace" description="Spravovaný registr provozních hodnot, který nahrazuje ruční úpravy .env pro běžné provozní změny.">
-        <label className="search-box"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Hledat konfiguraci..." aria-label="Hledat konfiguraci" /></label>
-        <button className="secondary" onClick={() => { void onRefresh(); }}><RefreshCw size={16} /> Obnovit</button>
-      </PageHeader>
-      {message ? <div className="notice success"><CheckCircle2 size={18} /><span>{message}</span></div> : null}
-      {error ? <div className="notice error"><AlertTriangle size={18} /><span>{error}</span></div> : null}
-      <section className="config-grid">
-        {filtered.map((setting) => {
-          const draft = drafts[setting.key] ?? String(setting.value ?? "");
-          return (
-            <article key={setting.key} className={`panel config-card ${setting.bootstrapOnly ? "locked" : ""}`}>
-              <div className="panel-head">
-                <div>
-                  <h2>{setting.label}</h2>
-                  <p>{setting.envKey}</p>
-                </div>
-                <div className="row-actions">
-                  <span className={`badge ${setting.source === "database" ? "ok" : "neutral"}`}>{setting.source === "database" ? "DB" : "Bootstrap"}</span>
-                  {setting.restartRequired ? <span className="badge warn">Restart</span> : null}
-                  {setting.bootstrapOnly ? <span className="badge danger">Bootstrap-only</span> : null}
-                </div>
-              </div>
-              <div className="config-card-body">
-                <label>Hodnota<input disabled={setting.bootstrapOnly} type={setting.kind === "number" ? "number" : "text"} value={draft} onChange={(event) => setDrafts((current) => ({ ...current, [setting.key]: event.target.value }))} /></label>
-                <dl className="config-meta">
-                  <div><dt>Klíč</dt><dd><code>{setting.key}</code></dd></div>
-                  <div><dt>Typ</dt><dd>{setting.kind}</dd></div>
-                  <div><dt>Upraveno</dt><dd>{formatDate(setting.updatedAt)}</dd></div>
-                </dl>
-                <footer className="modal-actions">
-                  <button disabled={setting.bootstrapOnly || savingKey === setting.key} onClick={() => { void save(setting); }}><Save size={16} /> Uložit</button>
-                </footer>
-              </div>
-            </article>
-          );
-        })}
-      </section>
-      {filtered.length === 0 ? <div className="empty-state"><SlidersHorizontal size={34} /><strong>Žádná konfigurační hodnota neodpovídá hledání</strong></div> : null}
     </>
   );
 }

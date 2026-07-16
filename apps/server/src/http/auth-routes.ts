@@ -1,13 +1,13 @@
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
-import type { AppConfig } from "../config.js";
+import type { OAuthConfig } from "../config.js";
 import type { Db } from "../db.js";
 import { issueAccessToken } from "../domain/auth.js";
 import { authorizeManagedServiceToken } from "../domain/managed-service.js";
 import { hmacToken } from "../security/secrets.js";
 import { hostOf, sendError } from "./errors.js";
 
-export function registerAuthRoutes(app: FastifyInstance, db: Db, config: AppConfig): void {
+export function registerAuthRoutes(app: FastifyInstance, db: Db, config: OAuthConfig): void {
   app.get("/.well-known/oauth-authorization-server", async () => ({
     issuer: `https://${config.AUTH_HOST}`,
     token_endpoint: `https://${config.AUTH_HOST}/oauth/token`,
