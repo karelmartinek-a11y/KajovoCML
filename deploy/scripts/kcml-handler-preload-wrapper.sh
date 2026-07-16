@@ -4,17 +4,20 @@ umask 077
 
 source_commit="${1:?source commit required}"
 ghcr_actor="${2:?GHCR actor required}"
-[[ "$source_commit" =~ ^[0-9a-f]{40}$ ]]
-[[ "$ghcr_actor" =~ ^[A-Za-z0-9-]{1,39}$ ]]
-test "$(id -u)" = "0"
-: "${GHCR_TOKEN:?GHCR_TOKEN is required}"
-test -r /etc/kcml/kcml.env
+fail() {
+  echo "handler-preload: $*" >&2
+  exit 1
+}
 
-set -a
-# shellcheck disable=SC1091
-. /etc/kcml/kcml.env
-set +a
-: "${DATABASE_URL:?DATABASE_URL is required}"
+[[ "$source_commit" =~ ^[0-9a-f]{40}$ ]] || fail "invalid source commit"
+[[ "$ghcr_actor" =~ ^[A-Za-z0-9-]{1,39}$ ]] || fail "invalid GHCR actor"
+test "$(id -u)" = "0" || fail "wrapper must run as root"
+: "${GHCR_TOKEN:?GHCR_TOKEN is required}"
+
+database_url_file="${KCML_WORKER_DATABASE_URL_FILE:-/etc/kcml/credentials/worker/database_url}"
+test -s "$database_url_file" || fail "worker database credential is unavailable"
+DATABASE_URL="$(cat "$database_url_file")"
+test -n "$DATABASE_URL" || fail "worker database credential is empty"
 
 auth_file=/var/lib/kcml/podman/auth.json
 docker_config=/var/lib/kcml/podman/.docker/config.json
@@ -34,7 +37,7 @@ install -m 0600 -o kcml -g kcml "$auth_file" "$docker_config"
 
 # The worker polls on its own. Restarting it here could interrupt an in-flight
 # signature verification while the bounded registry credential is available.
-systemctl is-active --quiet kcml-onboarding-worker
+systemctl is-active --quiet kcml-onboarding-worker || fail "onboarding worker is not active"
 for _attempt in $(seq 1 120); do
   IFS='|' read -r state runtime_socket < <(psql "$DATABASE_URL" -Atq \
     -c "select job.state, coalesce(server.runtime_socket, '')

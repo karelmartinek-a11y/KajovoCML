@@ -28,3 +28,7 @@ test "$(cat "$tmp/config/credentials/web/database_url")" = 'postgres://kcml:test
 test "$(cat "$tmp/config/credentials/config_vault_master_key")" = 'CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk='
 test ! -e "$tmp/config/credentials/web/egress_capability_hmac"
 test ! -e "$tmp/config/credentials/monitor/egress_capability_hmac"
+
+grep -q '/etc/kcml/credentials/worker/database_url' deploy/scripts/kcml-handler-preload-wrapper.sh
+if grep -q '/etc/kcml/kcml.env' deploy/scripts/kcml-handler-preload-wrapper.sh; then exit 1; fi
+grep -q 'worker database credential is unavailable' deploy/scripts/kcml-handler-preload-wrapper.sh
