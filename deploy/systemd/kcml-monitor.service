@@ -34,7 +34,7 @@ ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
-ReadWritePaths=/var/lib/kcml/runtime /var/lib/kcml/podman
+ReadWritePaths=/var/lib/kcml/runtime /var/lib/kcml/podman /var/lib/kcml/audit
 
 [Install]
 WantedBy=multi-user.target

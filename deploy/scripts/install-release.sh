@@ -297,9 +297,6 @@ unset login_payload
 curl -fsS -H "Host: ${AUTH_HOST:?AUTH_HOST is required}" \
   "http://127.0.0.1:${PORT:-3010}/.well-known/oauth-authorization-server" \
   | jq -e --arg issuer "https://${AUTH_HOST}" '.issuer == $issuer' >/dev/null
-curl -fsS -H "Host: kcml0002.${PUBLIC_BASE_DOMAIN:?PUBLIC_BASE_DOMAIN is required}" \
-  "http://127.0.0.1:${PORT:-3010}/.well-known/oauth-protected-resource/mcp" \
-  | jq -e --arg resource "https://kcml0002.${PUBLIC_BASE_DOMAIN}/mcp" '.resource == $resource' >/dev/null
 test "$(curl -sS -o /dev/null -w '%{http_code}' -H 'Host: unknown.invalid' \
   "http://127.0.0.1:${PORT:-3010}/health")" = "404"
 step smoke-reference-external-api
@@ -329,6 +326,9 @@ kcml0002_state="$(psql "$app_database_url" --no-psqlrc --tuples-only --no-align 
   "select registration_state::text || '/' || operational_state::text from mcp_server where code='KCML0002'")"
 echo "release-check:mcp_kcml0002_initial_state=$kcml0002_state"
 run_kcml0002_runtime_refresh
+curl -fsS -H "Host: kcml0002.${PUBLIC_BASE_DOMAIN:?PUBLIC_BASE_DOMAIN is required}" \
+  "http://127.0.0.1:${PORT:-3010}/.well-known/oauth-protected-resource/mcp" \
+  | jq -e --arg resource "https://kcml0002.${PUBLIC_BASE_DOMAIN}/mcp" '.resource == $resource' >/dev/null
 KCML_PROCESS_ROLE=web \
 DATABASE_URL_FILE=/etc/kcml/credentials/web/database_url \
 CONFIG_VAULT_MASTER_KEY_BASE64_FILE=/etc/kcml/credentials/config_vault_master_key \

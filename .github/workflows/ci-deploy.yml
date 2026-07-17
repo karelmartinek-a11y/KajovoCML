@@ -54,6 +54,7 @@ jobs:
         run: |
           bash -n deploy/scripts/*.sh scripts/*.sh
           bash scripts/test-ci-deploy-workflow.sh
+          bash scripts/test-install-release-guards.sh
           bash scripts/test-split-service-config.sh
           bash scripts/test-render-nginx-config.sh
           bash scripts/test-restore-test-permissions.sh
