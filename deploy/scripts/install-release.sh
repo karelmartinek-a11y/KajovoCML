@@ -84,12 +84,12 @@ run_kcml0002_runtime_refresh() {
     worker_env_args+=("$key=$value")
   done < /etc/kcml/worker.env
   runuser -u kcml -- env \
+    -u CONFIG_VAULT_MASTER_KEY_BASE64_FILE \
     "${worker_env_args[@]}" \
     KCML_PROCESS_ROLE=worker \
     ONBOARDING_WORKER_ENABLED=false \
     MONITOR_ENABLED=false \
     DATABASE_URL_FILE=/etc/kcml/credentials/worker/database_url \
-    -u CONFIG_VAULT_MASTER_KEY_BASE64_FILE \
     CONFIG_VAULT_MASTER_KEY_BASE64="$vault_master_key" \
     HOME=/var/lib/kcml/podman \
     XDG_DATA_HOME=/var/lib/kcml/podman/data \
