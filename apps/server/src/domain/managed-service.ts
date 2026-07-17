@@ -214,6 +214,7 @@ export async function authorizeManagedServiceToken(db: Db, params: {
         kc.principal_token_epoch as current_principal_token_epoch,
         ms.code,
         ms.service_kind,
+        ms.legacy_mcp_server_id,
         ms.public_hostname,
         ms.resource_uri,
         ms.lifecycle_state,

@@ -3,8 +3,6 @@ name: CI and production deploy
 on:
   push:
     branches: [main]
-    paths-ignore:
-      - "handlers/**"
   pull_request:
   workflow_dispatch:
 
