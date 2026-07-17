@@ -110,7 +110,7 @@ const legacyOnboardingManifestSchema = z.object({
     operations: z.string().min(1).max(160)
   }).strict(),
   source: z.object({
-    runtime: z.literal("nodejs24-typescript"),
+    runtime: z.enum(["nodejs22-typescript", "nodejs24-typescript"]),
     entrypoint: z.literal("src/index.ts"),
     testCommand: z.literal("pnpm test")
   }).strict(),

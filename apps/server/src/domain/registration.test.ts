@@ -82,7 +82,7 @@ describe("stored production manifest 1.4 compatibility", () => {
     displayName: "Seznam zařízení Home Assistant",
     businessPurpose: "Poskytuje úplný aktuální katalog zařízení pro produkční agenty.",
     owners: { service: "Karel Martinek", technical: "Karel Martinek", security: "Karel Martinek", operations: "Karel Martinek" },
-    source: { runtime: "nodejs24-typescript", entrypoint: "src/index.ts", testCommand: "pnpm test" },
+    source: { runtime: "nodejs22-typescript", entrypoint: "src/index.ts", testCommand: "pnpm test" },
     runtime: { memoryMb: 256, cpuCores: 0.5, pidsLimit: 64, egressAllowlist: ["ha-inventory.hcasc.cz:443"] },
     tool: {
       title: "Vyžádat kompletní seznam zařízení Home Assistant",
@@ -112,6 +112,7 @@ describe("stored production manifest 1.4 compatibility", () => {
   it("reads the immutable historic production shape without accepting it at intake", () => {
     const stored = validateStoredOnboardingManifest(legacy);
     expect(stored.manifest.schemaVersion).toBe("1.4");
+    expect(stored.manifest.source.runtime).toBe("nodejs22-typescript");
     expect(reviewMetadataForManifest(stored.manifest)).toMatchObject({ reviewDueAt: "2027-01-13T00:00:00.000Z", intervalDays: 365 });
     expect(() => validateOnboardingManifest(legacy)).toThrow();
   });
