@@ -328,15 +328,15 @@ kcml0002_state="$(psql "$app_database_url" --no-psqlrc --tuples-only --no-align 
   "select registration_state::text || '/' || operational_state::text from mcp_server where code='KCML0002'")"
 echo "release-check:mcp_kcml0002_initial_state=$kcml0002_state"
 run_kcml0002_runtime_refresh
-curl -fsS -H "Host: kcml0002.${PUBLIC_BASE_DOMAIN:?PUBLIC_BASE_DOMAIN is required}" \
-  "http://127.0.0.1:${PORT:-3010}/.well-known/oauth-protected-resource/mcp" \
-  | jq -e --arg resource "https://kcml0002.${PUBLIC_BASE_DOMAIN}/mcp" '.resource == $resource' >/dev/null
 KCML_PROCESS_ROLE=web \
 DATABASE_URL_FILE=/etc/kcml/credentials/web/database_url \
 CONFIG_VAULT_MASTER_KEY_BASE64_FILE=/etc/kcml/credentials/config_vault_master_key \
 NODE_ENV=production \
 BUILD_ID="$release_id" \
   node "$release_dir/apps/server/dist/cli/release-kcml0002-smoke.js"
+curl -fsS -H "Host: kcml0002.${PUBLIC_BASE_DOMAIN:?PUBLIC_BASE_DOMAIN is required}" \
+  "http://127.0.0.1:${PORT:-3010}/.well-known/oauth-protected-resource/mcp" \
+  | jq -e --arg resource "https://kcml0002.${PUBLIC_BASE_DOMAIN}/mcp" '.resource == $resource' >/dev/null
 if [ "$kcml0002_state" != "ACTIVE/HEALTHY" ] && {
   [ "${kcml0002_state#TRIAL/}" != "$kcml0002_state" ] || [ "${kcml0002_state#REGISTERED_DISABLED/}" != "$kcml0002_state" ];
 }; then

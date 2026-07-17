@@ -11,10 +11,13 @@ test -f "$preflight_script"
 
 runtime_refresh_line="$(grep -n 'run_kcml0002_runtime_refresh' "$install_script" | tail -n 1 | cut -d: -f1)"
 kcml0002_probe_line="$(grep -n '/.well-known/oauth-protected-resource/mcp' "$install_script" | tail -n 1 | cut -d: -f1)"
+kcml0002_smoke_line="$(grep -n 'release-kcml0002-smoke.js' "$install_script" | tail -n 1 | cut -d: -f1)"
 
 test -n "$runtime_refresh_line"
 test -n "$kcml0002_probe_line"
+test -n "$kcml0002_smoke_line"
 test "$runtime_refresh_line" -lt "$kcml0002_probe_line"
+test "$kcml0002_smoke_line" -lt "$kcml0002_probe_line"
 
 grep -Fq 'ReadWritePaths=/var/lib/kcml/runtime /var/lib/kcml/podman /var/lib/kcml/audit' "$monitor_unit"
 grep -Fq -- '-u CONFIG_VAULT_MASTER_KEY_BASE64_FILE' "$install_script"
