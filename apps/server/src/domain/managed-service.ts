@@ -214,6 +214,7 @@ export async function authorizeManagedServiceToken(db: Db, params: {
         kc.principal_token_epoch as current_principal_token_epoch,
         ms.code,
         ms.service_kind,
+        ms.legacy_mcp_server_id,
         ms.public_hostname,
         ms.resource_uri,
         ms.lifecycle_state,
@@ -388,7 +389,7 @@ export async function setManagedServiceApiState(db: Db, params: {
     const row = locked.rows[0] as Record<string, unknown>;
     if (Number(row.lock_version) !== params.expectedLockVersion) throw Object.assign(new Error("lock_version_conflict"), { statusCode: 409 });
     const previousState = String(row.api_state) as "ENABLED" | "DISABLED";
-    if (previousState === params.nextState) {
+    if (previousState === params.nextState && !(params.nextState === "ENABLED" && row.enabled !== true)) {
       return { state: previousState, version: Number(row.lock_version), decisionId: randomUUID() };
     }
     if (params.nextState === "ENABLED") {

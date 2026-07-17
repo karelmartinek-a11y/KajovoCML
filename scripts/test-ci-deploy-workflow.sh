@@ -4,9 +4,20 @@ set -euo pipefail
 workflow=".github/workflows/ci-deploy.yml"
 test -f "$workflow"
 
-# Production release and deployment must remain manual and main-only.
-grep -Fq "if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'" "$workflow"
-test "$(grep -Fc "if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'" "$workflow")" = "2"
+# Every push to main must enter the test/release/deploy pipeline. Excluding a
+# path here silently creates production changes which were never validated.
+grep -A3 '^  push:' "$workflow" | grep -Fq 'branches: [main]'
+if grep -A5 '^  push:' "$workflow" | grep -Eq 'paths(-ignore)?:'; then
+  echo "main push trigger must not filter paths" >&2
+  exit 1
+fi
+grep -Fq '  pull_request:' "$workflow"
+grep -Fq '  workflow_dispatch:' "$workflow"
+
+# Production release and deployment must remain main-only and run both
+# automatically on pushes and explicitly on manual dispatches.
+grep -Fq "if: github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || github.event_name == 'push')" "$workflow"
+test "$(grep -Fc "if: github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || github.event_name == 'push')" "$workflow")" = "2"
 
 # The release must be signed and the exact downloaded blob must be verified
 # against the GitHub Actions workflow identity before privileged deployment.
@@ -21,6 +32,15 @@ grep -Fq 'needs: [ci, security, release]' "$workflow"
 grep -Fq 'name: kcml-release-${{ github.sha }}' "$workflow"
 grep -Fq 'sha256sum --check kcml-release.tar.zst.sha256' "$workflow"
 grep -Fq '/usr/local/sbin/kcml-deploy-wrapper' "$workflow"
+grep -Fq '"${{ github.event_name }}"' "$workflow"
 
 # Avoid indefinite production jobs on a wedged self-hosted runner.
 grep -A8 '^  deploy:' "$workflow" | grep -Fq 'timeout-minutes:'
+
+# Production deploys must be serialized without interrupting an in-flight
+# privileged install. A queued stale revision must not touch the server.
+grep -A12 '^  deploy:' "$workflow" | grep -Fq 'group: production-deploy'
+grep -A12 '^  deploy:' "$workflow" | grep -Fq 'cancel-in-progress: false'
+grep -Fq 'id: freshness' "$workflow"
+grep -Fq '"$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/git/ref/heads/main"' "$workflow"
+test "$(grep -Fc "if: steps.freshness.outputs.should_deploy == 'true'" "$workflow")" = "4"

@@ -197,6 +197,7 @@ for _attempt in $(seq 1 15); do
   public_hostname="$(jq -r '.publicHostname' <<<"$state_json")"
   resource_uri="$(jq -r '.resourceUri' <<<"$state_json")"
   api_state="$(jq -r '.apiState' <<<"$state_json")"
+  enabled_state="$(jq -r '.enabled' <<<"$state_json")"
   if [ -n "$lock_version" ] && [ "$lock_version" != "null" ] && [ "$public_hostname" != "null" ] && [ "$resource_uri" != "null" ]; then
     state_ready=true
     break
@@ -205,7 +206,7 @@ for _attempt in $(seq 1 15); do
 done
 test "$state_ready" = "true"
 
-if [ "$api_state" != "ENABLED" ]; then
+if [ "$api_state" != "ENABLED" ] || [ "$enabled_state" != "true" ]; then
   step enable-managed-service
   enable_body="$(jq -nc --arg reason "release_smoke_enable_reference_api" --arg password "$PASS" '{reason:$reason,password:$password}')"
   admin_write \
@@ -219,8 +220,10 @@ if [ "$api_state" != "ENABLED" ]; then
   public_hostname="$(jq -r '.publicHostname' <<<"$state_json")"
   resource_uri="$(jq -r '.resourceUri' <<<"$state_json")"
   api_state="$(jq -r '.apiState' <<<"$state_json")"
+  enabled_state="$(jq -r '.enabled' <<<"$state_json")"
 fi
 test "$api_state" = "ENABLED"
+test "$enabled_state" = "true"
 
 step create-kaja-credential
 kaja_response="$(

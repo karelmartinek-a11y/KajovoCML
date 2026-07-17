@@ -74,21 +74,23 @@ render_nginx_config() {
 }
 run_kcml0002_runtime_refresh() {
   local worker_env_args=()
-  local key value
+  local key value vault_master_key
   local podman_runtime_dir="/run/user/${kcml_uid}"
   test -S "${podman_runtime_dir}/bus"
+  vault_master_key="$(< /etc/kcml/credentials/config_vault_master_key)"
   while IFS='=' read -r key value; do
     [ -n "$key" ] || continue
     case "$key" in \#*) continue ;; esac
     worker_env_args+=("$key=$value")
   done < /etc/kcml/worker.env
   runuser -u kcml -- env \
+    -u CONFIG_VAULT_MASTER_KEY_BASE64_FILE \
     "${worker_env_args[@]}" \
     KCML_PROCESS_ROLE=worker \
     ONBOARDING_WORKER_ENABLED=false \
     MONITOR_ENABLED=false \
     DATABASE_URL_FILE=/etc/kcml/credentials/worker/database_url \
-    CONFIG_VAULT_MASTER_KEY_BASE64_FILE=/etc/kcml/credentials/config_vault_master_key \
+    CONFIG_VAULT_MASTER_KEY_BASE64="$vault_master_key" \
     HOME=/var/lib/kcml/podman \
     XDG_DATA_HOME=/var/lib/kcml/podman/data \
     XDG_CONFIG_HOME=/var/lib/kcml/podman/config \
@@ -297,9 +299,6 @@ unset login_payload
 curl -fsS -H "Host: ${AUTH_HOST:?AUTH_HOST is required}" \
   "http://127.0.0.1:${PORT:-3010}/.well-known/oauth-authorization-server" \
   | jq -e --arg issuer "https://${AUTH_HOST}" '.issuer == $issuer' >/dev/null
-curl -fsS -H "Host: kcml0002.${PUBLIC_BASE_DOMAIN:?PUBLIC_BASE_DOMAIN is required}" \
-  "http://127.0.0.1:${PORT:-3010}/.well-known/oauth-protected-resource/mcp" \
-  | jq -e --arg resource "https://kcml0002.${PUBLIC_BASE_DOMAIN}/mcp" '.resource == $resource' >/dev/null
 test "$(curl -sS -o /dev/null -w '%{http_code}' -H 'Host: unknown.invalid' \
   "http://127.0.0.1:${PORT:-3010}/health")" = "404"
 step smoke-reference-external-api
@@ -335,6 +334,9 @@ CONFIG_VAULT_MASTER_KEY_BASE64_FILE=/etc/kcml/credentials/config_vault_master_ke
 NODE_ENV=production \
 BUILD_ID="$release_id" \
   node "$release_dir/apps/server/dist/cli/release-kcml0002-smoke.js"
+curl -fsS -H "Host: kcml0002.${PUBLIC_BASE_DOMAIN:?PUBLIC_BASE_DOMAIN is required}" \
+  "http://127.0.0.1:${PORT:-3010}/.well-known/oauth-protected-resource/mcp" \
+  | jq -e --arg resource "https://kcml0002.${PUBLIC_BASE_DOMAIN}/mcp" '.resource == $resource' >/dev/null
 if [ "$kcml0002_state" != "ACTIVE/HEALTHY" ] && {
   [ "${kcml0002_state#TRIAL/}" != "$kcml0002_state" ] || [ "${kcml0002_state#REGISTERED_DISABLED/}" != "$kcml0002_state" ];
 }; then
