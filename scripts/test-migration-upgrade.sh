@@ -146,6 +146,22 @@ select 'legacy.production.event','system','migration_fixture',series::text,
        ('00000000-0000-0000-0000-' || lpad(series::text,12,'0'))::uuid,
        '2026-04-17T11:37:00Z'::timestamptz + series * interval '1 second'
   from generate_series(1,1165) as series;
+
+create table if not exists operational_config_setting (
+  key text primary key,
+  value_json jsonb,
+  value_ciphertext text,
+  updated_by uuid references admin_account(id),
+  updated_at timestamptz not null default now()
+);
+alter table operational_config_setting add column if not exists value_ciphertext text;
+alter table operational_config_setting drop constraint if exists operational_config_setting_check;
+alter table operational_config_setting
+  add constraint operational_config_setting_check
+  check (
+    ((value_json is not null) and (value_ciphertext is null))
+    or ((value_json is null) and (value_ciphertext is not null))
+  );
 SQL
 
 run_migrations() {
@@ -190,9 +206,20 @@ select append_audit_event('migration.role_split.test','system',null,null,null,'n
 rollback;
 SQL
 
+psql "$KCML_UPGRADE_DATABASE_URL" --no-psqlrc --set ON_ERROR_STOP=1 <<'SQL'
+insert into operational_config_setting(key, value_json, secret_ciphertext, is_secret, version)
+values ('githubToken', null, 'vault:v1:upgrade-fixture', true, 1)
+on conflict (key) do update
+  set value_json = excluded.value_json,
+      secret_ciphertext = excluded.secret_ciphertext,
+      is_secret = excluded.is_secret,
+      version = excluded.version,
+      updated_at = now();
+SQL
+
 psql "$KCML_UPGRADE_DATABASE_URL" --no-psqlrc --set ON_ERROR_STOP=1 --tuples-only --no-align <<'SQL' | grep -Fx 'upgrade-ok'
 select case when
-  (select count(*) from schema_migration) = 38
+  (select count(*) from schema_migration) = 39
   and (select count(*) from legacy_schema_migration) = 9
   and (select count(*) from audit_event) = 1165
   and (select valid from verify_audit_chain()) is true
@@ -260,5 +287,18 @@ select case when
        and capability.allowlist='["ha-inventory.hcasc.cz:443"]'::jsonb
        and capability.expires_at > now() + interval '3000 days'
   )
-then 'upgrade-ok' else 'upgrade-failed' end;
+  and not exists (
+    select 1
+      from pg_constraint
+     where conrelid = 'operational_config_setting'::regclass
+       and conname = 'operational_config_setting_check'
+  )
+  and exists (
+    select 1 from operational_config_setting
+     where key = 'githubToken'
+       and is_secret = true
+       and value_json is null
+       and secret_ciphertext = 'vault:v1:upgrade-fixture'
+  )
+  then 'upgrade-ok' else 'upgrade-failed' end;
 SQL
