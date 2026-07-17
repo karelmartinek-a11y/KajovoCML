@@ -74,9 +74,10 @@ render_nginx_config() {
 }
 run_kcml0002_runtime_refresh() {
   local worker_env_args=()
-  local key value
+  local key value vault_master_key
   local podman_runtime_dir="/run/user/${kcml_uid}"
   test -S "${podman_runtime_dir}/bus"
+  vault_master_key="$(< /etc/kcml/credentials/config_vault_master_key)"
   while IFS='=' read -r key value; do
     [ -n "$key" ] || continue
     case "$key" in \#*) continue ;; esac
@@ -88,7 +89,8 @@ run_kcml0002_runtime_refresh() {
     ONBOARDING_WORKER_ENABLED=false \
     MONITOR_ENABLED=false \
     DATABASE_URL_FILE=/etc/kcml/credentials/worker/database_url \
-    CONFIG_VAULT_MASTER_KEY_BASE64_FILE=/etc/kcml/credentials/config_vault_master_key \
+    -u CONFIG_VAULT_MASTER_KEY_BASE64_FILE \
+    CONFIG_VAULT_MASTER_KEY_BASE64="$vault_master_key" \
     HOME=/var/lib/kcml/podman \
     XDG_DATA_HOME=/var/lib/kcml/podman/data \
     XDG_CONFIG_HOME=/var/lib/kcml/podman/config \

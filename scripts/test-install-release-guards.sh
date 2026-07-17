@@ -17,5 +17,7 @@ test -n "$kcml0002_probe_line"
 test "$runtime_refresh_line" -lt "$kcml0002_probe_line"
 
 grep -Fq 'ReadWritePaths=/var/lib/kcml/runtime /var/lib/kcml/podman /var/lib/kcml/audit' "$monitor_unit"
+grep -Fq -- '-u CONFIG_VAULT_MASTER_KEY_BASE64_FILE' "$install_script"
+grep -Fq 'CONFIG_VAULT_MASTER_KEY_BASE64="$vault_master_key"' "$install_script"
 grep -Fq 'audit_archive_dir="$(dirname "${AUDIT_ARCHIVE_PATH:-/var/lib/kcml/audit/archive.jsonl}")"' "$preflight_script"
 grep -Fq 'runuser -u kcml -- test -w "$audit_archive_dir"' "$preflight_script"
