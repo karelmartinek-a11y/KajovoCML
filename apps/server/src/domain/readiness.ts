@@ -42,7 +42,8 @@ const EXPECTED_MIGRATIONS = [
   "033_mfa_ciphertext_constraint.sql",
   "034_audit_writer_owner_privileges.sql",
   "035_audit_writer_returning_privilege.sql",
-  "036_audit_writer_security_contract.sql"
+  "036_audit_writer_security_contract.sql",
+  "037_audit_event_fk_lock_privilege.sql"
 ] as const;
 
 export type ReadinessReport = {
