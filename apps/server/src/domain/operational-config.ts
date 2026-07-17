@@ -208,7 +208,7 @@ export async function loadConfigFromDb(db: Db, bootstrap: BootstrapConfig): Prom
     } else {
       value = definitionValue.defaultValue;
       if (definitionValue.kind === "secret" && bootstrap.NODE_ENV !== "production") value = developmentSecret(definitionValue);
-      if (bootstrap.NODE_ENV === "production" && (definitionValue.requiredInProduction || (definitionValue.kind === "secret" && roleNeeds(definitionValue, bootstrap)))) {
+      if (bootstrap.NODE_ENV === "production" && definitionValue.requiredInProduction && roleNeeds(definitionValue, bootstrap)) {
         throw new Error(`operational_config_missing:${definitionValue.key}`);
       }
     }

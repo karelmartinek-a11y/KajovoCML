@@ -20,9 +20,14 @@ KCML_CONFIG_ROOT="$tmp/config" \
 
 grep -qx 'NODE_ENV=production' "$tmp/config/web.env"
 if grep -q '^PORT=' "$tmp/config/web.env"; then exit 1; fi
-if grep -q '^BUILD_ID=' "$tmp/config/web.env"; then exit 1; fi
+grep -qx 'BUILD_ID=test-build' "$tmp/config/web.env"
+grep -qx 'BUILD_ID=test-build' "$tmp/config/worker.env"
+grep -qx 'BUILD_ID=test-build' "$tmp/config/monitor.env"
+grep -qx 'BUILD_ID=test-build' "$tmp/config/egress.env"
 if grep -q '^ONBOARDING_WORKER_ENABLED=' "$tmp/config/web.env"; then exit 1; fi
 if grep -q '^MONITOR_ENABLED=' "$tmp/config/web.env"; then exit 1; fi
+grep -qx 'ONBOARDING_WORKER_ENABLED=true' "$tmp/config/worker.env"
+grep -qx 'MONITOR_ENABLED=true' "$tmp/config/monitor.env"
 if grep -q '^INTEGRATION_TOKEN_HMAC_KEY_ID=' "$tmp/config/web.env"; then exit 1; fi
 if grep -q '^ADMIN_BOOTSTRAP_USERNAME=' "$tmp/config/web.env"; then exit 1; fi
 test "$(cat "$tmp/config/credentials/web/database_url")" = 'postgres://kcml:test@127.0.0.1/kcml'

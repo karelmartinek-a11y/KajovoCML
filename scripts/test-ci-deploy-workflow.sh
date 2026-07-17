@@ -4,9 +4,10 @@ set -euo pipefail
 workflow=".github/workflows/ci-deploy.yml"
 test -f "$workflow"
 
-# Production release and deployment must remain manual and main-only.
-grep -Fq "if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'" "$workflow"
-test "$(grep -Fc "if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'" "$workflow")" = "2"
+# Production release and deployment must remain main-only and run both
+# automatically on pushes and explicitly on manual dispatches.
+grep -Fq "if: github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || github.event_name == 'push')" "$workflow"
+test "$(grep -Fc "if: github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || github.event_name == 'push')" "$workflow")" = "2"
 
 # The release must be signed and the exact downloaded blob must be verified
 # against the GitHub Actions workflow identity before privileged deployment.

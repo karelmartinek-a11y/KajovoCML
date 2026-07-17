@@ -128,7 +128,7 @@ jobs:
           jq -e '[.runs[].results[]?] | length == 0' /tmp/codeql-results/javascript.sarif
 
   release:
-    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || github.event_name == 'push')
     needs: [ci, security]
     runs-on: ubuntu-latest
     permissions:
@@ -179,7 +179,7 @@ jobs:
           retention-days: 14
 
   deploy:
-    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || github.event_name == 'push')
     needs: [ci, security, release]
     runs-on: [self-hosted, kcml-deploy]
     timeout-minutes: 30
