@@ -3,13 +3,35 @@ import { api, csrf } from "./ui-helpers.js";
 
 const mutationHeaders = (): HeadersInit => ({ "x-csrf-token": csrf() });
 
+export type ServerTestCheckpointKey =
+  | "contract"
+  | "input_validation"
+  | "runtime_lease"
+  | "handler_run"
+  | "output_validation"
+  | "result_match"
+  | "activation";
+
+export type ServerTestCheckpoint = {
+  key: ServerTestCheckpointKey;
+  label: string;
+  description: string;
+  status: "PENDING" | "PASSED" | "FAILED" | "SKIPPED";
+  detail?: string;
+  durationMs?: number;
+};
+
 export type ServerTestResult = {
   ok: boolean;
-  status: "PASSED" | "EXPECTED_RESULT_MISMATCH";
+  status: "PASSED" | "EXPECTED_RESULT_MISMATCH" | "FAILED";
   correlationId: string;
   latencyMs: number;
   activeRevisionId: string;
   manifestDigest: string;
+  checkpoints: ServerTestCheckpoint[];
+  errorCode?: string;
+  errorMessage?: string;
+  failedCheckpointKey?: ServerTestCheckpointKey;
   output?: unknown;
 };
 

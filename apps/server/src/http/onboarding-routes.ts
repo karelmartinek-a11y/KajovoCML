@@ -29,6 +29,7 @@ import {
   MCP_CONNECT_FILE,
   verifyMcpOnboardingCatalog
 } from "../domain/onboarding-catalog.js";
+import { KCML_BLUEPRINT_COMPONENT_IDS, KCML_RELEASE } from "../domain/release.js";
 import { evidenceReferencesForManifest, validateOnboardingManifest } from "../domain/registration.js";
 import { MAX_ARCHIVE_BYTES, validateAndQuarantineArchive } from "../domain/upload-validation.js";
 import { decryptMfaSecret } from "../security/secrets.js";
@@ -250,7 +251,7 @@ export function registerOnboardingRoutes(app: FastifyInstance, db: Db, config: O
         }),
         onboardingCatalogUrl: "/api/onboarding-catalog",
         onboardingCatalogFileName: MCP_CONNECT_FILE,
-        programmerApiUrl: `https://${config.REGISTER_HOST}/v1/onboardings`
+        programmerApiUrl: `https://${config.REGISTER_HOST}/v1/service-onboardings`
       };
     } catch (error) {
       return sendError(reply, statusCode(error), errorCode(error), undefined, correlationId);
@@ -280,7 +281,7 @@ export function registerOnboardingRoutes(app: FastifyInstance, db: Db, config: O
         serviceKind: parsed.serviceKind,
         expiresAt: intent.expiresAt,
         intakeUrl: `https://${config.REGISTER_HOST}/v1/service-onboardings`,
-        catalogUrl: `https://${config.REGISTER_HOST}/api/onboarding-catalogs/${parsed.serviceKind === "EXTERNAL_API" ? "external-api/1.0" : `mcp/${MCP_CATALOG_VERSION}`}`
+        catalogUrl: `https://${config.REGISTER_HOST}/api/onboarding-catalogs/${parsed.serviceKind === "EXTERNAL_API" ? "external-api/1.0" : `component/${MCP_CATALOG_VERSION}`}`
       };
     } catch (error) {
       return sendError(reply, statusCode(error), errorCode(error), undefined, correlationId);
@@ -300,7 +301,7 @@ export function registerOnboardingRoutes(app: FastifyInstance, db: Db, config: O
       return sendError(reply, 404, "not_found");
     }
     const { kind, version } = request.params as { kind: string; version: string };
-    const file = kind === "mcp" && version === MCP_CATALOG_VERSION
+    const file = ["mcp", "component"].includes(kind) && version === MCP_CATALOG_VERSION
       ? path.resolve(process.cwd(), MCP_CATALOG_PATH)
       : kind === "external-api" && version === "1.0"
         ? path.resolve(process.cwd(), "docs/onboarding-catalogs/external-api-1.0.json")
@@ -309,7 +310,7 @@ export function registerOnboardingRoutes(app: FastifyInstance, db: Db, config: O
     try {
       const text = await fs.readFile(file, "utf8");
       const parsed = JSON.parse(text) as Record<string, unknown>;
-      if (kind === "mcp") verifyMcpOnboardingCatalog(parsed);
+      if (kind === "mcp" || kind === "component") verifyMcpOnboardingCatalog(parsed);
       else parsed.canonicalDigest = `sha256:${createHash("sha256").update(text).digest("hex")}`;
       return reply.header("cache-control", "private, no-store").type("application/json").send(parsed);
     } catch {
@@ -425,17 +426,8 @@ export function registerOnboardingRoutes(app: FastifyInstance, db: Db, config: O
   app.post("/v1/onboardings", {
     bodyLimit: MAX_ARCHIVE_BYTES + 1024 * 1024,
     config: { rateLimit: { max: 5, timeWindow: "1 minute" } }
-  }, async (request, reply) => {
-    const token = bearer(request);
-    if (!token) return createMcpOnboarding(request, reply);
-    try {
-      const principal = await authenticateIntegrationToken(db, token, config);
-      return principal.serviceKind === "EXTERNAL_API"
-        ? createExternalApiOnboarding(request, reply)
-        : createMcpOnboarding(request, reply);
-    } catch {
-      return createMcpOnboarding(request, reply);
-    }
+  }, async (_request, reply) => {
+    return sendError(reply, 410, "gone", "Legacy /v1/onboardings intake is closed. Use /v1/service-onboardings.");
   });
 
   app.post("/v1/service-onboardings", {
@@ -454,20 +446,37 @@ export function registerOnboardingRoutes(app: FastifyInstance, db: Db, config: O
     }
   });
 
-  app.get("/v1/onboardings/:id", { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } }, async (request, reply) => {
+  app.get("/v1/integration-intent", { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } }, async (request, reply) => {
     const correlationId = randomUUID();
     if (hostOf(request.headers.host) !== config.REGISTER_HOST) return sendError(reply, 404, "not_found", undefined, correlationId);
     const principal = await programmerPrincipal(db, config, request, reply);
     if (!principal) return;
-    const { id } = request.params as { id: string };
-    if (principal.jobId !== id) return sendError(reply, 401, "invalid_integration_token", "Invalid integration token", correlationId);
-    try {
-      const job = await getOnboardingJob(db, id);
-      reply.header("etag", `"${job.lockVersion}"`).header("cache-control", "no-store");
-      return { job };
-    } catch (error) {
-      return sendError(reply, statusCode(error), errorCode(error), undefined, correlationId);
-    }
+    return reply.header("cache-control", "no-store").send({
+      release: KCML_RELEASE,
+      token: {
+        id: principal.id,
+        fingerprint: principal.fingerprint,
+        serviceKind: principal.serviceKind,
+        allowedPipeline: principal.allowedPipeline,
+        expiresAt: principal.expiresAt,
+        maxExpiresAt: principal.maxExpiresAt
+      },
+      blueprintRelease: {
+        releaseVersion: KCML_RELEASE.applicationVersion,
+        allowedBlueprintComponentIds: KCML_BLUEPRINT_COMPONENT_IDS,
+        allowedRegistrationTypes: ["KAJA_CLIENT", "MCP_SERVER"],
+        maxChildJobs: 20,
+        autoActivateAfterPass: true,
+        manualApprovalRequiredAfterIssuance: false
+      },
+      intakeUrl: `https://${config.REGISTER_HOST}/v1/service-onboardings`,
+      catalogUrl: `https://${config.REGISTER_HOST}/api/onboarding-catalogs/component/${MCP_CATALOG_VERSION}`,
+      correlationId
+    });
+  });
+
+  app.get("/v1/onboardings/:id", { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } }, async (request, reply) => {
+    return sendError(reply, hostOf(request.headers.host) === config.REGISTER_HOST ? 410 : 404, hostOf(request.headers.host) === config.REGISTER_HOST ? "gone" : "not_found");
   });
 
   app.get("/v1/service-onboardings/:id", { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } }, async (request, reply) => {
@@ -490,26 +499,7 @@ export function registerOnboardingRoutes(app: FastifyInstance, db: Db, config: O
     bodyLimit: MAX_ARCHIVE_BYTES + 1024 * 1024,
     config: { rateLimit: { max: 5, timeWindow: "1 minute" } }
   }, async (request, reply) => {
-    const correlationId = randomUUID();
-    if (hostOf(request.headers.host) !== config.REGISTER_HOST) return sendError(reply, 404, "not_found", undefined, correlationId);
-    const principal = await programmerPrincipal(db, config, request, reply);
-    if (!principal) return;
-    const { id } = request.params as { id: string };
-    if (principal.jobId !== id) return sendError(reply, 401, "invalid_integration_token", "Invalid integration token", correlationId);
-    const key = idempotencyKey(request);
-    const match = request.headers["if-match"];
-    const lockVersion = typeof match === "string" ? Number(match.replaceAll('"', "")) : Number.NaN;
-    if (!key || !Number.isSafeInteger(lockVersion) || lockVersion < 0) return sendError(reply, 400, "idempotency_key_and_if_match_required", undefined, correlationId);
-    let upload: Awaited<ReturnType<typeof validatedUpload>> | null = null;
-    try {
-      upload = await validatedUpload(request, config);
-      const job = await replaceOnboardingSource(db, principal, id, lockVersion, key, upload.manifest, upload.evidence, correlationId);
-      reply.code(202).header("etag", `"${job.lockVersion}"`).header("cache-control", "no-store");
-      return { job };
-    } catch (error) {
-      if (upload) await fs.rm(upload.validation.directory, { recursive: true, force: true }).catch(() => undefined);
-      return sendError(reply, statusCode(error), errorCode(error), undefined, correlationId);
-    }
+    return sendError(reply, hostOf(request.headers.host) === config.REGISTER_HOST ? 410 : 404, hostOf(request.headers.host) === config.REGISTER_HOST ? "gone" : "not_found");
   });
 
   app.put("/v1/service-onboardings/:id/revision", {
@@ -549,18 +539,7 @@ export function registerOnboardingRoutes(app: FastifyInstance, db: Db, config: O
   });
 
   app.post("/v1/onboardings/:id/cancel", async (request, reply) => {
-    const correlationId = randomUUID();
-    if (hostOf(request.headers.host) !== config.REGISTER_HOST) return sendError(reply, 404, "not_found", undefined, correlationId);
-    const principal = await programmerPrincipal(db, config, request, reply);
-    if (!principal) return;
-    const { id } = request.params as { id: string };
-    if (principal.jobId !== id) return sendError(reply, 401, "invalid_integration_token", "Invalid integration token", correlationId);
-    try {
-      await cancelOnboardingJob(db, id, "integration_token", principal.fingerprint, correlationId);
-      return { ok: true };
-    } catch (error) {
-      return sendError(reply, statusCode(error), errorCode(error), undefined, correlationId);
-    }
+    return sendError(reply, hostOf(request.headers.host) === config.REGISTER_HOST ? 410 : 404, hostOf(request.headers.host) === config.REGISTER_HOST ? "gone" : "not_found");
   });
 
   app.post("/v1/service-onboardings/:id/cancel", async (request, reply) => {

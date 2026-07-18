@@ -44,7 +44,7 @@ export function AppLayout({
   return (
     <main className="app-shell">
       <aside className="sidebar">
-        <div className="brand-row"><span className="brand-mark"><ShieldCheck size={22} /></span><div><strong>KCML</strong><span>Správce MCP serverů</span></div></div>
+        <div className="brand-row"><span className="brand-mark"><ShieldCheck size={22} /></span><div><strong>KCML</strong><span>Release 2026.07.20</span></div></div>
         <nav>
           {navigationButton("monitoring", "Monitoring MCP", <Activity size={18} />)}
           {role !== "AUDITOR" ? navigationButton("integration", "Implementační tokeny", <Workflow size={18} />) : null}

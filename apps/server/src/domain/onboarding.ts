@@ -48,9 +48,9 @@ async function disableOnboardingServer(client: pg.PoolClient, serverId: string, 
 }
 
 export const TERMINAL_JOB_STATES = new Set<OnboardingJobState>(["REGISTERED_DISABLED", "ACTIVE", "FAILED", "QUARANTINED", "CANCELLED"]);
-const HEARTBEAT_EXTENSION_MS = 2 * 60 * 60 * 1000;
-const INITIAL_TTL_MS = 2 * 60 * 60 * 1000;
-const MAX_TTL_MS = 24 * 60 * 60 * 1000;
+const HEARTBEAT_EXTENSION_MS = 24 * 60 * 60 * 1000;
+const INITIAL_TTL_MS = 24 * 60 * 60 * 1000;
+const MAX_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 const TRANSITIONS: Record<OnboardingJobState, ReadonlySet<OnboardingJobState>> = {
   CREATED: new Set(["SOURCE_UPLOADED", "CANCELLED", "FAILED", "QUARANTINED"]),

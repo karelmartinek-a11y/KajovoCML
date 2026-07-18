@@ -2,7 +2,9 @@ import { createHash } from "node:crypto";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import { z } from "zod";
 import type { Db } from "../db.js";
+import componentManifestSchema from "../contracts/component-manifest-2026.07.20.schema.json" with { type: "json" };
 import { kcmlCodeFromNumber, kcmlHostnameForCode } from "./hostnames.js";
+import { KCML_MCP_COMPONENTS, KCML_RELEASE } from "./release.js";
 
 const sha256Schema = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 const evidenceRefSchema = z.string().regex(/^evidence\/[a-z0-9][a-z0-9_./-]{1,240}$/i);
@@ -347,8 +349,21 @@ const storedRegistrationManifest15Schema = registrationManifest15Schema.extend({
 
 export type LegacyOnboardingManifest = z.infer<typeof legacyOnboardingManifestSchema>;
 export type RegistrationManifest15 = z.infer<typeof registrationManifest15Schema>;
-export type OnboardingManifest = LegacyOnboardingManifest | RegistrationManifest15;
-export type RegistrationManifest = RegistrationManifest15;
+export type RuntimeRegistrationManifest = Omit<RegistrationManifest15, "schemaVersion"> & {
+  schemaVersion: "2026.07.20";
+  releaseVersion: "2026.07.20";
+  componentType: "MCP_SERVER";
+  registrationType: "MCP_SERVER";
+  blueprint: { componentId: string; version: "2026.07.20" };
+  pulseEnvelopeVersion: "2026.07.20";
+  publicEndpoints: unknown[];
+  pulseContract: unknown;
+  normalizedFromComponentManifest: true;
+};
+export type OnboardingManifest = LegacyOnboardingManifest | RegistrationManifest15 | RuntimeRegistrationManifest;
+export type RegistrationManifest = RuntimeRegistrationManifest;
+
+const componentManifestValidator = new Ajv2020({ strict: false, allErrors: true, validateFormats: false }).compile(componentManifestSchema);
 
 function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
@@ -379,6 +394,108 @@ function canonicalize(value: unknown): unknown {
 
 export function digestCanonicalJson(value: unknown): string {
   return `sha256:${createHash("sha256").update(JSON.stringify(canonicalize(value))).digest("hex")}`;
+}
+
+function exactComponentType(input: unknown): string | null {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return null;
+  const value = (input as Record<string, unknown>).componentType;
+  return typeof value === "string" ? value : null;
+}
+
+function assertNoPlatformGeneratedFields(input: Record<string, unknown>): void {
+  for (const key of ["code", "kcmlCode", "hostname", "resource", "toolName", "credentialId", "secret", "authorizationSnapshot"]) {
+    if (Object.hasOwn(input, key)) throw new Error("component_identity_forbidden");
+  }
+}
+
+function normalizeComponentMcpManifest(input: unknown): RuntimeRegistrationManifest {
+  if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("invalid_manifest");
+  const raw = input as Record<string, unknown>;
+  if (raw.schemaVersion !== KCML_RELEASE.manifestSchemaVersion) throw new Error("old_manifest_schema_not_accepted");
+  assertNoPlatformGeneratedFields(raw);
+  if (!componentManifestValidator(raw)) throw new Error("invalid_manifest");
+  if (raw.componentType !== "MCP_SERVER" || raw.registrationType !== "MCP_SERVER") throw new Error("component_type_not_supported");
+
+  const blueprint = raw.blueprint as { componentId: string; version: "2026.07.20" };
+  if (!KCML_MCP_COMPONENTS.some(([componentId]) => componentId === blueprint.componentId)) throw new Error("blueprint_component_not_allowed");
+  const facadeTools = raw.facadeTools as Array<{ name: string; inputSchema: Record<string, unknown>; outputSchema: Record<string, unknown> }>;
+  if (facadeTools.length !== 1) throw new Error("facade_tool_count_mismatch");
+  const endpoint = (raw.publicEndpoints as Array<Record<string, unknown>>)[0];
+  if (!endpoint) throw new Error("public_endpoint_required_for_mcp");
+  const rateLimit = endpoint.rateLimit as { windowSeconds: number; maxRequests: number };
+  const limits = endpoint.limits as { requestBytes: number; responseBytes: number };
+  const runtime = raw.runtime as { memoryMb: number; cpuCores: number; pidsLimit: number };
+  const networkPolicy = raw.networkPolicy as { outboundAllowlist: string[] };
+  const review = raw.review as { intervalDays: number; approvedAt: string; reviewDueAt: string };
+  const firstTool = facadeTools[0]!;
+  const manifest: RuntimeRegistrationManifest = {
+    schemaVersion: KCML_RELEASE.manifestSchemaVersion,
+    releaseVersion: KCML_RELEASE.applicationVersion,
+    componentType: "MCP_SERVER",
+    registrationType: "MCP_SERVER",
+    blueprint,
+    pulseEnvelopeVersion: KCML_RELEASE.pulseEnvelopeVersion,
+    normalizedFromComponentManifest: true,
+    registrationRevision: String(raw.registrationRevision),
+    environment: raw.environment as "production" | "staging",
+    handlerKey: String(raw.handlerKey),
+    handlerVersion: String(raw.handlerVersion),
+    displayName: String(raw.displayName),
+    businessPurpose: String(raw.businessPurpose),
+    owners: { service: "component-owner", technical: "component-owner", security: "component-owner", operations: "component-owner" },
+    contacts: { serviceEmail: "service@example.invalid", technicalEmail: "technical@example.invalid", securityEmail: "security@example.invalid", operationsOnCall: "component:oncall" },
+    criticality: raw.criticality as RegistrationManifest15["criticality"],
+    review,
+    source: { runtime: "nodejs24-typescript", entrypoint: "src/index.ts", testCommand: "pnpm test" },
+    runtime: { memoryMb: runtime.memoryMb, cpuCores: runtime.cpuCores, pidsLimit: runtime.pidsLimit, egressAllowlist: networkPolicy.outboundAllowlist },
+    tool: {
+      title: firstTool.name,
+      description: String(raw.businessPurpose),
+      inputSchema: firstTool.inputSchema,
+      outputSchema: firstTool.outputSchema,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false, taskSupport: "forbidden" }
+    },
+    contractDigests: { inputSchema: digestCanonicalJson(firstTool.inputSchema), outputSchema: digestCanonicalJson(firstTool.outputSchema) },
+    behavior: {
+      effectClass: "READ_ONLY",
+      timeoutMs: Number(endpoint.timeoutMs),
+      maxConcurrency: 4,
+      requestMaxBytes: limits.requestBytes,
+      responseMaxBytes: limits.responseBytes,
+      rateLimit,
+      shutdownPolicy: "COMPLETE_IN_FLIGHT",
+      idempotencyPolicy: "Platform enforces the declared component idempotency contract.",
+      compensationPolicy: "Side effects require status check or compensation declared in pulse contract.",
+      retryPolicy: { automaticRetry: false }
+    },
+    testContract: {
+      safeInput: {},
+      expectedResult: {},
+      cleanupOrCompensation: "No central business implementation is executed by the registry contract test.",
+      positiveEvidenceRef: "evidence/contract/positive.json",
+      negativeTests: [{ name: "Reject invalid token", input: {}, expectedErrorCode: "invalid_integration_token", evidenceRef: "evidence/contract/negative-token.json" }],
+      failureScenarios: [{ dependency: "platform", expectedFailureClass: "DEPENDENCY", evidenceRef: "evidence/contract/platform-failure.json" }],
+      loadProfile: { expectedConcurrency: 1, expectedDurationMinutes: 30, stressMultiplier: 2, stressDurationMinutes: 10, maxP95LatencyMs: 2_000, maxErrorRatePercent: 1, evidenceRef: "evidence/contract/load.json" }
+    },
+    protocol: { protocolVersion: KCML_RELEASE.mcpProtocolVersion, transport: "streamable-http", capabilities: ["tools"], errorCatalog: [{ code: "INVALID_INPUT", description: "Input failed the declared schema.", classification: "VALIDATION", retryable: false }] },
+    dependencies: {
+      runtime: [{ name: "node", version: "24.0.0", checksum: `sha256:${"0".repeat(64)}`, evidenceRef: "evidence/dependencies/node.json" }],
+      externalServices: [],
+      secretReferences: [],
+      networkPolicy: { outboundAllowlist: networkPolicy.outboundAllowlist, dnsPolicy: "strict", databaseRole: "kcml_handler_none", filesystemPolicy: "isolated-runtime-only", evidenceRef: "evidence/policies/network.json" }
+    },
+    dataGovernance: { classification: "INTERNAL", containsPersonalData: false, residencyCountries: ["CZ"], exportAllowed: false, exportDestinations: [], loggingPolicy: "Platform redaction policy applies.", redactionFields: [], retentionDays: 365, evidenceRef: "evidence/data/governance.json" },
+    monitoringProfile: { sloTargets: { availabilityPercent: 99.5, p95LatencyMs: 2000, maxErrorRatePercent: 1 }, probeIntervals: { readinessSeconds: 60, tlsSeconds: 3600, routingSeconds: 60, oauthMcpSeconds: 60, syntheticCallSeconds: 300, integritySeconds: 300, dependenciesSeconds: 300 }, staleAfterSeconds: 3600, alertRules: [{ probeType: "runtime", severity: "CRITICAL", consecutiveFailures: 2 }], runbookRef: "evidence/runbook.md", primaryAlertChannel: "PRIMARY_WEBHOOK", backupAlertChannel: "BACKUP_WEBHOOK" },
+    maintenance: { window: "platform-controlled", runbookRef: "evidence/runbook.md", rollbackRef: "evidence/rollback.md", recoveryTimeObjectiveMinutes: 60, recoveryPointObjectiveMinutes: 0 },
+    autoQuarantine: { enabled: true, rules: ["CROSS_HOST", "AUDIENCE_MISMATCH", "ARTIFACT_DRIFT", "CONTRACT_DRIFT", "ROUTING_DRIFT"] },
+    errorCatalog: [{ code: "INVALID_INPUT", description: "Input failed the declared schema.", classification: "VALIDATION", retryable: false }],
+    evidence: { architectureRef: "evidence/architecture.md", threatModelRef: "evidence/threat-model.md", sastRef: "evidence/sast.json", scaRef: "evidence/sca.json", secretScanRef: "evidence/secret-scan.json", containerScanRef: "evidence/container-scan.json", sbomRef: "evidence/sbom.json", provenanceRef: "evidence/provenance.json", rollbackTestRef: "evidence/rollback-test.json", compatibilityWindowEndsAt: "2027-07-20T00:00:00.000Z" },
+    approvals: { architecture: { approver: "platform", approvedAt: review.approvedAt, evidenceRef: "evidence/approvals/architecture.json" }, security: { approver: "platform", approvedAt: review.approvedAt, evidenceRef: "evidence/approvals/security.json" }, operations: { approver: "platform", approvedAt: review.approvedAt, evidenceRef: "evidence/approvals/operations.json" }, dataOwner: { approver: "platform", approvedAt: review.approvedAt, evidenceRef: "evidence/approvals/data-owner.json" }, changeManagement: { approver: "platform", approvedAt: review.approvedAt, evidenceRef: "evidence/approvals/change.json" } },
+    change: { changeClass: "INITIAL", migrationRef: "evidence/change/migration.json", rollbackRef: "evidence/change/rollback.json", decommissionRef: "evidence/change/decommission.json", previousApprovedRevision: null },
+    publicEndpoints: raw.publicEndpoints as unknown[],
+    pulseContract: raw.pulseContract
+  };
+  return manifest;
 }
 
 function assertAnnotationPolicy(annotations: z.infer<typeof annotationsSchema>, effectClass: OnboardingManifest["behavior"]["effectClass"]): void {
@@ -429,6 +546,10 @@ function validateParsedManifest(manifest: OnboardingManifest): void {
   validateJsonSchemas(manifest.tool.inputSchema, manifest.tool.outputSchema);
   assertAnnotationPolicy(manifest.tool.annotations, manifest.behavior.effectClass);
   if (manifest.schemaVersion === "1.5") assertManifest15Invariants(manifest);
+  if (manifest.schemaVersion === KCML_RELEASE.manifestSchemaVersion) {
+    if (!manifest.publicEndpoints.length) throw new Error("public_endpoint_required_for_mcp");
+    if (manifest.protocol.protocolVersion !== KCML_RELEASE.mcpProtocolVersion) throw new Error("mcp_protocol_mismatch");
+  }
 }
 
 function resultFor<T extends OnboardingManifest>(manifest: T): { manifest: T; digest: string } {
@@ -439,8 +560,19 @@ function resultFor<T extends OnboardingManifest>(manifest: T): { manifest: T; di
   };
 }
 
-export function validateOnboardingManifest(input: unknown): { manifest: RegistrationManifest15; digest: string } {
-  return resultFor(registrationManifest15Schema.parse(input));
+export function validateOnboardingManifest(input: unknown): { manifest: RuntimeRegistrationManifest; digest: string } {
+  if (exactComponentType(input) === "MCP_SERVER") {
+    const manifest = normalizeComponentMcpManifest(input);
+    validateParsedManifest(manifest);
+    return {
+      manifest,
+      digest: `sha256:${createHash("sha256").update(canonicalJson(input)).digest("hex")}`
+    };
+  }
+  if (input && typeof input === "object" && !Array.isArray(input) && (input as Record<string, unknown>).schemaVersion !== KCML_RELEASE.manifestSchemaVersion) {
+    throw new Error("old_manifest_schema_not_accepted");
+  }
+  throw new Error("invalid_manifest");
 }
 
 export function validateStoredOnboardingManifest(input: unknown): { manifest: OnboardingManifest; digest: string } {
@@ -457,13 +589,13 @@ export function validateStoredOnboardingManifest(input: unknown): { manifest: On
   return resultFor(legacyOnboardingManifestSchema.parse(input));
 }
 
-export function validateManifest(input: unknown, baseDomain: string): { manifest: RegistrationManifest15; digest: string } {
+export function validateManifest(input: unknown, baseDomain: string): { manifest: RuntimeRegistrationManifest; digest: string } {
   void baseDomain;
   return validateOnboardingManifest(input);
 }
 
 export function reviewMetadataForManifest(manifest: OnboardingManifest): { schemaVersion: string; approvedAt: string; reviewDueAt: string; intervalDays: number } {
-  if (manifest.schemaVersion === "1.5") {
+  if (manifest.schemaVersion === "1.5" || manifest.schemaVersion === KCML_RELEASE.manifestSchemaVersion) {
     return {
       schemaVersion: manifest.schemaVersion,
       approvedAt: manifest.review.approvedAt,
@@ -482,7 +614,7 @@ export function reviewMetadataForManifest(manifest: OnboardingManifest): { schem
   };
 }
 
-export function evidenceReferencesForManifest(manifest: RegistrationManifest15): string[] {
+export function evidenceReferencesForManifest(manifest: OnboardingManifest): string[] {
   const references = new Set<string>();
   const visit = (value: unknown, key = ""): void => {
     if (typeof value === "string" && (key.endsWith("Ref") || key.endsWith("evidenceRef")) && value.startsWith("evidence/")) references.add(value);

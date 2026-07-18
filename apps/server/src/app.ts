@@ -18,6 +18,7 @@ import { registerOnboardingRoutes } from "./http/onboarding-routes.js";
 import { registerReferenceExternalApiRoutes } from "./http/reference-external-api-routes.js";
 import { hostOf, sendError } from "./http/errors.js";
 import { createPostgresRateLimitStore } from "./http/postgres-rate-limit-store.js";
+import { buildMetadata, KCML_RELEASE } from "./domain/release.js";
 
 export async function buildApp(config: AppServerConfig, db: Db) {
   const app = Fastify({
@@ -79,6 +80,10 @@ export async function buildApp(config: AppServerConfig, db: Db) {
   registerReferenceExternalApiRoutes(app, config);
   registerExternalApiRoutes(app, db, config);
   registerOnboardingRoutes(app, db, config);
+
+  app.get("/api/version", async (_request, reply) => reply
+    .header("cache-control", "no-store")
+    .send({ ...KCML_RELEASE, ...buildMetadata() }));
 
   const adminDist = path.resolve(process.cwd(), "apps/admin-ui/dist");
   app.addHook("onRequest", async (request, reply) => {

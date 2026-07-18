@@ -46,6 +46,15 @@ export const LEGACY_MONITORING_INTERVALS: Record<ProbeName, number> = {
 };
 export const LEGACY_MONITORING_STALE_AFTER_SECONDS = Math.max(...Object.values(LEGACY_MONITORING_INTERVALS));
 
+export function routingProbePasses(status: number, allowHeader: string | null): boolean {
+  if (status === 401) return true;
+  if (status !== 405) return false;
+  return (allowHeader ?? "")
+    .split(",")
+    .map((value) => value.trim().toUpperCase())
+    .includes("POST");
+}
+
 export function completedProbeCheckTimes(rows: Array<Record<string, unknown>>): Map<string, number> {
   const completed = new Map<string, number>();
   for (const row of rows) {
@@ -67,7 +76,7 @@ export function expectedMonitoringProfileDigest(schemaVersion: string, profile: 
 }
 
 function monitorPolicy(manifest: OnboardingManifest): MonitorPolicy {
-  if (manifest.schemaVersion === "1.5") {
+  if (manifest.schemaVersion === "1.5" || manifest.schemaVersion === "2026.07.20") {
     const intervals = manifest.monitoringProfile.probeIntervals;
     return {
       intervals: {
@@ -164,7 +173,7 @@ function recertificationFromRow(row: Record<string, unknown>): RecertificationDe
 }
 
 function externalDependencyUrls(manifest: OnboardingManifest): string[] {
-  if (manifest.schemaVersion === "1.5") return manifest.dependencies.externalServices.map((dependency) => dependency.endpoint);
+  if (manifest.schemaVersion === "1.5" || manifest.schemaVersion === "2026.07.20") return manifest.dependencies.externalServices.map((dependency) => dependency.endpoint);
   return manifest.dependencies?.externalServices.filter((dependency) => dependency.startsWith("https://")) ?? [];
 }
 
@@ -398,8 +407,9 @@ export class MonitoringScheduler {
     await run("routing", async () => {
       const addresses = (await dns.lookup(hostname, { all: true })).map((item) => item.address);
       const response = await fetch(`https://${hostname}/mcp`, { method: "GET", signal: AbortSignal.timeout(8_000), redirect: "manual" });
-      if (response.status !== 401) throw new Error(`routing_status:${response.status}`);
-      return { addresses, status: response.status };
+      const allowHeader = response.headers.get("allow");
+      if (!routingProbePasses(response.status, allowHeader)) throw new Error(`routing_status:${response.status}`);
+      return { addresses, status: response.status, allow: allowHeader };
     });
     await run("oauth_mcp", async () => {
       const response = await fetch(`https://${hostname}/.well-known/oauth-protected-resource/mcp`, { signal: AbortSignal.timeout(8_000), redirect: "manual" });

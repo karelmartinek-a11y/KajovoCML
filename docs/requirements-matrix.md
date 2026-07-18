@@ -1,6 +1,6 @@
-# KCML SSOT v1.7 Requirements Matrix
+# KCML SSOT 2026.07.20 Requirements Matrix
 
-Legacy MCP manifest schema 1.4 remains immutable and readable until recertification. Every new intake or change is strict against the published JSON catalogs for MCP `1.7` (manifest schema `1.5`) and `EXTERNAL_API` `1.0`, with machine-readable receipts and fail-closed runtime gates.
+Legacy MCP manifest schemas 1.4/1.5 remain immutable and readable only for archive/migration paths. Every new component intake is strict against the unified component catalog `2026.07.20`, with machine-readable receipts and fail-closed runtime gates.
 
 | Requirement | Implementation | Persisted evidence | Automated gate |
 | --- | --- | --- | --- |

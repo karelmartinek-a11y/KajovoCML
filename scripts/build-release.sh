@@ -32,10 +32,13 @@ cp -R apps/admin-ui/dist "$destination/apps/admin-ui/dist"
 install -d -m 0755 "$destination/apps/server/dist/migrations"
 cp apps/server/src/migrations/*.sql "$destination/apps/server/dist/migrations/"
 cp -R deploy/alert-sink deploy/nginx deploy/scripts deploy/systemd "$destination/deploy/"
-cp Connect_in_Catalog_KajovoMCPCML_v1.7.docx "$destination/"
-cp docs/onboarding-manifest-v1.5.example.json "$destination/docs/"
+cp KajovoCML_Onboarding_Catalog_2026.07.20.docx "$destination/"
+cp KajovoCML_Onboarding_Catalog_2026.07.20.pdf "$destination/"
+cp docs/onboarding-manifest-2026.07.20.example.json "$destination/docs/"
+cp apps/server/src/contracts/component-manifest-2026.07.20.schema.json "$destination/docs/"
 cp docs/service-manifest-external-api-v1.0.example.json "$destination/docs/"
 cp docs/onboarding-catalogs/*.json "$destination/docs/onboarding-catalogs/"
+cp -R docs/releases "$destination/docs/releases"
 find "$destination" -type f -name '._*' -delete
 
 jq -n \
