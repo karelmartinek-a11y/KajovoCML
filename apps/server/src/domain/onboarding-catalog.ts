@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
+import { KCML_RELEASE } from "./release.js";
 
-export const MCP_CATALOG_VERSION = "1.7";
-export const MCP_MANIFEST_SCHEMA_VERSION = "1.5";
-export const MCP_CATALOG_PATH = `docs/onboarding-catalogs/mcp-${MCP_CATALOG_VERSION}.json`;
-export const MCP_CONNECT_FILE = `Connect_in_Catalog_KajovoMCPCML_v${MCP_CATALOG_VERSION}.docx`;
+export const MCP_CATALOG_VERSION = KCML_RELEASE.catalogVersion;
+export const MCP_MANIFEST_SCHEMA_VERSION = KCML_RELEASE.manifestSchemaVersion;
+export const MCP_CATALOG_PATH = `docs/onboarding-catalogs/component-${MCP_CATALOG_VERSION}.json`;
+export const MCP_CONNECT_FILE = `KajovoCML_Onboarding_Catalog_${MCP_CATALOG_VERSION}.docx`;
 
 function canonicalize(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalize);
@@ -27,7 +28,7 @@ export function verifyMcpOnboardingCatalog(input: unknown): Record<string, unkno
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("onboarding_catalog_invalid");
   const catalog = input as Record<string, unknown>;
   if (catalog.version !== MCP_CATALOG_VERSION
-    || catalog.serviceKind !== "MCP"
+    || catalog.serviceKind !== "COMPONENT"
     || catalog.manifestSchemaVersion !== MCP_MANIFEST_SCHEMA_VERSION
     || typeof catalog.canonicalDigest !== "string"
     || catalog.canonicalDigest !== onboardingCatalogDigest(catalog)) {

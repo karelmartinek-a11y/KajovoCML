@@ -14,15 +14,15 @@ describe("onboarding handoff", () => {
       },
       token: "kci_example",
       initialExpiresAt: "2026-07-13T14:00:00.000Z",
-      programmerApiUrl: "https://register.hcasc.cz/v1/onboardings"
+      programmerApiUrl: "https://register.hcasc.cz/v1/service-onboardings"
     });
 
     expect(text).toContain("Označení integračního toku: Fakturační MCP");
     expect(text).toContain("Shrnutí serveru: Zpracování faktur");
     expect(text).toContain("Kritičnost: HIGH");
     expect(text).toContain("Integrační token: kci_example");
-    expect(text).toContain("Connect in Catalog v1.7");
-    expect(text).toContain("https://register.hcasc.cz/v1/onboardings");
+    expect(text).toContain("KajovoCML 2026.07.20");
+    expect(text).toContain("https://register.hcasc.cz/v1/service-onboardings");
     expect(text).toContain("sám přidělí KCML identitu a HTTPS adresu");
     expect(text).toContain("UPLOAD_REVISION");
   });

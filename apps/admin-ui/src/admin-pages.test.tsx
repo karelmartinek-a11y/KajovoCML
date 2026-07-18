@@ -16,6 +16,7 @@ describe("admin pages", () => {
       role: "OWNER",
       active: true,
       deploymentManaged: false,
+      mfaEnabled: false,
       passwordChangedAt: "2026-07-16T10:00:00.000Z",
       sessions: [
         { id: "session-1", createdAt: "2026-07-16T10:00:00.000Z", expiresAt: "2026-07-17T10:00:00.000Z", current: true },
@@ -30,6 +31,8 @@ describe("admin pages", () => {
         onRevokeOtherSessions={vi.fn(async () => undefined)}
         onRevokeSession={vi.fn(async () => undefined)}
         onRevokeAllSessions={vi.fn(async () => { throw new Error("Revokace selhala na serveru."); })}
+        onStartMfaEnrollment={vi.fn(async () => ({ enrollmentToken: "token", otpauthUri: "otpauth://totp/KCML:test?secret=ABC", manualSecret: "ABC", expiresAt: "2026-07-17T12:00:00.000Z" }))}
+        onVerifyMfaEnrollment={vi.fn(async () => ["AAA-BBB-CCC"])}
       />
     );
 
@@ -59,7 +62,6 @@ describe("admin pages", () => {
         onRefresh={vi.fn(async () => undefined)}
         onCreate={vi.fn(async () => undefined)}
         onSetPassword={vi.fn(async () => undefined)}
-        onSetMfa={vi.fn(async () => undefined)}
         onRevokeSessions={vi.fn(async () => undefined)}
         onRotateRecovery={vi.fn(async () => ["AAA-BBB-CCC", "DDD-EEE-FFF"])}
         onUpdate={vi.fn(async () => undefined)}
@@ -67,14 +69,9 @@ describe("admin pages", () => {
     );
 
     expect(screen.getByRole("button", { name: "Nastavit heslo" })).toHaveProperty("disabled", true);
-    expect(screen.getByRole("button", { name: "Zapnout/rotovat MFA" })).toHaveProperty("disabled", true);
 
     await user.type(screen.getByLabelText("Nové heslo účtu"), "very-strong-password");
-    await user.type(screen.getByLabelText("MFA seed"), "JBSWY3DPEHPK3PXP");
-
-    expect(screen.getByLabelText("MFA seed")).toHaveProperty("type", "password");
     expect(screen.getByRole("button", { name: "Nastavit heslo" })).toHaveProperty("disabled", false);
-    expect(screen.getByRole("button", { name: "Zapnout/rotovat MFA" })).toHaveProperty("disabled", false);
 
     await user.click(screen.getByRole("button", { name: "Rotovat recovery kódy" }));
 

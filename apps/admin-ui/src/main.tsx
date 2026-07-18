@@ -10,15 +10,23 @@ import {
   ClipboardCopy,
   Clock3,
   Download,
+  GitBranchPlus,
+  LoaderCircle,
   MoreHorizontal,
+  OctagonAlert,
+  PauseCircle,
+  PlayCircle,
   Plus,
   RefreshCw,
   Rocket,
+  Radar,
   Save,
   Search,
   Server as ServerIcon,
+  ShieldAlert,
   ShieldCheck,
   Terminal,
+  Trash2,
   Workflow
 } from "lucide-react";
 import "./styles.css";
@@ -49,6 +57,8 @@ import {
   setServerEnabled,
   suppressOperationalAlert,
   testAlertChannels,
+  type ServerTestCheckpoint,
+  type ServerTestCheckpointKey,
   type ServerTestResult
 } from "./server-api.js";
 import {
@@ -73,9 +83,10 @@ import {
   type Page,
   type SecretResult,
   type Server,
+  type ServerStateHistory,
   type Session
 } from "./types.js";
-import { api, csrf, formatDate, formatLocalDateTimeInput, prettyJson, setUiTimeZone } from "./ui-helpers.js";
+import { ApiRequestError, api, csrf, describeApiError, formatDate, formatLocalDateTimeInput, prettyJson, setUiTimeZone } from "./ui-helpers.js";
 
 const integrationTokenActionLabel = "Vygenerovat Integrační token";
 
@@ -92,6 +103,86 @@ function formatBoundary(seconds: number | null): string {
   const hours = Math.floor((seconds % 86_400) / 3_600);
   if (days > 0) return `${days} d ${hours} h`;
   return formatMinuteSecondCountdown(seconds * 1_000);
+}
+
+function operationalTone(state: Server["operationalState"]): "ok" | "warn" | "danger" | "neutral" {
+  if (state === "HEALTHY") return "ok";
+  if (state === "DEGRADED" || state === "UNKNOWN") return "warn";
+  if (["UNHEALTHY", "QUARANTINED", "DISABLED", "RETIRED"].includes(state)) return "danger";
+  return "neutral";
+}
+
+function registrationLabel(server: Server): string {
+  if (!server.enabled) return "Server je vypnutý administrátorem";
+  if (server.registrationState === "TRIAL") return "Server je v ověřovacím režimu";
+  if (server.registrationState === "ACTIVE") return "Server je v aktivním provozu";
+  return `Registrační stav ${server.registrationState}`;
+}
+
+function recommendedAction(server: Server): { title: string; detail: string } {
+  if (!server.enabled) return { title: "Nejdřív obnovit provoz", detail: "Server je vypnutý. Další test nebo aktivace dává smysl až po znovuzapnutí." };
+  if (server.registrationState === "TRIAL") return { title: "Dokončit safe test", detail: "Úspěšný test může server povýšit z TRIAL do ACTIVE a uzavřít onboarding." };
+  if (server.operationalState === "UNHEALTHY") return { title: "Prověřit monitoring a znovu otestovat", detail: "Server je aktivní, ale monitor hlásí kritický problém. Otestování pomůže rychle ověřit funkční kontrakt." };
+  return { title: "Server je připraven pro provozní údržbu", detail: "Můžete provést bezpečný test, založit revizi nebo upravit monitoring podle potřeby." };
+}
+
+function createTestCheckpointBlueprint(server: Server): ServerTestCheckpoint[] {
+  return [
+    { key: "contract", label: "Připravuji testovací kontrakt", description: "Načítám aktivní revizi a bezpečnostní režim testu.", status: "PENDING" },
+    { key: "input_validation", label: "Validuji bezpečný vstup", description: "Ověřuji safe input proti registrovanému vstupnímu schématu.", status: "PENDING" },
+    { key: "runtime_lease", label: "Rezervuji runtime", description: "Získávám execution lease, aby test běžel bez kolize.", status: "PENDING" },
+    { key: "handler_run", label: "Spouštím handler", description: "Volám registrovaný handler a sleduji timeout i runtime logy.", status: "PENDING" },
+    { key: "output_validation", label: "Validuji výstup", description: "Kontroluji velikost odpovědi a výstupní schema.", status: "PENDING" },
+    { key: "result_match", label: "Porovnávám expected result", description: "Vyhodnocuji, zda je výstup v souladu s kontraktem.", status: "PENDING" },
+    {
+      key: "activation",
+      label: "Uzavírám výsledek",
+      description: server.registrationState === "TRIAL"
+        ? "Při úspěchu může dojít k povýšení serveru do ACTIVE."
+        : "Zapisuji audit a uzavírám výsledek testu.",
+      status: "PENDING"
+    }
+  ];
+}
+
+function checkpointForError(code: string): ServerTestCheckpointKey {
+  if (["manifest_not_found", "manifest_test_contract_missing", "unsafe_write_test_contract", "test_compensation_policy_mismatch", "server_disabled", "active_monitoring_profile_required"].includes(code)) return "contract";
+  if (code === "manifest_safe_input_schema_failed") return "input_validation";
+  if (["handler_unavailable", "concurrency_limit_exceeded"].includes(code)) return "runtime_lease";
+  if (["handler_timeout", "recertification_blocks_test"].includes(code)) return "handler_run";
+  if (["output_schema_failed", "worker_response_too_large"].includes(code)) return "output_validation";
+  return "result_match";
+}
+
+function synthesizeFailedTestResult(server: Server, error: ApiRequestError | Error): ServerTestResult {
+  const code = error instanceof ApiRequestError ? error.code : "operation_failed";
+  const failedCheckpointKey = checkpointForError(code);
+  const checkpoints = createTestCheckpointBlueprint(server).map((checkpoint) => {
+    if (checkpoint.key === failedCheckpointKey) {
+      return { ...checkpoint, status: "FAILED" as const, detail: describeApiError(code, error instanceof ApiRequestError ? error.correlationId : null) };
+    }
+    return {
+      ...checkpoint,
+      status: checkpoint.key === "contract" && failedCheckpointKey !== "contract" ? "PASSED" as const : "SKIPPED" as const
+    };
+  });
+  return {
+    ok: false,
+    status: "FAILED",
+    correlationId: error instanceof ApiRequestError ? error.correlationId ?? "nezadáno" : "nezadáno",
+    latencyMs: 0,
+    activeRevisionId: server.activeRevisionId ?? "-",
+    manifestDigest: server.manifestDigest,
+    checkpoints,
+    errorCode: code,
+    errorMessage: error.message,
+    failedCheckpointKey
+  };
+}
+
+function summarizeProbe(probe: MonitoringProbe): string {
+  const status = probe.status === "PASS" ? "v pořádku" : probe.status === "STALE" ? "zastaralé" : "selhalo";
+  return `${probe.probe_type} · ${status}`;
 }
 
 function CreateIntegrationTokenModal({ resumeJobId, onClose, onCreated }: { resumeJobId?: string; onClose: () => void; onCreated: (secret: IntegrationSecret) => void }) {
@@ -138,7 +229,7 @@ function CreateIntegrationTokenModal({ resumeJobId, onClose, onCreated }: { resu
   return (
     <Modal title={resumeJobId ? "Navazující implementační token" : integrationTokenActionLabel} onClose={onClose}>
       <form className="modal-form" onSubmit={(event) => { void submit(event); }}>
-        <div className="form-intro"><span className="modal-icon"><Workflow size={20} /></span><p>Connect in Catalog v1.7, strukturovaný descriptor a integrační token.</p></div>
+        <div className="form-intro"><span className="modal-icon"><Workflow size={20} /></span><p>KajovoCML 2026.07.20, strukturovaný descriptor a integrační token.</p></div>
         <label>Označení tokenu<span className="field-hint">Krátký interní název pro pozdější dohledání tokenu.</span><input autoFocus value={label} onChange={(event) => setLabel(event.target.value)} maxLength={120} placeholder="Např. Fakturační onboarding" /></label>
         <div className="descriptor-grid">
           <label>Shrnutí serveru<span className="field-hint">Jednovětý popis integračního záměru.</span><textarea value={summary} onChange={(event) => setSummary(event.target.value)} maxLength={120} rows={3} placeholder="Např. Zpracování fakturačních podkladů" /></label>
@@ -175,7 +266,7 @@ function IntegrationSecretModal({ secret, onClose }: { secret: IntegrationSecret
     <Modal title="Podklady pro programátora jsou připravené" onClose={onClose}>
       <div className="secret-dialog">
         <div className="notice success"><CheckCircle2 size={18} /><span><strong>Vaše práce tímto končí.</strong><br />Programátorovi předejte onboarding katalog a token. Stav, opravitelné chyby i nahrání nové revize obslouží sám přes programátorské API až do zeleného výsledku.</span></div>
-        <div className="handoff-step"><span>1</span><div><strong>Onboarding katalog</strong><p>Závazný registrační kontrakt 1.5.</p><a className="button-link secondary" href={secret.onboardingCatalogUrl} download={secret.onboardingCatalogFileName}><Download size={16} /> Stáhnout onboarding katalog</a></div></div>
+        <div className="handoff-step"><span>1</span><div><strong>Onboarding katalog</strong><p>Závazný registrační kontrakt 2026.07.20.</p><a className="button-link secondary" href={secret.onboardingCatalogUrl} download={secret.onboardingCatalogFileName}><Download size={16} /> Stáhnout onboarding katalog</a></div></div>
         <div className="handoff-step"><span>2</span><div><strong>Server descriptor</strong><p>{secret.descriptor.summary}</p><dl className="descriptor-dl"><dt>Účel</dt><dd>{secret.descriptor.businessPurpose}</dd><dt>Vlastník služby</dt><dd>{secret.descriptor.serviceOwner}</dd><dt>Technický vlastník</dt><dd>{secret.descriptor.technicalOwner}</dd><dt>Kritičnost</dt><dd>{secret.descriptor.criticality}</dd></dl></div></div>
         <div className="handoff-step"><span>3</span><div><strong>Integrační token</strong><p>Plnou hodnotu lze zobrazit i předat v tomto handoffu. První upload musí programátor provést do {formatDate(secret.initialExpiresAt)}.</p><div className="secret-once"><code>{secret.token}</code><small>Fingerprint {secret.fingerprint}</small></div><button type="button" className="secondary" onClick={() => { void copyToken(); }}><ClipboardCopy size={16} /> {copied === "token" ? "Token zkopírován" : "Zkopírovat token"}</button></div></div>
         <div className="permission-preview"><strong>Co proběhne po uploadu</strong><span>Systém přidělí KCML identitu a vlastní HTTPS adresu a provede PR/CI, podepsaný OCI build, izolované nasazení, katalog, autorizaci, logging, audit, monitoring, veřejné testy a aktivaci. Opravitelnou chybu API vrátí programátorovi jako <code>UPLOAD_REVISION</code>; po nové revizi pipeline sama pokračuje.</span></div>
@@ -203,8 +294,108 @@ function IntegrationConfirmModal({ token, action, onClose, onConfirm }: { token:
   );
 }
 
+function ServerTestFlowModal({
+  server,
+  result,
+  running,
+  elapsedMs,
+  optimisticIndex,
+  onRetry,
+  onClose
+}: {
+  server: Server;
+  result: ServerTestResult | null;
+  running: boolean;
+  elapsedMs: number;
+  optimisticIndex: number;
+  onRetry: () => Promise<void>;
+  onClose: () => void;
+}) {
+  const baseCheckpoints = result?.checkpoints ?? createTestCheckpointBlueprint(server);
+  const visualState = (checkpoint: ServerTestCheckpoint, index: number): "PENDING" | "RUNNING" | "PASSED" | "FAILED" | "SKIPPED" => {
+    if (result) {
+      if (checkpoint.status === "PENDING" && !running) return "PENDING";
+      return checkpoint.status;
+    }
+    if (index < optimisticIndex) return "PASSED";
+    if (index === optimisticIndex) return "RUNNING";
+    return "PENDING";
+  };
+  const completionTone = result?.ok ? "success" : result ? "error" : "neutral";
+  const headline = result
+    ? result.ok
+      ? "Safe test byl dokončen úspěšně"
+      : result.status === "EXPECTED_RESULT_MISMATCH"
+        ? "Safe test doběhl, ale expected result nesouhlasí"
+        : "Safe test skončil chybou"
+    : "Probíhá bezpečný test serveru";
+  const summary = result
+    ? result.ok
+      ? `Latence ${result.latencyMs} ms · revize ${result.activeRevisionId}`
+      : `${result.errorMessage ?? result.status} · correlation ${result.correlationId}`
+    : `Server ${server.code} právě prochází kontrolovaným kontraktním testem.`;
+  const progress = result
+    ? Math.max(0, Math.round(baseCheckpoints.filter((item) => ["PASSED", "FAILED", "SKIPPED"].includes(item.status)).length / baseCheckpoints.length * 100))
+    : Math.max(8, Math.round((optimisticIndex + 1) / baseCheckpoints.length * 100));
+
+  return (
+    <Modal title="Bezpečný test serveru" onClose={onClose} className="modal-server-test-flow">
+      <div className="server-test-flow">
+        <div className={`server-test-hero ${completionTone}`}>
+          <div className="server-test-hero-copy">
+            <span className={`status-pill ${result?.ok ? "ok" : result ? "danger" : "warn"}`}>{result ? (result.ok ? "DOKONČENO" : "VYŽADUJE ZÁSAH") : "TEST PROBÍHÁ"}</span>
+            <strong>{headline}</strong>
+            <p>{summary}</p>
+          </div>
+          <div className="server-test-hero-meta">
+            <div><small>Elapsed</small><strong>{formatMinuteSecondCountdown(elapsedMs)}</strong></div>
+            <div><small>Correlation ID</small><code>{result?.correlationId ?? "připravuji…"}</code></div>
+          </div>
+        </div>
+        <div className="server-test-progress">
+          <div className={`server-test-progress-bar ${result && !result.ok ? "error" : ""}`}><span style={{ width: `${progress}%` }} /></div>
+          <small>{result ? `Hotovo · ${progress}% checkpointů uzavřeno` : `Probíhá checkpoint ${Math.min(optimisticIndex + 1, baseCheckpoints.length)} z ${baseCheckpoints.length}`}</small>
+        </div>
+        <div className="server-test-checkpoints">
+          {baseCheckpoints.map((checkpoint, index) => {
+            const state = visualState(checkpoint, index);
+            return (
+              <article key={checkpoint.key} className={`server-test-checkpoint ${state.toLowerCase()}`}>
+                <span className="server-test-checkpoint-icon">
+                  {state === "PASSED" || state === "SKIPPED" ? <CheckCircle2 size={16} /> : state === "FAILED" ? <OctagonAlert size={16} /> : state === "RUNNING" ? <LoaderCircle size={16} /> : <span>{index + 1}</span>}
+                </span>
+                <div>
+                  <strong>{checkpoint.label}</strong>
+                  <p>{checkpoint.detail ?? checkpoint.description}</p>
+                </div>
+                <small>{checkpoint.durationMs ? `${checkpoint.durationMs} ms` : state === "RUNNING" ? "běží…" : state === "PENDING" ? "čeká" : state === "SKIPPED" ? "přeskočeno" : ""}</small>
+              </article>
+            );
+          })}
+        </div>
+        {result ? <div className={`server-test-result-panel ${result.ok ? "success" : "error"}`}>
+          <div>
+            <strong>{result.ok ? "Výsledek testu je použitelný jako provozní důkaz." : "Test skončil se signálem k zásahu nebo s neshodou kontraktu."}</strong>
+            <p>Manifest {result.manifestDigest} · revize {result.activeRevisionId}</p>
+          </div>
+          {result.output === undefined ? null : <details>
+            <summary>Zobrazit výstup handleru</summary>
+            <pre className="test-output">{prettyJson(result.output)}</pre>
+          </details>}
+        </div> : null}
+        <footer className="modal-actions">
+          <button type="button" className="secondary" onClick={onClose} disabled={running}>Zavřít</button>
+          <button type="button" onClick={() => { void onRetry(); }} disabled={running}>{running ? "Test probíhá…" : result ? "Spustit znovu" : "Obnovit průběh"}</button>
+        </footer>
+      </div>
+    </Modal>
+  );
+}
+
 function ServerDetailModal({
   server,
+  probes,
+  history,
   accountName,
   onClose,
   onToggleEnabled,
@@ -215,6 +406,8 @@ function ServerDetailModal({
   onDeleteServer
 }: {
   server: Server;
+  probes: MonitoringProbe[];
+  history: ServerStateHistory[];
   accountName: string | null;
   onClose: () => void;
   onToggleEnabled: (server: Server, enabled: boolean) => Promise<void>;
@@ -224,117 +417,265 @@ function ServerDetailModal({
   onStartRevision: (server: Server) => Promise<void>;
   onDeleteServer: (server: Server, input: { confirmedCode: string; reason: string; password: string; totp: string }) => Promise<void>;
 }) {
-  const [busy, setBusy] = useState(false);
-  const [testStatus, setTestStatus] = useState<ServerTestResult | null>(null);
+  const [busyAction, setBusyAction] = useState<"toggle" | "saveMonitoring" | "revision" | "test" | null>(null);
+  const [lastTest, setLastTest] = useState<ServerTestResult | null>(null);
   const [error, setError] = useState("");
   const [monitoring, setMonitoring] = useState<MonitoringProfile | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [testModalOpen, setTestModalOpen] = useState(false);
+  const [testRunning, setTestRunning] = useState(false);
+  const [testElapsedMs, setTestElapsedMs] = useState(0);
+  const [testResult, setTestResult] = useState<ServerTestResult | null>(null);
+  const [optimisticIndex, setOptimisticIndex] = useState(0);
   const activeRevision = ["ACTIVE", "TRIAL"].includes(server.registrationState);
+  const recommendation = recommendedAction(server);
+  const latestProbes = [...probes].sort((left, right) => new Date(right.checked_at).getTime() - new Date(left.checked_at).getTime()).slice(0, 5);
+  const stateHistory = history.slice(0, 5);
   useEffect(() => {
     void onLoadMonitoringProfile(server)
       .then(setMonitoring)
       .catch((err) => setError(err instanceof Error ? err.message : "Profil monitoringu se nepodařilo načíst"));
   }, [onLoadMonitoringProfile, server]);
   async function toggleEnabled() {
-    setBusy(true);
+    setBusyAction("toggle");
     setError("");
     try {
       await onToggleEnabled(server, !server.enabled);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Změna stavu selhala");
     } finally {
-      setBusy(false);
+      setBusyAction(null);
     }
   }
   async function runTest() {
-    setBusy(true);
+    setBusyAction("test");
     setError("");
+    setTestModalOpen(true);
+    setTestRunning(true);
+    setTestResult(null);
+    setTestElapsedMs(0);
+    setOptimisticIndex(0);
+    const startedAt = Date.now();
+    const elapsedTimer = window.setInterval(() => setTestElapsedMs(Date.now() - startedAt), 200);
+    const checkpointTimer = window.setInterval(() => {
+      setOptimisticIndex((current) => Math.min(current + 1, createTestCheckpointBlueprint(server).length - 1));
+    }, 650);
     try {
-      setTestStatus(await onRunTest(server));
+      const result = await onRunTest(server);
+      setTestResult(result);
+      setLastTest(result);
     } catch (err) {
+      const failure = synthesizeFailedTestResult(server, err instanceof ApiRequestError ? err : new Error("operation_failed"));
+      setTestResult(failure);
+      setLastTest(failure);
       setError(err instanceof Error ? err.message : "Test serveru selhal");
     } finally {
-      setBusy(false);
+      window.clearInterval(elapsedTimer);
+      window.clearInterval(checkpointTimer);
+      setTestElapsedMs(Date.now() - startedAt);
+      setTestRunning(false);
+      setBusyAction(null);
     }
   }
   async function saveMonitoring() {
     if (!monitoring) return;
-    setBusy(true);
+    setBusyAction("saveMonitoring");
     setError("");
     try {
       await onSaveMonitoringProfile(server, monitoring);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Profil monitoringu se nepodařilo uložit");
     } finally {
-      setBusy(false);
+      setBusyAction(null);
     }
   }
   return (
-    <Modal title={server.displayName} onClose={onClose}>
-      <div className="server-detail">
-        <div className="server-detail-status"><span className={`status-dot ${server.enabled ? "ok" : "danger"}`} /><strong>{server.operationalState}</strong><span>{server.registrationState}</span></div>
-        <dl>
-          <dt>Kód serveru</dt><dd>{server.code}</dd>
-          <dt>Hostname</dt><dd>{server.hostname}</dd>
-          <dt>Nástroj</dt><dd>{server.toolName}</dd>
-          <dt>Handler</dt><dd>{server.handlerKey} · {server.handlerVersion}</dd>
-          <dt>Contract</dt><dd>{server.contractVersion}</dd>
-          <dt>Registrační revize</dt><dd>{server.registrationRevision ?? "-"}</dd>
-          <dt>Recertifikace</dt><dd><span className={`badge ${recertificationTone(server.recertification.phase)}`}>{server.recertification.phase}</span><span className="cell-subtitle">{server.recertification.reason ?? "Platná certifikace"} · {formatBoundary(server.recertification.secondsToBoundary)}</span>{server.reviewDueAt ? <span className="cell-subtitle">Termín {formatDate(server.reviewDueAt)}</span> : null}</dd>
-          <dt>Monitoring</dt><dd><span className={`badge ${server.monitoringEnabled ? "ok" : "danger"}`}>{server.monitoringEnabled ? "Povinný profil aktivní" : "Profil blokuje provoz"}</span><span className="cell-subtitle">{server.monitoringProfileDigest ?? "Chybí digest profilu"}</span></dd>
-          <dt>Artifact digest</dt><dd><code>{server.artifactDigest}</code></dd>
-          <dt>Manifest digest</dt><dd><code>{server.manifestDigest}</code></dd>
-          <dt>Úspěšná volání</dt><dd>{server.successCount}</dd>
-          <dt>Chyby autorizace</dt><dd>{server.unauthorizedCount}</dd>
-          <dt>Provozní chyby</dt><dd>{server.failureCount}</dd>
-          <dt>Latence poslední / průměr / p95</dt><dd>{server.lastLatencyMs ?? "-"} / {server.averageLatencyMs ?? "-"} / {server.p95LatencyMs ?? "-"} ms</dd>
-          <dt>Poslední úspěch</dt><dd>{formatDate(server.lastSuccessAt)}</dd>
-          <dt>Poslední chyba</dt><dd>{formatDate(server.lastFailureAt)}</dd>
-        </dl>
-        {server.description ? <p>{server.description}</p> : null}
-        {testStatus ? <div className={`notice ${testStatus.ok ? "success" : "error"}`}><div><strong>{testStatus.ok ? "Safe test prošel" : "Safe test neprošel"}</strong><br />{testStatus.status} · latence {testStatus.latencyMs} ms.<br /><code>{testStatus.correlationId}</code><span className="cell-subtitle">Revize {testStatus.activeRevisionId} · {testStatus.manifestDigest}</span>{testStatus.output === undefined ? null : <pre className="test-output">{prettyJson(testStatus.output)}</pre>}</div></div> : null}
-        {error ? <p className="error">{error}</p> : null}
-        {monitoring && activeRevision ? <div className="notice"><ShieldCheck size={18} /><span>Monitoring aktivní revize je neměnný. Změna profilu založí novou registrační revizi 1.5 a znovu spustí povinné brány.</span></div> : null}
-        {monitoring && !activeRevision ? <div className="monitoring-editor">
-          <label>Runbook reference<input value={monitoring.profile.runbookRef} onChange={(event) => setMonitoring({ ...monitoring, profile: { ...monitoring.profile, runbookRef: event.target.value } })} /></label>
-          <label>Primární alert kanál<input value={monitoring.profile.primaryAlertChannel} onChange={(event) => setMonitoring({ ...monitoring, profile: { ...monitoring.profile, primaryAlertChannel: event.target.value } })} /></label>
-          <label>Záložní alert kanál<input value={monitoring.profile.backupAlertChannel} onChange={(event) => setMonitoring({ ...monitoring, profile: { ...monitoring.profile, backupAlertChannel: event.target.value } })} /></label>
-          <label>Vzorek je zastaralý po (s)<input type="number" min={30} max={7200} value={monitoring.profile.staleAfterSeconds} onChange={(event) => setMonitoring({ ...monitoring, profile: { ...monitoring.profile, staleAfterSeconds: Number(event.target.value) } })} /></label>
-          <label>Retence výsledků (dny)<input type="number" min={1} max={3650} value={monitoring.profile.retentionDays} onChange={(event) => setMonitoring({ ...monitoring, profile: { ...monitoring.profile, retentionDays: Number(event.target.value) } })} /></label>
-          <label>SLO targety (JSON)<textarea rows={5} value={prettyJson(monitoring.profile.sloTargets)} onChange={(event) => {
-            try {
-              setMonitoring({ ...monitoring, profile: { ...monitoring.profile, sloTargets: JSON.parse(event.target.value) as Record<string, unknown> } });
-              setError("");
-            } catch {
-              setError("SLO targety musí být platný JSON.");
-            }
-          }} /></label>
-          <label>Intervaly probe (JSON)<textarea rows={5} value={prettyJson(monitoring.profile.probeIntervals)} onChange={(event) => {
-            try {
-              setMonitoring({ ...monitoring, profile: { ...monitoring.profile, probeIntervals: JSON.parse(event.target.value) as Record<string, unknown> } });
-              setError("");
-            } catch {
-              setError("Intervaly probe musí být platný JSON.");
-            }
-          }} /></label>
-          <label>Alert pravidla (JSON pole)<textarea rows={6} value={prettyJson(monitoring.profile.alertRules)} onChange={(event) => {
-            try {
-              setMonitoring({ ...monitoring, profile: { ...monitoring.profile, alertRules: JSON.parse(event.target.value) as Array<Record<string, unknown>> } });
-              setError("");
-            } catch {
-              setError("Alert pravidla musí být platné JSON pole.");
-            }
-          }} /></label>
-        </div> : null}
-        <details><summary>Vstupní JSON Schema</summary><pre className="test-output">{JSON.stringify(server.inputSchema, null, 2)}</pre></details>
-        <details><summary>Výstupní JSON Schema</summary><pre className="test-output">{JSON.stringify(server.outputSchema, null, 2)}</pre></details>
-        <footer className="modal-actions">
-          {!activeRevision ? <button type="button" className="secondary" disabled={busy || !monitoring} onClick={() => { void saveMonitoring(); }}><Save size={16} /> Uložit monitoring</button> : <button type="button" disabled={busy} onClick={() => { setBusy(true); void onStartRevision(server).catch((err) => setError(err instanceof Error ? err.message : "Založení revize selhalo")).finally(() => setBusy(false)); }}><Workflow size={16} /> Založit změnovou revizi</button>}
-          <button type="button" className="secondary" disabled={busy} onClick={() => { void runTest(); }}><Terminal size={16} /> Otestovat server</button>
-          <button type="button" className="secondary" disabled={busy} onClick={() => { void toggleEnabled(); }}>{server.enabled ? "Vypnout server" : "Zapnout server"}</button>
-          <button type="button" className="danger-button" disabled={busy} onClick={() => setDeleteOpen(true)}><Ban size={16} /> Smazat registraci</button>
-          <button type="button" className="secondary" onClick={onClose}>Zavřít detail</button>
-        </footer>
+    <Modal title="Detail serveru" onClose={onClose} className="modal-server-detail">
+      <div className="server-detail-v2">
+        <section className="server-detail-hero">
+          <div className="server-detail-identity">
+            <span className={`server-badge ${operationalTone(server.operationalState)}`}><ServerIcon size={18} /></span>
+            <div>
+              <strong>{server.displayName}</strong>
+              <div className="server-detail-identity-meta">
+                <span>{server.code}</span>
+                <span>{server.hostname}</span>
+                <span>{server.toolName}</span>
+              </div>
+            </div>
+          </div>
+          <div className="server-detail-hero-status">
+            <span className={`status-pill ${operationalTone(server.operationalState)}`}>{server.operationalState}</span>
+            <span className="status-pill neutral">{server.registrationState}</span>
+            <span className={`status-pill ${recertificationTone(server.recertification.phase)}`}>{server.recertification.phase}</span>
+          </div>
+          <div className="server-detail-hero-guidance">
+            <strong>{recommendation.title}</strong>
+            <p>{recommendation.detail}</p>
+          </div>
+        </section>
+
+        <div className="server-detail-layout">
+          <div className="server-detail-main">
+            <section className="server-detail-section">
+              <div className="server-section-head"><h3>Přehled provozu</h3><span>{registrationLabel(server)}</span></div>
+              <div className="server-summary-grid">
+                <article><small>Dostupnost</small><strong>{server.enabled ? "V provozu" : "Vypnuto"}</strong><span>{server.monitoringEnabled ? "Monitoring aktivní" : "Monitoring blokuje provoz"}</span></article>
+                <article><small>Latence p95</small><strong>{server.p95LatencyMs ?? "-"} ms</strong><span>poslední {server.lastLatencyMs ?? "-"} ms</span></article>
+                <article><small>Volání</small><strong>{server.successCount}</strong><span>{server.failureCount} provozních chyb / {server.unauthorizedCount} auth chyb</span></article>
+                <article><small>Recertifikace</small><strong>{server.recertification.phase}</strong><span>{formatBoundary(server.recertification.secondsToBoundary)}</span></article>
+                <article><small>Aktivní revize</small><strong>{server.registrationRevision ?? "-"}</strong><span>{server.contractVersion} · {server.handlerVersion}</span></article>
+                <article><small>Poslední výsledek testu</small><strong>{lastTest ? (lastTest.ok ? "Prošel" : "Vyžaduje zásah") : "Zatím neproveden"}</strong><span>{lastTest ? `${lastTest.status} · ${lastTest.latencyMs} ms` : "Spusťte safe test pro auditní důkaz."}</span></article>
+              </div>
+            </section>
+
+            {lastTest ? <section className="server-detail-section">
+              <div className="server-section-head"><h3>Poslední safe test</h3><span>{formatDate(server.updatedAt)}</span></div>
+              <div className={`server-last-test ${lastTest.ok ? "success" : "error"}`}>
+                <div>
+                  <strong>{lastTest.ok ? "Poslední test skončil úspěšně." : "Poslední test skončil s varováním nebo chybou."}</strong>
+                  <p>{lastTest.status} · latence {lastTest.latencyMs} ms · correlation ID <code>{lastTest.correlationId}</code></p>
+                </div>
+                <button type="button" className="secondary" onClick={() => { setTestModalOpen(true); setTestResult(lastTest); }}>Zobrazit checkpointy</button>
+              </div>
+            </section> : null}
+
+            <section className="server-detail-section">
+              <div className="server-section-head"><h3>Monitoring a health</h3><span>{server.monitoringProfileDigest ?? "Digest chybí"}</span></div>
+              <div className="server-monitoring-grid">
+                <article className="server-inline-card">
+                  <div className="server-inline-card-head"><ShieldCheck size={16} /><strong>Monitoring profil</strong></div>
+                  <p>{server.monitoringEnabled ? "Povinný monitoring profil je aktivní a může držet server v provozním režimu." : "Profil aktuálně blokuje provoz serveru."}</p>
+                  {monitoring ? <dl className="server-meta-grid">
+                    <div><dt>Runbook</dt><dd>{monitoring.profile.runbookRef || "-"}</dd></div>
+                    <div><dt>Primární alert</dt><dd>{monitoring.profile.primaryAlertChannel || "-"}</dd></div>
+                    <div><dt>Záložní alert</dt><dd>{monitoring.profile.backupAlertChannel || "-"}</dd></div>
+                    <div><dt>Stale after</dt><dd>{monitoring.profile.staleAfterSeconds} s</dd></div>
+                  </dl> : <p>Profil načítám…</p>}
+                </article>
+                <article className="server-inline-card">
+                  <div className="server-inline-card-head"><Radar size={16} /><strong>Aktuální guardraily</strong></div>
+                  <ul className="server-compact-list">
+                    <li>{server.recertification.reason ?? "Recertifikace je v platném pásmu."}</li>
+                    <li>{server.reviewDueAt ? `Termín revize ${formatDate(server.reviewDueAt)}` : "Termín revize není zapsán."}</li>
+                    <li>{server.description || "Bez doplňujícího provozního popisu."}</li>
+                  </ul>
+                </article>
+              </div>
+              {monitoring && activeRevision ? <div className="server-inline-message">
+                <ShieldAlert size={16} />
+                <span>Monitoring aktivní revize je uzamčený. Změna profilu založí novou registrační revizi 2026.07.20 a znovu spustí povinné brány.</span>
+              </div> : null}
+              {monitoring && !activeRevision ? <details className="server-advanced-block">
+                <summary>Upravit monitoring profil</summary>
+                <div className="monitoring-editor monitoring-editor-v2">
+                  <label>Runbook reference<input value={monitoring.profile.runbookRef} onChange={(event) => setMonitoring({ ...monitoring, profile: { ...monitoring.profile, runbookRef: event.target.value } })} /></label>
+                  <label>Primární alert kanál<input value={monitoring.profile.primaryAlertChannel} onChange={(event) => setMonitoring({ ...monitoring, profile: { ...monitoring.profile, primaryAlertChannel: event.target.value } })} /></label>
+                  <label>Záložní alert kanál<input value={monitoring.profile.backupAlertChannel} onChange={(event) => setMonitoring({ ...monitoring, profile: { ...monitoring.profile, backupAlertChannel: event.target.value } })} /></label>
+                  <label>Vzorek je zastaralý po (s)<input type="number" min={30} max={7200} value={monitoring.profile.staleAfterSeconds} onChange={(event) => setMonitoring({ ...monitoring, profile: { ...monitoring.profile, staleAfterSeconds: Number(event.target.value) } })} /></label>
+                  <label>Retence výsledků (dny)<input type="number" min={1} max={3650} value={monitoring.profile.retentionDays} onChange={(event) => setMonitoring({ ...monitoring, profile: { ...monitoring.profile, retentionDays: Number(event.target.value) } })} /></label>
+                  <label>SLO targety (JSON)<textarea rows={5} value={prettyJson(monitoring.profile.sloTargets)} onChange={(event) => {
+                    try {
+                      setMonitoring({ ...monitoring, profile: { ...monitoring.profile, sloTargets: JSON.parse(event.target.value) as Record<string, unknown> } });
+                      setError("");
+                    } catch {
+                      setError("SLO targety musí být platný JSON.");
+                    }
+                  }} /></label>
+                  <label>Intervaly probe (JSON)<textarea rows={5} value={prettyJson(monitoring.profile.probeIntervals)} onChange={(event) => {
+                    try {
+                      setMonitoring({ ...monitoring, profile: { ...monitoring.profile, probeIntervals: JSON.parse(event.target.value) as Record<string, unknown> } });
+                      setError("");
+                    } catch {
+                      setError("Intervaly probe musí být platný JSON.");
+                    }
+                  }} /></label>
+                  <label>Alert pravidla (JSON pole)<textarea rows={6} value={prettyJson(monitoring.profile.alertRules)} onChange={(event) => {
+                    try {
+                      setMonitoring({ ...monitoring, profile: { ...monitoring.profile, alertRules: JSON.parse(event.target.value) as Array<Record<string, unknown>> } });
+                      setError("");
+                    } catch {
+                      setError("Alert pravidla musí být platné JSON pole.");
+                    }
+                  }} /></label>
+                  <div className="server-inline-actions">
+                    <button type="button" className="secondary" disabled={busyAction !== null || !monitoring} onClick={() => { void saveMonitoring(); }}><Save size={16} /> {busyAction === "saveMonitoring" ? "Ukládám…" : "Uložit monitoring"}</button>
+                  </div>
+                </div>
+              </details> : null}
+            </section>
+
+            <section className="server-detail-section">
+              <div className="server-section-head"><h3>Technické detaily</h3><span>pro audit a troubleshooting</span></div>
+              <details className="server-advanced-block">
+                <summary>Zobrazit technický kontrakt a artefakty</summary>
+                <div className="server-tech-grid">
+                  <dl className="server-meta-grid">
+                    <div><dt>Handler</dt><dd>{server.handlerKey} · {server.handlerVersion}</dd></div>
+                    <div><dt>Contract</dt><dd>{server.contractVersion}</dd></div>
+                    <div><dt>Artifact digest</dt><dd><code>{server.artifactDigest}</code></dd></div>
+                    <div><dt>Manifest digest</dt><dd><code>{server.manifestDigest}</code></dd></div>
+                    <div><dt>Poslední úspěch</dt><dd>{formatDate(server.lastSuccessAt)}</dd></div>
+                    <div><dt>Poslední chyba</dt><dd>{formatDate(server.lastFailureAt)}</dd></div>
+                  </dl>
+                  <details>
+                    <summary>Vstupní JSON schema</summary>
+                    <pre className="test-output">{JSON.stringify(server.inputSchema, null, 2)}</pre>
+                  </details>
+                  <details>
+                    <summary>Výstupní JSON schema</summary>
+                    <pre className="test-output">{JSON.stringify(server.outputSchema, null, 2)}</pre>
+                  </details>
+                </div>
+              </details>
+            </section>
+
+            {error ? <p className="error">{error}</p> : null}
+          </div>
+
+          <aside className="server-detail-side">
+            <section className="server-action-card">
+              <div className="server-section-head"><h3>Akce</h3><span>provozní zásahy</span></div>
+              <button type="button" className="server-primary-action" disabled={busyAction !== null} onClick={() => { void runTest(); }}>
+                <Terminal size={16} /> {busyAction === "test" ? "Test probíhá…" : "Spustit bezpečný test"}
+              </button>
+              <div className="server-action-list">
+                <button type="button" className="secondary" disabled={busyAction !== null} onClick={() => { setBusyAction("revision"); void onStartRevision(server).catch((err) => setError(err instanceof Error ? err.message : "Založení revize selhalo")).finally(() => setBusyAction(null)); }}>
+                  <GitBranchPlus size={16} /> {busyAction === "revision" ? "Zakládám revizi…" : "Založit změnovou revizi"}
+                </button>
+                <button type="button" className="secondary" disabled={busyAction !== null} onClick={() => { void toggleEnabled(); }}>
+                  {server.enabled ? <PauseCircle size={16} /> : <PlayCircle size={16} />} {busyAction === "toggle" ? "Ukládám stav…" : server.enabled ? "Vypnout server" : "Zapnout server"}
+                </button>
+              </div>
+            </section>
+
+            <section className="server-side-card">
+              <div className="server-section-head"><h3>Poslední probes</h3><span>{latestProbes.length} záznamů</span></div>
+              {latestProbes.length === 0 ? <p className="server-muted-copy">Zatím nejsou k dispozici žádné probe vzorky.</p> : <div className="server-side-list">
+                {latestProbes.map((probe) => <article key={probe.id}>
+                  <div><span className={`status-dot ${probe.status === "PASS" ? "ok" : probe.status === "STALE" ? "warn" : "danger"}`} /><strong>{probe.probe_type}</strong></div>
+                  <small>{summarizeProbe(probe)} · {formatDate(probe.checked_at)}</small>
+                </article>)}
+              </div>}
+            </section>
+
+            <section className="server-side-card">
+              <div className="server-section-head"><h3>Evidence změn stavu</h3><span>poslední přechody</span></div>
+              {stateHistory.length === 0 ? <p className="server-muted-copy">Pro tento server zatím není uložená historie změn stavu.</p> : <div className="server-side-list">
+                {stateHistory.map((entry) => <article key={entry.id}>
+                  <div><strong>{entry.operational_state}</strong><span className="status-pill neutral">{entry.registration_state}</span></div>
+                  <small>{entry.reason} · {formatDate(entry.recorded_at)}</small>
+                </article>)}
+              </div>}
+            </section>
+
+            <section className="server-danger-zone">
+              <div className="server-section-head"><h3>Destruktivní zóna</h3><span>nevratné akce</span></div>
+              <p>Smazání registrace odstraní server z aktivní správy a z provozního pohledu jde o nevratný zásah.</p>
+              <button type="button" className="danger-button" disabled={busyAction !== null} onClick={() => setDeleteOpen(true)}><Trash2 size={16} /> Smazat registraci</button>
+            </section>
+          </aside>
+        </div>
       </div>
       {deleteOpen ? <DeleteServerModal
         server={server}
@@ -345,6 +686,15 @@ function ServerDetailModal({
           setDeleteOpen(false);
           onClose();
         }}
+      /> : null}
+      {testModalOpen ? <ServerTestFlowModal
+        server={server}
+        result={testResult}
+        running={testRunning}
+        elapsedMs={testElapsedMs}
+        optimisticIndex={optimisticIndex}
+        onRetry={runTest}
+        onClose={() => { if (!testRunning) setTestModalOpen(false); }}
       /> : null}
     </Modal>
   );
@@ -479,7 +829,19 @@ function MonitoringPage({
         <div className="table-scroll"><table><thead><tr><th>Čas</th><th>Server</th><th>Registrace</th><th>Provoz</th><th>Recertifikace</th><th>Důvod</th><th>Correlation ID</th></tr></thead><tbody>{overview.stateHistory.map((entry) => <tr key={entry.id}><td>{formatDate(entry.recorded_at)}</td><td>{entry.code}</td><td><span className="badge neutral">{entry.registration_state}</span></td><td>{entry.operational_state}</td><td>{entry.recertification_phase}</td><td>{entry.reason}</td><td><code>{entry.correlation_id}</code></td></tr>)}</tbody></table></div>
         {overview.stateHistory.length === 0 ? <div className="empty-state"><Clock3 size={34} /><strong>Historie je prázdná</strong></div> : null}
       </section> : null}
-      {detailServer ? <ServerDetailModal server={servers.find((server) => server.id === detailServer.id) ?? detailServer} accountName={accountName} onClose={() => setDetailServer(null)} onToggleEnabled={onToggleEnabled} onRunTest={onRunTest} onLoadMonitoringProfile={onLoadMonitoringProfile} onSaveMonitoringProfile={onSaveMonitoringProfile} onStartRevision={onStartRevision} onDeleteServer={onDeleteServer} /> : null}
+      {detailServer ? <ServerDetailModal
+        server={servers.find((server) => server.id === detailServer.id) ?? detailServer}
+        probes={probes.filter((probe) => probe.server_id === detailServer.id)}
+        history={overview.stateHistory.filter((entry) => entry.server_id === detailServer.id)}
+        accountName={accountName}
+        onClose={() => setDetailServer(null)}
+        onToggleEnabled={onToggleEnabled}
+        onRunTest={onRunTest}
+        onLoadMonitoringProfile={onLoadMonitoringProfile}
+        onSaveMonitoringProfile={onSaveMonitoringProfile}
+        onStartRevision={onStartRevision}
+        onDeleteServer={onDeleteServer}
+      /> : null}
       {suppressingAlert ? <AlertSuppressionModal alert={suppressingAlert} onClose={() => setSuppressingAlert(null)} onSubmit={async (reason, until) => { await onSuppressAlert(suppressingAlert, reason, until); setSuppressingAlert(null); }} /> : null}
     </>
   );
@@ -938,6 +1300,31 @@ function Dashboard({ accountName, role, onLogout }: { accountName: string | null
     onLogout();
   }
 
+  async function startMfaEnrollment() {
+    return api<{
+      ok: true;
+      mfaEnabled: boolean;
+      enrollmentToken: string;
+      otpauthUri: string;
+      manualSecret: string;
+      expiresAt: string;
+    }>("/api/admin-mfa/enrollment/start", {
+      method: "POST",
+      headers: { "x-csrf-token": csrf() },
+      body: "{}"
+    });
+  }
+
+  async function verifyMfaEnrollment(input: { enrollmentToken: string; code: string }) {
+    const result = await api<{ ok: true; recoveryCodes: string[] }>("/api/admin-mfa/enrollment/verify", {
+      method: "POST",
+      headers: { "x-csrf-token": csrf() },
+      body: JSON.stringify(input)
+    });
+    await refreshSecurity();
+    return result.recoveryCodes;
+  }
+
   async function refreshAdminAccounts() {
     const result = await api<{ accounts: AdminAccount[] }>("/api/admin-accounts");
     setAdminAccounts(result.accounts);
@@ -968,7 +1355,7 @@ function Dashboard({ accountName, role, onLogout }: { accountName: string | null
     await refreshOperationalConfig();
   }
 
-  async function createAdminAccount(input: { username: string; password: string; mfaSecret: string; role: AdminRole }) {
+  async function createAdminAccount(input: { username: string; password: string; role: AdminRole }) {
     await api("/api/admin-accounts", {
       method: "POST",
       headers: { "x-csrf-token": csrf() },
@@ -991,15 +1378,6 @@ function Dashboard({ accountName, role, onLogout }: { accountName: string | null
       method: "POST",
       headers: { "x-csrf-token": csrf() },
       body: JSON.stringify({ nextPassword })
-    });
-    await refreshAdminAccounts();
-  }
-
-  async function setAdminAccountMfa(accountId: string, enabled: boolean, secret: string) {
-    await api(`/api/admin-accounts/${accountId}/mfa`, {
-      method: "PUT",
-      headers: { "x-csrf-token": csrf() },
-      body: JSON.stringify({ enabled, secret })
     });
     await refreshAdminAccounts();
   }
@@ -1055,8 +1433,8 @@ function Dashboard({ accountName, role, onLogout }: { accountName: string | null
         permissions: <PermissionsPage credentials={credentials} servers={servers} selectedId={selectedCredentialId} permissions={permissions} saving={savingPermissions} onSelect={setSelectedCredentialId} onChange={setPermissions} onSave={() => { void savePermissions(); }} />,
         audit: <AuditPage events={events} nextCursor={auditNextCursor} integrity={auditIntegrity} onLoadMore={loadMoreAudit} onLoadDetail={loadAuditDetail} onRefresh={refreshAudit} onRefreshIntegrity={refreshAuditIntegrity} />,
         config: <OperationalConfigPage settings={operationalConfig} onRefresh={refreshOperationalConfig} onSave={saveOperationalConfig} />,
-        security: <SecurityPage security={security} onRefresh={refreshSecurity} onChangePassword={changeAdminPassword} onRevokeOtherSessions={revokeOtherSessions} onRevokeSession={revokeSession} onRevokeAllSessions={revokeAllSessions} />,
-        admins: role === "OWNER" ? <AdminAccountsPage accounts={adminAccounts} onRefresh={refreshAdminAccounts} onCreate={createAdminAccount} onSetPassword={setAdminAccountPassword} onSetMfa={setAdminAccountMfa} onRevokeSessions={revokeAdminAccountSessions} onRotateRecovery={rotateAdminRecoveryCodes} onUpdate={updateAdminAccount} /> : null
+        security: <SecurityPage security={security} onRefresh={refreshSecurity} onChangePassword={changeAdminPassword} onRevokeOtherSessions={revokeOtherSessions} onRevokeSession={revokeSession} onRevokeAllSessions={revokeAllSessions} onStartMfaEnrollment={startMfaEnrollment} onVerifyMfaEnrollment={verifyMfaEnrollment} />,
+        admins: role === "OWNER" ? <AdminAccountsPage accounts={adminAccounts} onRefresh={refreshAdminAccounts} onCreate={createAdminAccount} onSetPassword={setAdminAccountPassword} onRevokeSessions={revokeAdminAccountSessions} onRotateRecovery={rotateAdminRecoveryCodes} onUpdate={updateAdminAccount} /> : null
       }} />
     </AppLayout>
   );

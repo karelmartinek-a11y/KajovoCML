@@ -79,7 +79,7 @@ describe("admin role and bootstrap enforcement", () => {
     expect(response.json()).toMatchObject({ error: "reauthentication_required" });
   });
 
-  it("completes bootstrap once and returns one-time recovery codes", async () => {
+  it("completes bootstrap once without forcing MFA during first setup", async () => {
     let completed = false;
     const query = vi.fn(async (sql: string) => {
       if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") return { rowCount: 0, rows: [] };
@@ -95,10 +95,10 @@ describe("admin role and bootstrap enforcement", () => {
     await app.register(cookie, { secret: config.SESSION_SECRET_BASE64.toString("base64url") });
     registerAdminRoutes(app, db, config);
     await app.ready();
-    const payload = { username: "first-owner", password: "a-long-safe-password", mfaSecret: "JBSWY3DPEHPK3PXP" };
+    const payload = { username: "first-owner", password: "a-long-safe-password" };
     const first = await app.inject({ method: "POST", url: "/api/bootstrap", headers: { host: config.ADMIN_HOST }, payload });
     expect(first.statusCode, first.body).toBe(200);
-    expect(first.json().recoveryCodes).toHaveLength(8);
+    expect(first.json().recoveryCodes).toHaveLength(0);
     const second = await app.inject({ method: "POST", url: "/api/bootstrap", headers: { host: config.ADMIN_HOST }, payload });
     expect(second.statusCode).toBe(409);
     expect(second.json()).toMatchObject({ error: "bootstrap_completed" });

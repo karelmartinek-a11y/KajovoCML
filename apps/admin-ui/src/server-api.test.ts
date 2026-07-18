@@ -46,6 +46,14 @@ describe("server and monitoring API client", () => {
       latencyMs: 12,
       activeRevisionId: "revision-1",
       manifestDigest: `sha256:${"a".repeat(64)}`,
+      checkpoints: [
+        {
+          key: "contract",
+          label: "Připravuji testovací kontrakt",
+          description: "Načítám aktivní revizi a bezpečnostní režim testu.",
+          status: "PASSED"
+        }
+      ],
       output: { safe: true }
     };
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(result), {

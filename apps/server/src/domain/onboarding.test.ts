@@ -16,18 +16,18 @@ describe("automated onboarding token policy", () => {
     expect(issued.fingerprint).toHaveLength(32);
   });
 
-  it("sets an initial two-hour TTL and a hard 24-hour ceiling", () => {
+  it("sets an initial 24-hour TTL and a hard 30-day ceiling", () => {
     const issuedAt = new Date("2026-07-13T10:00:00.000Z");
     const deadlines = tokenDeadlines(issuedAt);
-    expect(deadlines.expiresAt.toISOString()).toBe("2026-07-13T12:00:00.000Z");
-    expect(deadlines.maxExpiresAt.toISOString()).toBe("2026-07-14T10:00:00.000Z");
+    expect(deadlines.expiresAt.toISOString()).toBe("2026-07-14T10:00:00.000Z");
+    expect(deadlines.maxExpiresAt.toISOString()).toBe("2026-08-12T10:00:00.000Z");
   });
 
-  it("extends only forward and never beyond the 24-hour maximum", () => {
-    const current = new Date("2026-07-13T12:00:00.000Z");
-    const maximum = new Date("2026-07-14T10:00:00.000Z");
-    expect(nextHeartbeatExpiry(new Date("2026-07-13T11:00:00.000Z"), current, maximum).toISOString()).toBe("2026-07-13T13:00:00.000Z");
-    expect(nextHeartbeatExpiry(new Date("2026-07-14T09:30:00.000Z"), current, maximum).toISOString()).toBe(maximum.toISOString());
+  it("extends only forward by heartbeat and never beyond the 30-day maximum", () => {
+    const current = new Date("2026-07-14T10:00:00.000Z");
+    const maximum = new Date("2026-08-12T10:00:00.000Z");
+    expect(nextHeartbeatExpiry(new Date("2026-07-14T11:00:00.000Z"), current, maximum).toISOString()).toBe("2026-07-15T11:00:00.000Z");
+    expect(nextHeartbeatExpiry(new Date("2026-08-12T09:30:00.000Z"), current, maximum).toISOString()).toBe(maximum.toISOString());
     expect(nextHeartbeatExpiry(new Date("2026-07-13T09:00:00.000Z"), current, maximum).toISOString()).toBe(current.toISOString());
   });
 

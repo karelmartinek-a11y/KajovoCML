@@ -209,6 +209,7 @@ export type AdminSecurity = {
   role: AdminRole;
   active: boolean;
   deploymentManaged: boolean;
+  mfaEnabled: boolean;
   passwordChangedAt: string | null;
   sessions: Array<{
     id: string;

@@ -9,7 +9,17 @@ function focusableElements(dialog: HTMLElement): HTMLElement[] {
     .filter((item) => !item.hasAttribute("disabled") && item.getAttribute("aria-hidden") !== "true");
 }
 
-export function Modal({ title, children, onClose }: { title: string; children: React.ReactNode; onClose: () => void }) {
+export function Modal({
+  title,
+  children,
+  onClose,
+  className
+}: {
+  title: string;
+  children: React.ReactNode;
+  onClose: () => void;
+  className?: string;
+}) {
   const dialogRef = useRef<HTMLElement | null>(null);
   const lastFocusedRef = useRef<HTMLElement | null>(
     typeof document !== "undefined" && document.activeElement instanceof HTMLElement ? document.activeElement : null
@@ -49,7 +59,7 @@ export function Modal({ title, children, onClose }: { title: string; children: R
   }, [onClose]);
   return (
     <div className="modal-backdrop" role="presentation">
-      <section ref={dialogRef} className="modal" role="dialog" aria-modal="true" aria-labelledby={labelId} aria-describedby={descriptionId} tabIndex={-1}>
+      <section ref={dialogRef} className={`modal${className ? ` ${className}` : ""}`} role="dialog" aria-modal="true" aria-labelledby={labelId} aria-describedby={descriptionId} tabIndex={-1}>
         <header className="modal-head">
           <h2 id={labelId}>{title}</h2>
           <button className="icon-button" onClick={onClose} aria-label="Zavřít"><X size={18} /></button>

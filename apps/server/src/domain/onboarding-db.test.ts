@@ -28,7 +28,7 @@ const descriptor = {
 
 const manifestInput = {
   ...(JSON.parse(
-    readFileSync(new URL("../../../../docs/onboarding-manifest-v1.5.example.json", import.meta.url), "utf8")
+    readFileSync(new URL("../../../../docs/onboarding-manifest-2026.07.20.example.json", import.meta.url), "utf8")
   ) as Record<string, unknown>),
   registrationRevision: "db-test-1"
 };

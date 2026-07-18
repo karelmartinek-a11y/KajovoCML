@@ -11,7 +11,6 @@ describe("authentication pages", () => {
     render(<BootstrapPage onComplete={vi.fn()} />);
 
     expect(screen.getByLabelText("Heslo")).toHaveProperty("type", "password");
-    expect(screen.getByLabelText("MFA tajemství")).toHaveProperty("type", "password");
     expect(screen.getByLabelText(/Bootstrap secret/)).toHaveProperty("type", "password");
   });
 

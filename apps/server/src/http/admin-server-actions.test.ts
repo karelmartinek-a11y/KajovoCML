@@ -263,8 +263,8 @@ describe("admin server actions", () => {
       headers: { host: config.ADMIN_HOST, cookie: `__Host-kcml_session=${sessionValue}; __Host-kcml_csrf=${csrfValue}`, "x-csrf-token": csrfValue },
       payload: {}
     });
-    expect(invalidOutput.statusCode).toBe(409);
-    expect(invalidOutput.json()).toMatchObject({ error: "output_schema_failed" });
+    expect(invalidOutput.statusCode).toBe(200);
+    expect(invalidOutput.json()).toMatchObject({ ok: false, status: "FAILED", errorCode: "output_schema_failed", failedCheckpointKey: "output_validation" });
 
     timeoutMs = 5;
     handlerState.invoke = async () => new Promise((resolve) => setTimeout(() => resolve({ ok: true }), 30));
@@ -274,8 +274,8 @@ describe("admin server actions", () => {
       headers: { host: config.ADMIN_HOST, cookie: `__Host-kcml_session=${sessionValue}; __Host-kcml_csrf=${csrfValue}`, "x-csrf-token": csrfValue },
       payload: {}
     });
-    expect(timeout.statusCode).toBe(504);
-    expect(timeout.json()).toMatchObject({ error: "handler_timeout" });
+    expect(timeout.statusCode).toBe(200);
+    expect(timeout.json()).toMatchObject({ ok: false, status: "FAILED", errorCode: "handler_timeout", failedCheckpointKey: "handler_run" });
 
     serverEnabled = false;
     const disabled = await app.inject({
@@ -530,10 +530,10 @@ describe("admin server actions", () => {
     const db = {
       query: vi.fn(async (sql: string) => {
         if (sql.includes("from admin_session s")) {
-          return { rowCount: 1, rows: [{ id: "session-id", account_id: "account-id", session_hash: sessionHash, username: "karel" }] };
+          return { rowCount: 1, rows: [{ id: "session-id", account_id: "account-id", session_hash: sessionHash, username: "karel", role: "OWNER", reauthenticated_at: new Date().toISOString() }] };
         }
-        if (sql === "select username,role,active,password_changed_at from admin_account where id=$1") {
-          return { rowCount: 1, rows: [{ username: "karel", role: "OWNER", active: true, password_changed_at: "2026-07-14T10:00:00.000Z" }] };
+        if (sql === "select username,role,active,password_changed_at,mfa_enabled from admin_account where id=$1") {
+          return { rowCount: 1, rows: [{ username: "karel", role: "OWNER", active: true, password_changed_at: "2026-07-14T10:00:00.000Z", mfa_enabled: false }] };
         }
         if (sql.includes("from admin_session") && sql.includes("order by created_at desc")) {
           return {
@@ -563,6 +563,7 @@ describe("admin server actions", () => {
       role: "OWNER",
       active: true,
       deploymentManaged: false,
+      mfaEnabled: false,
       passwordChangedAt: "2026-07-14T10:00:00.000Z",
       sessions: [
         expect.objectContaining({ id: "session-id", current: true }),
@@ -660,12 +661,27 @@ describe("admin server actions", () => {
           rowCount: 1,
           rows: [{
             id: "account-id",
+            username: "admin",
             password_hash: passwordHash,
             mfa_enabled: true,
-            mfa_secret: encrypted
+            mfa_secret: encrypted,
+            session_epoch: "epoch-1"
           }]
         };
       }
+      if (sql.startsWith("select id, username, mfa_enabled, mfa_secret, session_epoch from admin_account where id=$1")) {
+        return {
+          rowCount: 1,
+          rows: [{
+            id: "account-id",
+            username: "admin",
+            mfa_enabled: true,
+            mfa_secret: encrypted,
+            session_epoch: "epoch-1"
+          }]
+        };
+      }
+      if (sql.includes("from admin_recovery_code")) return { rowCount: 0, rows: [] };
       return { rowCount: 1, rows: [] };
     });
     const db = {
@@ -677,15 +693,25 @@ describe("admin server actions", () => {
     registerAdminRoutes(app, db, config);
     await app.ready();
 
-    const response = await app.inject({
+    const passwordStep = await app.inject({
       method: "POST",
       url: "/api/login",
       headers: { host: config.ADMIN_HOST },
       payload: {
         username: "admin",
-        password: "correct horse battery staple",
-        totp: authenticator.generate(totpSecret)
+        password: "correct horse battery staple"
       }
+    });
+    expect(passwordStep.statusCode).toBe(200);
+    expect(passwordStep.json()).toMatchObject({ ok: false, mfaRequired: true });
+    const challengeCookie = passwordStep.cookies.find((cookie) => cookie.name === "__Host-kcml_login_challenge");
+    expect(challengeCookie?.value).toBeTruthy();
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/login/mfa",
+      headers: { host: config.ADMIN_HOST, cookie: `__Host-kcml_login_challenge=${challengeCookie?.value ?? ""}` },
+      payload: { code: authenticator.generate(totpSecret) }
     });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({ ok: true });
@@ -1041,9 +1067,23 @@ describe("admin server actions", () => {
           rowCount: 1,
           rows: [{
             id: "account-id",
+            username: "admin",
             password_hash: passwordHash,
             mfa_enabled: true,
-            mfa_secret: encryptMfaSecret("JBSWY3DPEHPK3PXP", config.MFA_ENCRYPTION_KEY_BASE64)
+            mfa_secret: encryptMfaSecret("JBSWY3DPEHPK3PXP", config.MFA_ENCRYPTION_KEY_BASE64, { subjectId: "account-id", purpose: "admin_totp" }),
+            session_epoch: "epoch-1"
+          }]
+        };
+      }
+      if (sql.startsWith("select id, username, mfa_enabled, mfa_secret, session_epoch from admin_account where id=$1")) {
+        return {
+          rowCount: 1,
+          rows: [{
+            id: "account-id",
+            username: "admin",
+            mfa_enabled: true,
+            mfa_secret: encryptMfaSecret("JBSWY3DPEHPK3PXP", config.MFA_ENCRYPTION_KEY_BASE64, { subjectId: "account-id", purpose: "admin_totp" }),
+            session_epoch: "epoch-1"
           }]
         };
       }
@@ -1061,15 +1101,24 @@ describe("admin server actions", () => {
     registerAdminRoutes(app, db, config);
     await app.ready();
 
-    const response = await app.inject({
+    const passwordStep = await app.inject({
       method: "POST",
       url: "/api/login",
       headers: { host: config.ADMIN_HOST },
       payload: {
         username: "admin",
-        password: "correct horse battery staple",
-        totp: "ABCDEF-123456-789ABC"
+        password: "correct horse battery staple"
       }
+    });
+    expect(passwordStep.statusCode).toBe(200);
+    expect(passwordStep.json()).toMatchObject({ ok: false, mfaRequired: true });
+    const challengeCookie = passwordStep.cookies.find((cookie) => cookie.name === "__Host-kcml_login_challenge");
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/login/mfa",
+      headers: { host: config.ADMIN_HOST, cookie: `__Host-kcml_login_challenge=${challengeCookie?.value ?? ""}` },
+      payload: { code: "ABCDEF-123456-789ABC" }
     });
     expect(response.statusCode).toBe(200);
     expect(query.mock.calls.some(([sql]) => String(sql).includes("update admin_recovery_code set consumed_at"))).toBe(true);

@@ -1,8 +1,8 @@
-import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { Readable } from "node:stream";
 import argon2 from "argon2";
 import { authenticator } from "otplib";
-import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import type { AdminReauthConfig, AdminRoutesConfig, AdminSessionConfig } from "../config.js";
 import type { Db } from "../db.js";
@@ -44,9 +44,14 @@ import { hostOf, sendError } from "./errors.js";
 
 const SESSION_COOKIE = "__Host-kcml_session";
 const CSRF_COOKIE = "__Host-kcml_csrf";
+const LOGIN_CHALLENGE_COOKIE = "__Host-kcml_login_challenge";
+const TRUSTED_DEVICE_COOKIE = "__Host-kcml_trusted_device";
 const LOGIN_ATTEMPT_WINDOW_MS = 15 * 60 * 1000;
 const LOGIN_LOCK_BASE_MS = 30 * 1000;
 const RECENT_REAUTH_MS = 10 * 60 * 1000;
+const LOGIN_CHALLENGE_MS = 10 * 60 * 1000;
+const MFA_TRUST_WINDOW_MS = 48 * 60 * 60 * 1000;
+const MFA_ENROLLMENT_MS = 10 * 60 * 1000;
 type LoginThrottleScope = "ip" | "account" | "ip_account";
 const ADMIN_ROLES = ["OWNER", "ADMIN", "AUDITOR"] as const;
 type AdminRole = typeof ADMIN_ROLES[number];
@@ -60,7 +65,6 @@ const registrationManifestSchema = z.object({
 const adminAccountCreateSchema = z.object({
   username: z.string().trim().min(3).max(120),
   password: z.string().min(12),
-  mfaSecret: z.string().trim().min(16).optional().or(z.literal("")),
   role: z.enum(ADMIN_ROLES).default("ADMIN")
 });
 const adminAccountUpdateSchema = z.object({
@@ -70,7 +74,6 @@ const adminAccountUpdateSchema = z.object({
 const adminBootstrapSchema = z.object({
   username: z.string().trim().min(3).max(120),
   password: z.string().min(12),
-  mfaSecret: z.string().trim().min(16),
   bootstrapSecret: z.string().optional()
 }).strict();
 const adminAccountPasswordSchema = z.object({
@@ -80,6 +83,20 @@ const adminAccountMfaSchema = z.object({
   enabled: z.boolean(),
   secret: z.string().trim().min(16).optional().or(z.literal(""))
 });
+const adminMfaEnrollmentVerifySchema = z.object({
+  enrollmentToken: z.string().min(32),
+  code: z.string().trim().min(6).max(32)
+}).strict();
+
+type SignedAdminTokenPayload = {
+  purpose: "login_challenge" | "trusted_device" | "mfa_enrollment";
+  accountId: string;
+  sessionEpoch: string;
+  expiresAt: string;
+  uaDigest: string;
+  secret?: string;
+  username?: string;
+};
 const operationalConfigUpdateSchema = z.object({
   value: z.union([z.string(), z.number(), z.boolean(), z.array(z.string())]),
   expectedVersion: z.number().int().min(0)
@@ -114,6 +131,128 @@ type LoginThrottleKey = {
 
 function normalizedLoginUsername(username: string): string {
   return username.trim().toLowerCase();
+}
+
+function userAgentDigest(request: FastifyRequest, key: Buffer): string {
+  const userAgent = String(request.headers["user-agent"] ?? "");
+  return hmacToken(`ua:${userAgent}`, key).toString("base64url");
+}
+
+function signAdminToken(payload: SignedAdminTokenPayload, key: Buffer): string {
+  const encoded = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
+  const signature = createHmac("sha256", key).update(encoded).digest("base64url");
+  return `${encoded}.${signature}`;
+}
+
+function verifyAdminToken(token: string | undefined, key: Buffer): SignedAdminTokenPayload | null {
+  if (!token) return null;
+  const parts = token.split(".");
+  if (parts.length !== 2) return null;
+  const encoded = parts[0];
+  const provided = parts[1];
+  if (!encoded || !provided) return null;
+  const expected = createHmac("sha256", key).update(encoded).digest("base64url");
+  const providedBuffer = Buffer.from(provided);
+  const expectedBuffer = Buffer.from(expected);
+  if (providedBuffer.length !== expectedBuffer.length || !timingSafeEqual(providedBuffer, expectedBuffer)) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(encoded, "base64url").toString("utf8")) as SignedAdminTokenPayload;
+    if (!payload?.purpose || !payload.accountId || !payload.sessionEpoch || !payload.expiresAt || !payload.uaDigest) return null;
+    if (new Date(payload.expiresAt).getTime() <= Date.now()) return null;
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+function issueLoginChallenge(reply: FastifyReply, request: FastifyRequest, key: Buffer, account: { id: string; session_epoch: unknown; username: unknown }): { expiresAt: string } {
+  const expiresAt = new Date(Date.now() + LOGIN_CHALLENGE_MS).toISOString();
+  const token = signAdminToken({
+    purpose: "login_challenge",
+    accountId: String(account.id),
+    sessionEpoch: String(account.session_epoch),
+    expiresAt,
+    uaDigest: userAgentDigest(request, key),
+    username: String(account.username)
+  }, key);
+  reply.setCookie(LOGIN_CHALLENGE_COOKIE, token, {
+    httpOnly: true,
+    secure: true,
+    sameSite: "strict",
+    path: "/",
+    maxAge: Math.floor(LOGIN_CHALLENGE_MS / 1000)
+  });
+  return { expiresAt };
+}
+
+function clearLoginChallenge(reply: FastifyReply): void {
+  reply.clearCookie(LOGIN_CHALLENGE_COOKIE, { path: "/" });
+}
+
+function setTrustedDeviceCookie(reply: FastifyReply, request: FastifyRequest, key: Buffer, account: { id: string; session_epoch: unknown }): { expiresAt: string } {
+  const expiresAt = new Date(Date.now() + MFA_TRUST_WINDOW_MS).toISOString();
+  const token = signAdminToken({
+    purpose: "trusted_device",
+    accountId: String(account.id),
+    sessionEpoch: String(account.session_epoch),
+    expiresAt,
+    uaDigest: userAgentDigest(request, key)
+  }, key);
+  reply.setCookie(TRUSTED_DEVICE_COOKIE, token, {
+    httpOnly: true,
+    secure: true,
+    sameSite: "strict",
+    path: "/",
+    maxAge: Math.floor(MFA_TRUST_WINDOW_MS / 1000)
+  });
+  return { expiresAt };
+}
+
+function clearTrustedDeviceCookie(reply: FastifyReply): void {
+  reply.clearCookie(TRUSTED_DEVICE_COOKIE, { path: "/" });
+}
+
+function trustedDeviceMatches(request: FastifyRequest, key: Buffer, account: { id: string; session_epoch: unknown }): boolean {
+  const payload = verifyAdminToken(request.cookies[TRUSTED_DEVICE_COOKIE], key);
+  return Boolean(
+    payload
+    && payload.purpose === "trusted_device"
+    && payload.accountId === String(account.id)
+    && payload.sessionEpoch === String(account.session_epoch)
+    && payload.uaDigest === userAgentDigest(request, key)
+  );
+}
+
+async function createAdminSession(
+  db: Db,
+  reply: FastifyReply,
+  request: FastifyRequest,
+  config: AdminSessionConfig,
+  account: { id: unknown; session_epoch: unknown },
+  trustDevice = false
+): Promise<{ csrfToken: string; trustedDeviceExpiresAt: string | null }> {
+  const session = randomBytes(64).toString("base64url");
+  const csrf = randomBytes(32).toString("base64url");
+  const sessionHash = await argon2.hash(session, { type: argon2.argon2id, memoryCost: 32768, timeCost: 2, parallelism: 1 });
+  const lookupDigest = hmacToken(session, config.SESSION_SECRET_BASE64);
+  await tx(db, async (client) => {
+    await client.query(
+      "update admin_session set revoked_at=now() where account_id=$1 and revoked_at is null and expires_at > now()",
+      [account.id]
+    );
+    await client.query(
+      `insert into admin_session(account_id,session_hash,lookup_digest,expires_at,reauthenticated_at,session_epoch)
+       values ($1,$2,$3,now()+interval '8 hours',now(),$4)`,
+      [account.id, sessionHash, lookupDigest, account.session_epoch]
+    );
+  });
+  reply.setCookie(SESSION_COOKIE, session, { httpOnly: true, secure: true, sameSite: "strict", path: "/" });
+  reply.setCookie(CSRF_COOKIE, csrf, { httpOnly: false, secure: true, sameSite: "strict", path: "/" });
+  const trustedDeviceExpiresAt = trustDevice ? setTrustedDeviceCookie(reply, request, config.SESSION_SECRET_BASE64, {
+    id: String(account.id),
+    session_epoch: String(account.session_epoch)
+  }).expiresAt : null;
+  return { csrfToken: csrf, trustedDeviceExpiresAt };
 }
 
 function loginThrottleKeys(request: FastifyRequest, username: string, config: AdminSessionConfig): LoginThrottleKey[] {
@@ -234,6 +373,29 @@ async function consumeRecoveryCode(db: Db, accountId: string, code: string): Pro
   return false;
 }
 
+function buildMfaEnrollmentToken(
+  request: FastifyRequest,
+  config: AdminSessionConfig,
+  account: { id: string; sessionEpoch: string; username: string },
+  secret: string
+): { enrollmentToken: string; expiresAt: string; otpauthUri: string } {
+  const expiresAt = new Date(Date.now() + MFA_ENROLLMENT_MS).toISOString();
+  const issuer = "KCML";
+  return {
+    enrollmentToken: signAdminToken({
+      purpose: "mfa_enrollment",
+      accountId: account.id,
+      sessionEpoch: account.sessionEpoch,
+      expiresAt,
+      uaDigest: userAgentDigest(request, config.SESSION_SECRET_BASE64),
+      secret,
+      username: account.username
+    }, config.SESSION_SECRET_BASE64),
+    expiresAt,
+    otpauthUri: authenticator.keyuri(account.username, issuer, secret)
+  };
+}
+
 async function requireAdminReauthentication(
   db: Db,
   config: AdminReauthConfig,
@@ -257,13 +419,52 @@ async function requireAdminReauthentication(
 
 async function runServerTest(db: Db, serverId: string, correlationId: string, actorId: string): Promise<{
   ok: boolean;
-  status: "PASSED" | "EXPECTED_RESULT_MISMATCH";
+  status: "PASSED" | "EXPECTED_RESULT_MISMATCH" | "FAILED";
   correlationId: string;
   latencyMs: number;
   activeRevisionId: string;
   manifestDigest: string;
+  checkpoints: Array<{
+    key: "contract" | "input_validation" | "runtime_lease" | "handler_run" | "output_validation" | "result_match" | "activation";
+    label: string;
+    description: string;
+    status: "PENDING" | "PASSED" | "FAILED" | "SKIPPED";
+    detail?: string;
+    durationMs?: number;
+  }>;
+  errorCode?: string;
+  errorMessage?: string;
+  failedCheckpointKey?: "contract" | "input_validation" | "runtime_lease" | "handler_run" | "output_validation" | "result_match" | "activation";
   output?: unknown;
 }> {
+  const checkpoints: Array<{
+    key: "contract" | "input_validation" | "runtime_lease" | "handler_run" | "output_validation" | "result_match" | "activation";
+    label: string;
+    description: string;
+    status: "PENDING" | "PASSED" | "FAILED" | "SKIPPED";
+    detail?: string;
+    durationMs?: number;
+  }> = [
+    { key: "contract", label: "Připravuji testovací kontrakt", description: "Načítám aktivní revizi, kontrakt a bezpečnostní režim testu.", status: "PENDING" },
+    { key: "input_validation", label: "Validuji bezpečný vstup", description: "Ověřuji safe input proti registrovanému vstupnímu schématu.", status: "PENDING" },
+    { key: "runtime_lease", label: "Rezervuji runtime", description: "Získávám execution lease, aby test běžel izolovaně a bez kolize.", status: "PENDING" },
+    { key: "handler_run", label: "Spouštím handler", description: "Volám registrovaný handler a sleduji timeout i runtime logy.", status: "PENDING" },
+    { key: "output_validation", label: "Validuji výstup", description: "Kontroluji limit velikosti odpovědi a výstupní schema.", status: "PENDING" },
+    { key: "result_match", label: "Porovnávám expected result", description: "Vyhodnocuji, zda výsledek odpovídá zaregistrovanému očekávání.", status: "PENDING" },
+    { key: "activation", label: "Uzavírám výsledek", description: "Zapisuji audit a případně povyšuji server z TRIAL do ACTIVE.", status: "PENDING" }
+  ];
+  const markCheckpoint = (
+    key: typeof checkpoints[number]["key"],
+    status: typeof checkpoints[number]["status"],
+    detail?: string,
+    durationMs?: number
+  ): void => {
+    const checkpoint = checkpoints.find((item) => item.key === key);
+    if (!checkpoint) return;
+    checkpoint.status = status;
+    if (detail) checkpoint.detail = detail;
+    if (durationMs !== undefined) checkpoint.durationMs = durationMs;
+  };
   const server = await getServerById(db, serverId);
   if (!server) throw Object.assign(new Error("not_found"), { statusCode: 404 });
   if (!server.enabled || !["TRIAL", "ACTIVE"].includes(server.registrationState)) {
@@ -289,7 +490,9 @@ async function runServerTest(db: Db, serverId: string, correlationId: string, ac
   });
   const started = Date.now();
   let leaseId = "";
+  let failedCheckpointKey: typeof checkpoints[number]["key"] | undefined;
   try {
+    let checkpointStarted = Date.now();
     const manifestResult = await db.query(
     `select manifest
        from registration_revision
@@ -307,13 +510,19 @@ async function runServerTest(db: Db, serverId: string, correlationId: string, ac
     if (parsed.data.testContract.executionMode === "COMPENSATED" && server.shutdownPolicy !== "COMPENSATE") {
       throw Object.assign(new Error("test_compensation_policy_mismatch"), { statusCode: 409 });
     }
+    markCheckpoint("contract", "PASSED", `Revize ${server.activeRevisionId} je připravena pro safe test.`, Date.now() - checkpointStarted);
+    checkpointStarted = Date.now();
     const validateInput = compileSchemaValidator(server.inputSchema);
     if (!validateInput(parsed.data.testContract.safeInput)) {
       throw Object.assign(new Error("manifest_safe_input_schema_failed"), { statusCode: 409, issues: validateInput.errors ?? [] });
     }
+    markCheckpoint("input_validation", "PASSED", "Safe input odpovídá vstupnímu schématu.", Date.now() - checkpointStarted);
+    checkpointStarted = Date.now();
     const handler = getHandler(server);
     if (!handler) throw Object.assign(new Error("handler_unavailable"), { statusCode: 503 });
     leaseId = await acquireServerExecutionLease(db, server);
+    markCheckpoint("runtime_lease", "PASSED", "Runtime lease byl úspěšně přidělen.", Date.now() - checkpointStarted);
+    checkpointStarted = Date.now();
     const output = await invokeWithDeadline(server.timeoutMs, server.shutdownPolicy, (signal) => handler.invoke(parsed.data.testContract.safeInput, {
         correlationId,
         server,
@@ -339,13 +548,24 @@ async function runServerTest(db: Db, serverId: string, correlationId: string, ac
           }
         }
       }));
+    markCheckpoint("handler_run", "PASSED", "Handler dokončil běh bez timeoutu.", Date.now() - checkpointStarted);
+    checkpointStarted = Date.now();
     serializeWithinLimit(output, server.responseMaxBytes, "worker_response_too_large");
     const validateOutput = compileSchemaValidator(server.outputSchema);
     if (!validateOutput(output)) {
       throw Object.assign(new Error("output_schema_failed"), { statusCode: 409, issues: validateOutput.errors ?? [] });
     }
+    markCheckpoint("output_validation", "PASSED", "Výstup odpovídá registrovanému výstupnímu schématu.", Date.now() - checkpointStarted);
+    checkpointStarted = Date.now();
     const latencyMs = Date.now() - started;
     const ok = matchesExpectedResult(output, parsed.data.testContract.expectedResult);
+    if (!ok) {
+      markCheckpoint("result_match", "FAILED", "Výstup neodpovídá zaregistrovanému expected result.", Date.now() - checkpointStarted);
+      failedCheckpointKey = "result_match";
+    } else {
+      markCheckpoint("result_match", "PASSED", "Výsledek odpovídá očekávanému kontraktu.", Date.now() - checkpointStarted);
+    }
+    checkpointStarted = Date.now();
     await appendAudit(db, {
       eventType: ok ? "mcp_server.test.passed" : "mcp_server.test.failed",
       actorType: "admin",
@@ -373,6 +593,11 @@ async function runServerTest(db: Db, serverId: string, correlationId: string, ac
           }
         });
       });
+      markCheckpoint("activation", "PASSED", "Server byl po úspěšném testu povýšen z TRIAL do ACTIVE.", Date.now() - checkpointStarted);
+    } else if (ok) {
+      markCheckpoint("activation", "SKIPPED", "Server už byl v ACTIVE; aktivace se znovu neprovádí.");
+    } else {
+      markCheckpoint("activation", "SKIPPED", "Aktivace se neprovádí, protože expected result nesouhlasí.");
     }
     return {
       ok,
@@ -381,10 +606,29 @@ async function runServerTest(db: Db, serverId: string, correlationId: string, ac
       latencyMs,
       activeRevisionId: server.activeRevisionId!,
       manifestDigest: server.manifestDigest,
+      checkpoints,
+      failedCheckpointKey,
       output: redact(output)
     };
   } catch (error) {
     const latencyMs = Date.now() - started;
+    const errorCode = error instanceof Error ? error.message : "test_failed";
+    failedCheckpointKey = failedCheckpointKey
+      ?? (["manifest_not_found", "manifest_test_contract_missing", "unsafe_write_test_contract", "test_compensation_policy_mismatch"].includes(errorCode)
+        ? "contract"
+        : errorCode === "manifest_safe_input_schema_failed"
+          ? "input_validation"
+          : ["handler_unavailable", "concurrency_limit_exceeded"].includes(errorCode)
+            ? "runtime_lease"
+            : ["handler_timeout"].includes(errorCode)
+              ? "handler_run"
+              : ["output_schema_failed", "worker_response_too_large"].includes(errorCode)
+                ? "output_validation"
+                : "handler_run");
+    markCheckpoint(failedCheckpointKey, "FAILED", errorCode, Math.max(1, latencyMs));
+    for (const checkpoint of checkpoints) {
+      if (checkpoint.status === "PENDING" && checkpoint.key !== failedCheckpointKey) checkpoint.status = "SKIPPED";
+    }
     await appendAudit(db, {
       eventType: "mcp_server.test.failed",
       actorType: "admin",
@@ -396,14 +640,22 @@ async function runServerTest(db: Db, serverId: string, correlationId: string, ac
         correlationId,
         ok: false,
         activeRevisionId: server.activeRevisionId,
-        error: error instanceof Error ? error.message : "test_failed"
+        error: errorCode
       },
       correlationId
     });
-    if (error instanceof Error && error.message === "handler_timeout") {
-      Object.assign(error, { statusCode: 504 });
-    }
-    throw error;
+    return {
+      ok: false,
+      status: "FAILED",
+      correlationId,
+      latencyMs,
+      activeRevisionId: server.activeRevisionId!,
+      manifestDigest: server.manifestDigest,
+      checkpoints,
+      errorCode,
+      errorMessage: errorCode,
+      failedCheckpointKey
+    };
   } finally {
     if (leaseId) await releaseServerExecutionLease(db, leaseId);
   }
@@ -529,9 +781,11 @@ async function changeAdminPassword(
     throw Object.assign(new Error("weak_password"), { statusCode: 400 });
   }
   const nextHash = await argon2.hash(nextPassword, { type: argon2.argon2id, memoryCost: 65536, timeCost: 3, parallelism: 1 });
+  const nextSessionEpoch = randomUUID();
   await tx(db, async (client) => {
-    await client.query("update admin_account set password_hash=$2, password_changed_at=now() where id=$1", [session.accountId, nextHash]);
+    await client.query("update admin_account set password_hash=$2, password_changed_at=now(), session_epoch=$3 where id=$1", [session.accountId, nextHash, nextSessionEpoch]);
     await client.query("update admin_session set revoked_at=now() where account_id=$1 and id<>$2 and revoked_at is null", [session.accountId, session.sessionId]);
+    await client.query("update admin_session set session_epoch=$2 where id=$1 and revoked_at is null", [session.sessionId, nextSessionEpoch]);
     await appendAudit(client, {
       eventType: "admin.password.changed",
       actorType: "admin",
@@ -639,8 +893,7 @@ async function createAdminAccount(
   db: Db,
   actorId: string,
   correlationId: string,
-  input: unknown,
-  encryptionKey: Buffer
+  input: unknown
 ): Promise<void> {
   const parsed = adminAccountCreateSchema.parse(input);
   const passwordHash = await argon2.hash(parsed.password, { type: argon2.argon2id, memoryCost: 65536, timeCost: 3, parallelism: 1 });
@@ -651,23 +904,13 @@ async function createAdminAccount(
        returning id,username,role`,
       [parsed.username, passwordHash, false, null, parsed.role]
     );
-    const accountId = String(inserted.rows[0].id);
-    const storedMfaSecret = parsed.mfaSecret?.trim()
-      ? encryptMfaSecret(parsed.mfaSecret.trim(), encryptionKey, { subjectId: accountId, purpose: "admin_totp" })
-      : null;
-    if (storedMfaSecret) {
-      await client.query(
-        "update admin_account set mfa_enabled=true, mfa_secret=$2 where id=$1",
-        [accountId, storedMfaSecret]
-      );
-    }
     await appendAudit(client, {
       eventType: "admin.account.created",
       actorType: "admin",
       actorId,
       objectType: "admin_account",
-      objectId: accountId,
-      after: { username: inserted.rows[0].username, role: inserted.rows[0].role, active: true, mfaEnabled: Boolean(storedMfaSecret) },
+      objectId: String(inserted.rows[0].id),
+      after: { username: inserted.rows[0].username, role: inserted.rows[0].role, active: true, mfaEnabled: false },
       correlationId
     });
   });
@@ -676,6 +919,7 @@ async function createAdminAccount(
 async function setManagedAdminPassword(db: Db, actorId: string, correlationId: string, accountId: string, nextPassword: string, deploymentManagedUsername: string): Promise<void> {
   if (nextPassword.length < 12) throw Object.assign(new Error("weak_password"), { statusCode: 400 });
   const nextHash = await argon2.hash(nextPassword, { type: argon2.argon2id, memoryCost: 65536, timeCost: 3, parallelism: 1 });
+  const nextSessionEpoch = randomUUID();
   await tx(db, async (client) => {
     const account = await client.query("select username from admin_account where id=$1 for update", [accountId]);
     if (!account.rowCount) throw Object.assign(new Error("not_found"), { statusCode: 404 });
@@ -683,8 +927,8 @@ async function setManagedAdminPassword(db: Db, actorId: string, correlationId: s
       throw Object.assign(new Error("admin_password_deployment_managed"), { statusCode: 409 });
     }
     const updated = await client.query(
-      "update admin_account set password_hash=$2, password_changed_at=now() where id=$1 returning username",
-      [accountId, nextHash]
+      "update admin_account set password_hash=$2, password_changed_at=now(), session_epoch=$3 where id=$1 returning username",
+      [accountId, nextHash, nextSessionEpoch]
     );
     if (!updated.rowCount) throw Object.assign(new Error("not_found"), { statusCode: 404 });
     await client.query("update admin_session set revoked_at=now() where account_id=$1 and revoked_at is null", [accountId]);
@@ -704,6 +948,7 @@ async function setManagedAdminMfa(db: Db, actorId: string, correlationId: string
   const parsed = adminAccountMfaSchema.parse(input);
   const trimmed = parsed.secret?.trim() ?? "";
   if (parsed.enabled && !trimmed) throw Object.assign(new Error("invalid_mfa_secret"), { statusCode: 400 });
+  const nextSessionEpoch = randomUUID();
   await tx(db, async (client) => {
     const account = await client.query("select username from admin_account where id=$1 for update", [accountId]);
     if (!account.rowCount) throw Object.assign(new Error("not_found"), { statusCode: 404 });
@@ -714,8 +959,8 @@ async function setManagedAdminMfa(db: Db, actorId: string, correlationId: string
       ? encryptMfaSecret(trimmed, encryptionKey, { subjectId: accountId, purpose: "admin_totp" })
       : null;
     const updated = await client.query(
-      "update admin_account set mfa_enabled=$2, mfa_secret=$3 where id=$1 returning username",
-      [accountId, parsed.enabled, storedSecret]
+      "update admin_account set mfa_enabled=$2, mfa_secret=$3, session_epoch=$4 where id=$1 returning username",
+      [accountId, parsed.enabled, storedSecret, nextSessionEpoch]
     );
     if (!updated.rowCount) throw Object.assign(new Error("not_found"), { statusCode: 404 });
     await client.query("update admin_session set revoked_at=now() where account_id=$1 and revoked_at is null", [accountId]);
@@ -735,6 +980,7 @@ async function revokeAdminAccountSessions(db: Db, actorId: string, correlationId
   await tx(db, async (client) => {
     const account = await client.query("select username from admin_account where id=$1", [accountId]);
     if (!account.rowCount) throw Object.assign(new Error("not_found"), { statusCode: 404 });
+    await client.query("update admin_account set session_epoch=$2,updated_at=now() where id=$1", [accountId, randomUUID()]);
     await client.query("update admin_session set revoked_at=now() where account_id=$1 and revoked_at is null", [accountId]);
     await appendAudit(client, {
       eventType: "admin.account.sessions.revoked",
@@ -787,10 +1033,8 @@ function bootstrapRequestAllowed(request: FastifyRequest, configuredSecret: stri
   return expected.length === actual.length && timingSafeEqual(expected, actual);
 }
 
-async function bootstrapAdmin(db: Db, correlationId: string, input: z.infer<typeof adminBootstrapSchema>, encryptionKey: Buffer): Promise<{ recoveryCodes: string[] }> {
+async function bootstrapAdmin(db: Db, correlationId: string, input: z.infer<typeof adminBootstrapSchema>): Promise<{ recoveryCodes: string[] }> {
   const passwordHash = await argon2.hash(input.password, { type: argon2.argon2id, memoryCost: 65536, timeCost: 3, parallelism: 1 });
-  const recoveryCodes = Array.from({ length: 8 }, generateRecoveryCode);
-  const recoveryHashes = await Promise.all(recoveryCodes.map((code) => argon2.hash(code, { type: argon2.argon2id, memoryCost: 32768, timeCost: 2, parallelism: 1 })));
   await tx(db, async (client) => {
     const state = await client.query("select completed from admin_bootstrap_state where singleton=true for update");
     if (!state.rowCount || Boolean(state.rows[0].completed)) throw Object.assign(new Error("bootstrap_completed"), { statusCode: 409 });
@@ -798,9 +1042,9 @@ async function bootstrapAdmin(db: Db, correlationId: string, input: z.infer<type
     if (existingOwner.rowCount) throw Object.assign(new Error("bootstrap_completed"), { statusCode: 409 });
     const account = await client.query(
       `insert into admin_account(username,password_hash,password_changed_at,mfa_enabled,role,active,activated_at)
-       values ($1,$2,now(),true,'OWNER',true,now())
+       values ($1,$2,now(),false,'OWNER',true,now())
        on conflict (username) do update
-         set password_hash=excluded.password_hash,password_changed_at=now(),mfa_enabled=true,
+         set password_hash=excluded.password_hash,password_changed_at=now(),mfa_enabled=false,mfa_secret=null,
              role='OWNER',active=true,activated_at=now(),updated_at=now()
        where admin_account.password_hash is null and admin_account.active is false
        returning id,username`,
@@ -808,11 +1052,6 @@ async function bootstrapAdmin(db: Db, correlationId: string, input: z.infer<type
     );
     if (!account.rowCount) throw Object.assign(new Error("bootstrap_username_unavailable"), { statusCode: 409 });
     const accountId = String(account.rows[0].id);
-    const encryptedMfa = encryptMfaSecret(input.mfaSecret, encryptionKey, { subjectId: accountId, purpose: "admin_totp" });
-    await client.query("update admin_account set mfa_secret=$2 where id=$1", [accountId, encryptedMfa]);
-    for (const codeHash of recoveryHashes) {
-      await client.query("insert into admin_recovery_code(account_id,code_hash) values ($1,$2)", [accountId, codeHash]);
-    }
     await client.query(
       "update admin_bootstrap_state set completed=true,completed_at=now(),completed_by=$1,updated_at=now() where singleton=true and completed=false",
       [accountId]
@@ -823,11 +1062,11 @@ async function bootstrapAdmin(db: Db, correlationId: string, input: z.infer<type
       actorId: accountId,
       objectType: "admin_account",
       objectId: accountId,
-      after: { username: account.rows[0].username, role: "OWNER", mfaEnabled: true, recoveryCodeCount: recoveryCodes.length },
+      after: { username: account.rows[0].username, role: "OWNER", mfaEnabled: false },
       correlationId
     });
   });
-  return { recoveryCodes };
+  return { recoveryCodes: [] };
 }
 
 async function updateAdminAccount(db: Db, actorId: string, correlationId: string, accountId: string, input: unknown): Promise<void> {
@@ -871,7 +1110,7 @@ export function registerAdminRoutes(app: FastifyInstance, db: Db, config: AdminR
       if (!auditorReadable.some((prefix) => path.startsWith(prefix))) return sendError(reply, 403, "admin_role_forbidden");
       return;
     }
-    if (["/api/login", "/api/logout", "/api/bootstrap", "/api/reauth", "/api/admin-password"].includes(path)) return;
+    if (["/api/login", "/api/login/mfa", "/api/logout", "/api/bootstrap", "/api/reauth", "/api/admin-password"].includes(path)) return;
     const session = await sessionAccount(db, request, config);
     if (!session) return;
     if (session.role === "AUDITOR") return sendError(reply, 403, "admin_role_forbidden");
@@ -904,7 +1143,7 @@ export function registerAdminRoutes(app: FastifyInstance, db: Db, config: AdminR
       if (!bootstrapRequestAllowed(request, config.ADMIN_BOOTSTRAP_SECRET, parsed.bootstrapSecret)) {
         return sendError(reply, 403, "bootstrap_access_denied", undefined, correlationId);
       }
-      return await bootstrapAdmin(db, correlationId, parsed, config.MFA_ENCRYPTION_KEY_BASE64);
+      return await bootstrapAdmin(db, correlationId, parsed);
     } catch (error) {
       if (error instanceof z.ZodError) {
         return sendError(reply, 400, "bootstrap_input_invalid", undefined, correlationId);
@@ -921,7 +1160,7 @@ export function registerAdminRoutes(app: FastifyInstance, db: Db, config: AdminR
     const session = await sessionAccount(db, request, config);
     if (!session) return sendError(reply, 401, "unauthorized", undefined, correlationId);
     const account = await db.query(
-      "select username,role,active,password_changed_at from admin_account where id=$1",
+      "select username,role,active,password_changed_at,mfa_enabled from admin_account where id=$1",
       [session.accountId]
     );
     const sessions = await listAdminSessions(db, session.accountId, session.sessionId);
@@ -930,6 +1169,7 @@ export function registerAdminRoutes(app: FastifyInstance, db: Db, config: AdminR
       role: String(account.rows[0].role),
       active: Boolean(account.rows[0].active),
       deploymentManaged: isDeploymentManagedAdmin(String(account.rows[0].username), config),
+      mfaEnabled: Boolean(account.rows[0].mfa_enabled),
       passwordChangedAt: account.rows[0].password_changed_at ? String(account.rows[0].password_changed_at) : null,
       sessions
     };
@@ -1000,7 +1240,7 @@ export function registerAdminRoutes(app: FastifyInstance, db: Db, config: AdminR
   }, async (request, reply) => {
     const correlationId = randomUUID();
     if (hostOf(request.headers.host) !== config.ADMIN_HOST) return sendError(reply, 404, "not_found", undefined, correlationId);
-    const body = request.body as { username?: string; password?: string; totp?: string; recoveryCode?: string };
+    const body = request.body as { username?: string; password?: string };
     const throttle = await getLoginLockState(db, request, body.username ?? "", config);
     if (throttle.blocked) {
       reply.header("retry-after", String(throttle.retryAfterSeconds));
@@ -1017,46 +1257,75 @@ export function registerAdminRoutes(app: FastifyInstance, db: Db, config: AdminR
       await appendAudit(db, { eventType: "admin.login.failed", actorType: "admin", actorId: loginUsername || null, correlationId });
       return sendError(reply, 401, "invalid_login", "Invalid credentials", correlationId);
     }
-    const decryptedMfaSecret = account.mfa_enabled && account.mfa_secret
-      ? decryptMfaSecret(typeof account.mfa_secret === "string" ? account.mfa_secret : "", config.MFA_ENCRYPTION_KEY_BASE64, {
-        allowLegacyPlaintext: config.MFA_ALLOW_PLAINTEXT_LEGACY,
-        subjectId: String(account.id),
-        purpose: "admin_totp"
-      })
-      : null;
-    const totpOk = passwordOk && account.mfa_enabled ? authenticator.check(body.totp ?? "", decryptedMfaSecret ?? "") : !account.mfa_enabled;
-    const recoveryOk = passwordOk && account.mfa_enabled && !totpOk
-      ? await consumeRecoveryCode(db, String(account.id), body.recoveryCode ?? body.totp ?? "")
-      : false;
-    const mfaOk = account.mfa_enabled ? totpOk || recoveryOk : true;
-    if (!passwordOk || !mfaOk) {
+    if (!passwordOk) {
       await recordLoginFailure(db, request, loginUsername, config);
       await appendAudit(db, { eventType: "admin.login.failed", actorType: "admin", actorId: loginUsername || null, correlationId });
       return sendError(reply, 401, "invalid_login", "Invalid credentials", correlationId);
     }
     await clearLoginFailures(db, request, loginUsername, config);
-    const session = randomBytes(64).toString("base64url");
-    const csrf = randomBytes(32).toString("base64url");
-    const sessionHash = await argon2.hash(session, { type: argon2.argon2id, memoryCost: 32768, timeCost: 2, parallelism: 1 });
-    const lookupDigest = hmacToken(session, config.SESSION_SECRET_BASE64);
-    await tx(db, async (client) => {
-      await client.query(
-        "update admin_session set revoked_at=now() where account_id=$1 and revoked_at is null and expires_at > now()",
-        [account.id]
-      );
-      await client.query(
-        `insert into admin_session(account_id,session_hash,lookup_digest,expires_at,reauthenticated_at,session_epoch)
-         values ($1,$2,$3,now()+interval '8 hours',now(),$4)`,
-        [account.id, sessionHash, lookupDigest, account.session_epoch]
-      );
+    if (account.mfa_enabled && !trustedDeviceMatches(request, config.SESSION_SECRET_BASE64, { id: String(account.id), session_epoch: String(account.session_epoch) })) {
+      const challenge = issueLoginChallenge(reply, request, config.SESSION_SECRET_BASE64, {
+        id: String(account.id),
+        session_epoch: String(account.session_epoch),
+        username: String(account.username)
+      });
+      await appendAudit(db, { eventType: "admin.login.password_verified", actorType: "admin", actorId: String(account.id), correlationId });
+      return {
+        ok: false,
+        mfaRequired: true,
+        challengeExpiresAt: challenge.expiresAt,
+        trustedDeviceWindowHours: Math.floor(MFA_TRUST_WINDOW_MS / (60 * 60 * 1000))
+      };
+    }
+    clearLoginChallenge(reply);
+    const created = await createAdminSession(db, reply, request, config, {
+      id: account.id,
+      session_epoch: account.session_epoch
     });
-    reply.setCookie(SESSION_COOKIE, session, { httpOnly: true, secure: true, sameSite: "strict", path: "/" });
-    reply.setCookie(CSRF_COOKIE, csrf, { httpOnly: false, secure: true, sameSite: "strict", path: "/" });
+    await appendAudit(db, { eventType: "admin.login.succeeded", actorType: "admin", actorId: String(account.id), correlationId });
+    return { ok: true, csrfToken: created.csrfToken, trustedDeviceExpiresAt: created.trustedDeviceExpiresAt };
+  });
+
+  app.post("/api/login/mfa", {
+    config: { rateLimit: { max: 10, timeWindow: "1 minute", groupId: "admin-login-mfa" } }
+  }, async (request, reply) => {
+    const correlationId = randomUUID();
+    if (hostOf(request.headers.host) !== config.ADMIN_HOST) return sendError(reply, 404, "not_found", undefined, correlationId);
+    const challenge = verifyAdminToken(request.cookies[LOGIN_CHALLENGE_COOKIE], config.SESSION_SECRET_BASE64);
+    if (!challenge || challenge.purpose !== "login_challenge" || challenge.uaDigest !== userAgentDigest(request, config.SESSION_SECRET_BASE64)) {
+      clearLoginChallenge(reply);
+      return sendError(reply, 401, "mfa_challenge_required", "MFA challenge is required", correlationId);
+    }
+    const body = request.body as { code?: string; recoveryCode?: string };
+    const result = await db.query("select id, username, mfa_enabled, mfa_secret, session_epoch from admin_account where id=$1 and active=true and activated_at is not null", [challenge.accountId]);
+    const account = result.rows[0] as Record<string, unknown> | undefined;
+    if (!account || !account.mfa_enabled || String(account.session_epoch) !== challenge.sessionEpoch) {
+      clearLoginChallenge(reply);
+      return sendError(reply, 401, "mfa_challenge_required", "MFA challenge is required", correlationId);
+    }
+    const decryptedMfaSecret = decryptMfaSecret(typeof account.mfa_secret === "string" ? account.mfa_secret : "", config.MFA_ENCRYPTION_KEY_BASE64, {
+      allowLegacyPlaintext: config.MFA_ALLOW_PLAINTEXT_LEGACY,
+      subjectId: String(account.id),
+      purpose: "admin_totp"
+    });
+    const code = typeof body.code === "string" ? body.code.trim() : "";
+    const recoveryCode = typeof body.recoveryCode === "string" ? body.recoveryCode.trim() : code;
+    const totpOk = authenticator.check(code, decryptedMfaSecret);
+    const recoveryOk = !totpOk ? await consumeRecoveryCode(db, String(account.id), recoveryCode) : false;
+    if (!totpOk && !recoveryOk) {
+      await appendAudit(db, { eventType: "admin.login.mfa_failed", actorType: "admin", actorId: String(account.id), correlationId });
+      return sendError(reply, 401, "invalid_mfa_code", "Invalid MFA code", correlationId);
+    }
+    clearLoginChallenge(reply);
+    const created = await createAdminSession(db, reply, request, config, {
+      id: account.id,
+      session_epoch: account.session_epoch
+    }, true);
     await appendAudit(db, { eventType: "admin.login.succeeded", actorType: "admin", actorId: String(account.id), correlationId });
     if (recoveryOk) {
       await appendAudit(db, { eventType: "admin.login.recovery_code_used", actorType: "admin", actorId: String(account.id), objectType: "admin_account", objectId: String(account.id), correlationId });
     }
-    return { ok: true, csrfToken: csrf };
+    return { ok: true, csrfToken: created.csrfToken, trustedDeviceExpiresAt: created.trustedDeviceExpiresAt };
   });
 
   app.post("/api/logout", {
@@ -1067,6 +1336,7 @@ export function registerAdminRoutes(app: FastifyInstance, db: Db, config: AdminR
     if (session) await db.query("update admin_session set revoked_at=now() where id=$1 and revoked_at is null", [session.sessionId]);
     reply.clearCookie(SESSION_COOKIE, { path: "/" });
     reply.clearCookie(CSRF_COOKIE, { path: "/" });
+    clearTrustedDeviceCookie(reply);
     return { ok: true };
   });
 
@@ -1109,6 +1379,79 @@ export function registerAdminRoutes(app: FastifyInstance, db: Db, config: AdminR
     } catch (error) {
       return sendError(reply, Number((error as { statusCode?: number }).statusCode ?? 500), error instanceof Error ? error.message : "operation_failed", undefined, correlationId);
     }
+  });
+
+  app.post("/api/admin-mfa/enrollment/start", async (request, reply) => {
+    const correlationId = randomUUID();
+    if (hostOf(request.headers.host) !== config.ADMIN_HOST) return sendError(reply, 404, "not_found", undefined, correlationId);
+    const session = await sessionAccount(db, request, config);
+    if (!session) return sendError(reply, 401, "unauthorized", undefined, correlationId);
+    if (!requireCsrf(request)) return sendError(reply, 403, "csrf_failed", undefined, correlationId);
+    const account = await db.query("select username,mfa_enabled,session_epoch from admin_account where id=$1", [session.accountId]);
+    if (!account.rowCount) return sendError(reply, 404, "not_found", undefined, correlationId);
+    if (isDeploymentManagedAdmin(String(account.rows[0].username), config)) {
+      return sendError(reply, 409, "admin_mfa_deployment_managed", undefined, correlationId);
+    }
+    const secret = authenticator.generateSecret();
+    const enrollment = buildMfaEnrollmentToken(request, config, {
+      id: session.accountId,
+      sessionEpoch: String(account.rows[0].session_epoch),
+      username: String(account.rows[0].username)
+    }, secret);
+    return {
+      ok: true,
+      mfaEnabled: Boolean(account.rows[0].mfa_enabled),
+      enrollmentToken: enrollment.enrollmentToken,
+      otpauthUri: enrollment.otpauthUri,
+      manualSecret: secret,
+      expiresAt: enrollment.expiresAt
+    };
+  });
+
+  app.post("/api/admin-mfa/enrollment/verify", async (request, reply) => {
+    const correlationId = randomUUID();
+    if (hostOf(request.headers.host) !== config.ADMIN_HOST) return sendError(reply, 404, "not_found", undefined, correlationId);
+    const session = await sessionAccount(db, request, config);
+    if (!session) return sendError(reply, 401, "unauthorized", undefined, correlationId);
+    if (!requireCsrf(request)) return sendError(reply, 403, "csrf_failed", undefined, correlationId);
+    const parsed = adminMfaEnrollmentVerifySchema.safeParse(request.body);
+    if (!parsed.success) return sendError(reply, 400, "invalid_mfa_enrollment", undefined, correlationId);
+    const enrollment = verifyAdminToken(parsed.data.enrollmentToken, config.SESSION_SECRET_BASE64);
+    if (!enrollment || enrollment.purpose !== "mfa_enrollment" || enrollment.accountId !== session.accountId || enrollment.uaDigest !== userAgentDigest(request, config.SESSION_SECRET_BASE64) || !enrollment.secret) {
+      return sendError(reply, 400, "invalid_mfa_enrollment", undefined, correlationId);
+    }
+    if (!authenticator.check(parsed.data.code, enrollment.secret)) {
+      return sendError(reply, 401, "invalid_mfa_code", undefined, correlationId);
+    }
+    const recoveryCodes = Array.from({ length: 8 }, generateRecoveryCode);
+    const recoveryHashes = await Promise.all(recoveryCodes.map((code) => argon2.hash(code, { type: argon2.argon2id, memoryCost: 32768, timeCost: 2, parallelism: 1 })));
+    const nextSessionEpoch = randomUUID();
+    await tx(db, async (client) => {
+      const account = await client.query("select username,session_epoch from admin_account where id=$1 for update", [session.accountId]);
+      if (!account.rowCount) throw Object.assign(new Error("not_found"), { statusCode: 404 });
+      if (String(account.rows[0].session_epoch) !== enrollment.sessionEpoch) throw Object.assign(new Error("invalid_mfa_enrollment"), { statusCode: 400 });
+      const enrollmentSecret = enrollment.secret;
+      if (!enrollmentSecret) throw Object.assign(new Error("invalid_mfa_enrollment"), { statusCode: 400 });
+      const encrypted = encryptMfaSecret(enrollmentSecret, config.MFA_ENCRYPTION_KEY_BASE64, { subjectId: session.accountId, purpose: "admin_totp" });
+      await client.query("update admin_account set mfa_enabled=true,mfa_secret=$2,session_epoch=$3,updated_at=now() where id=$1", [session.accountId, encrypted, nextSessionEpoch]);
+      await client.query("update admin_recovery_code set consumed_at=coalesce(consumed_at, now()) where account_id=$1", [session.accountId]);
+      for (const hash of recoveryHashes) {
+        await client.query("insert into admin_recovery_code(account_id,code_hash) values ($1,$2)", [session.accountId, hash]);
+      }
+      await client.query("update admin_session set revoked_at=now() where account_id=$1 and id<>$2 and revoked_at is null", [session.accountId, session.sessionId]);
+      await client.query("update admin_session set session_epoch=$2,reauthenticated_at=now() where id=$1 and revoked_at is null", [session.sessionId, nextSessionEpoch]);
+      await appendAudit(client, {
+        eventType: "admin.mfa.enabled",
+        actorType: "admin",
+        actorId: session.accountId,
+        objectType: "admin_account",
+        objectId: session.accountId,
+        after: { recoveryCodeCount: recoveryCodes.length },
+        correlationId
+      });
+    });
+    setTrustedDeviceCookie(reply, request, config.SESSION_SECRET_BASE64, { id: session.accountId, session_epoch: nextSessionEpoch });
+    return { ok: true, recoveryCodes };
   });
 
   app.post("/api/admin-sessions/revoke-others", async (request, reply) => {
@@ -1158,7 +1501,7 @@ export function registerAdminRoutes(app: FastifyInstance, db: Db, config: AdminR
     if (!session) return sendError(reply, 401, "unauthorized", undefined, correlationId);
     if (!requireCsrf(request)) return sendError(reply, 403, "csrf_failed", undefined, correlationId);
     try {
-      await createAdminAccount(db, session.accountId, correlationId, request.body, config.MFA_ENCRYPTION_KEY_BASE64);
+      await createAdminAccount(db, session.accountId, correlationId, request.body);
       return { ok: true };
     } catch (error) {
       return sendError(reply, Number((error as { statusCode?: number }).statusCode ?? 500), error instanceof Error ? error.message : "operation_failed", undefined, correlationId);

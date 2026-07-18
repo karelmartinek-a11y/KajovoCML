@@ -5,7 +5,8 @@ import {
   completedProbeCheckTimes,
   expectedMonitoringProfileDigest,
   LEGACY_MONITORING_INTERVALS,
-  LEGACY_MONITORING_STALE_AFTER_SECONDS
+  LEGACY_MONITORING_STALE_AFTER_SECONDS,
+  routingProbePasses
 } from "./monitoring.js";
 
 describe("monitoring profile digest compatibility", () => {
@@ -42,5 +43,15 @@ describe("legacy monitoring scheduling", () => {
 
     expect(completed.get("tls")).toBe(new Date("2026-07-14T16:49:05.000Z").getTime());
     expect(completed.get("routing")).toBe(new Date("2026-07-14T17:05:00.000Z").getTime());
+  });
+
+  it("accepts legacy unauthorized routing responses", () => {
+    expect(routingProbePasses(401, null)).toBe(true);
+  });
+
+  it("accepts POST-only MCP routing responses", () => {
+    expect(routingProbePasses(405, "POST")).toBe(true);
+    expect(routingProbePasses(405, "GET, POST")).toBe(true);
+    expect(routingProbePasses(405, null)).toBe(false);
   });
 });
