@@ -280,7 +280,7 @@ export function registerComponentRoutes(app: FastifyInstance, db: Db, config: Ap
     }
   });
 
-  app.get("/.well-known/kcml-component", async (request, reply) => {
+  app.get("/.well-known/kcml-component", { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } }, async (request, reply) => {
     const correlationId = randomUUID();
     const host = hostOf(request.headers.host);
     const result = await db.query(`select id from component where hostname=$1`, [host]);
@@ -289,7 +289,7 @@ export function registerComponentRoutes(app: FastifyInstance, db: Db, config: Ap
     return reply.header("cache-control", "no-store").send({ component, catalogVersion: COMPONENT_CATALOG_VERSION });
   });
 
-  app.post("/v2/component-pulse", async (request, reply) => {
+  app.post("/v2/component-pulse", { config: { rateLimit: { max: 120, timeWindow: "1 minute" } } }, async (request, reply) => {
     const correlationId = randomUUID();
     const decision = await authorizeRuntime(db, config, request, "component.pulse", "/v2/component-pulse", correlationId);
     if (!decision?.allow) return sendError(reply, 403, decision?.reasonCode ?? "invalid_token", undefined, correlationId);
@@ -301,7 +301,7 @@ export function registerComponentRoutes(app: FastifyInstance, db: Db, config: Ap
     return reply.code(202).send({ accepted: true, policyEpoch: decision.policyEpoch, correlationId });
   });
 
-  app.post("/v2/component-audit-events", async (request, reply) => {
+  app.post("/v2/component-audit-events", { config: { rateLimit: { max: 600, timeWindow: "1 minute" } } }, async (request, reply) => {
     const correlationId = randomUUID();
     const decision = await authorizeRuntime(db, config, request, "component.audit.write", "/v2/component-audit-events", correlationId);
     if (!decision?.allow || !decision.targetComponentId) return sendError(reply, 403, decision?.reasonCode ?? "invalid_token", undefined, correlationId);
