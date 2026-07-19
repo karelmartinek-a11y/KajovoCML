@@ -25,5 +25,11 @@ grep -Fq 'CONFIG_VAULT_MASTER_KEY_BASE64="$vault_master_key"' "$install_script"
 grep -Fq "where key='adminBootstrapUsername'" "$install_script"
 grep -Fq 'admin_username="$(effective_admin_username)"' "$install_script"
 grep -Fq 'export ADMIN_BOOTSTRAP_USERNAME="$admin_username"' "$install_script"
+grep -Fq 'release-check:mcp_kcml0002_state=SKIPPED clean_start_no_registered_server' "$install_script"
+grep -Fq "where version='046_drop_stale_component_identity_triggers_20260723.sql'" "$install_script"
+if grep -Fxq 'test -n "$kcml0002_server_id"' "$install_script"; then
+  echo "KCML0002 clean-start deploy must not fail before the optional runtime smoke" >&2
+  exit 1
+fi
 grep -Fq 'audit_archive_dir="$(dirname "${AUDIT_ARCHIVE_PATH:-/var/lib/kcml/audit/archive.jsonl}")"' "$preflight_script"
 grep -Fq 'runuser -u kcml -- test -w "$audit_archive_dir"' "$preflight_script"

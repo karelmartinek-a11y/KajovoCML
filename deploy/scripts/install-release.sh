@@ -345,33 +345,37 @@ step verify-final-invariants
 wait_for_sql_equals "audit_chain" "t" "select valid from verify_audit_chain()"
 kcml0002_server_id="$(psql "$app_database_url" --no-psqlrc --tuples-only --no-align --quiet --command \
   "select id from mcp_server where code='KCML0002'")"
-test -n "$kcml0002_server_id"
-kcml0002_state="$(psql "$app_database_url" --no-psqlrc --tuples-only --no-align --quiet --command \
-  "select registration_state::text || '/' || operational_state::text from mcp_server where code='KCML0002'")"
-echo "release-check:mcp_kcml0002_initial_state=$kcml0002_state"
-run_kcml0002_runtime_refresh
-KCML_PROCESS_ROLE=web \
-DATABASE_URL_FILE=/etc/kcml/credentials/web/database_url \
-CONFIG_VAULT_MASTER_KEY_BASE64_FILE=/etc/kcml/credentials/config_vault_master_key \
-NODE_ENV=production \
-BUILD_ID="$release_id" \
-  node "$release_dir/apps/server/dist/cli/release-kcml0002-smoke.js"
-curl -fsS -H "Host: kcml0002.${PUBLIC_BASE_DOMAIN:?PUBLIC_BASE_DOMAIN is required}" \
-  "http://127.0.0.1:${PORT:-3010}/.well-known/oauth-protected-resource/mcp" \
-  | jq -e --arg resource "https://kcml0002.${PUBLIC_BASE_DOMAIN}/mcp" '.resource == $resource' >/dev/null
-if [ "$kcml0002_state" != "ACTIVE/HEALTHY" ] && {
-  [ "${kcml0002_state#TRIAL/}" != "$kcml0002_state" ] || [ "${kcml0002_state#REGISTERED_DISABLED/}" != "$kcml0002_state" ];
-}; then
+if [ -n "$kcml0002_server_id" ]; then
   kcml0002_state="$(psql "$app_database_url" --no-psqlrc --tuples-only --no-align --quiet --command \
     "select registration_state::text || '/' || operational_state::text from mcp_server where code='KCML0002'")"
-  echo "release-check:mcp_kcml0002_promoted_state=$kcml0002_state"
+  echo "release-check:mcp_kcml0002_initial_state=$kcml0002_state"
+  run_kcml0002_runtime_refresh
+  KCML_PROCESS_ROLE=web \
+  DATABASE_URL_FILE=/etc/kcml/credentials/web/database_url \
+  CONFIG_VAULT_MASTER_KEY_BASE64_FILE=/etc/kcml/credentials/config_vault_master_key \
+  NODE_ENV=production \
+  BUILD_ID="$release_id" \
+    node "$release_dir/apps/server/dist/cli/release-kcml0002-smoke.js"
+  curl -fsS -H "Host: kcml0002.${PUBLIC_BASE_DOMAIN:?PUBLIC_BASE_DOMAIN is required}" \
+    "http://127.0.0.1:${PORT:-3010}/.well-known/oauth-protected-resource/mcp" \
+    | jq -e --arg resource "https://kcml0002.${PUBLIC_BASE_DOMAIN}/mcp" '.resource == $resource' >/dev/null
+  if [ "$kcml0002_state" != "ACTIVE/HEALTHY" ] && {
+    [ "${kcml0002_state#TRIAL/}" != "$kcml0002_state" ] || [ "${kcml0002_state#REGISTERED_DISABLED/}" != "$kcml0002_state" ];
+  }; then
+    kcml0002_state="$(psql "$app_database_url" --no-psqlrc --tuples-only --no-align --quiet --command \
+      "select registration_state::text || '/' || operational_state::text from mcp_server where code='KCML0002'")"
+    echo "release-check:mcp_kcml0002_promoted_state=$kcml0002_state"
+  fi
+  wait_for_sql_equals "mcp_kcml0002_state" "ACTIVE/HEALTHY" "select registration_state::text || '/' || operational_state::text from mcp_server where code='KCML0002'" 90 2
+else
+  echo "release-check:mcp_kcml0002_state=SKIPPED clean_start_no_registered_server"
 fi
-wait_for_sql_equals "mcp_kcml0002_state" "ACTIVE/HEALTHY" "select registration_state::text || '/' || operational_state::text from mcp_server where code='KCML0002'" 90 2
 wait_for_sql_equals "migration_019" "1" "select count(*) from schema_migration where version='019_postgres_http_rate_limiting.sql'"
 wait_for_sql_equals "migration_022" "1" "select count(*) from schema_migration where version='022_runtime_egress_capability_backfill.sql'"
 wait_for_sql_equals "migration_034" "1" "select count(*) from schema_migration where version='034_audit_writer_owner_privileges.sql'"
 wait_for_sql_equals "migration_035" "1" "select count(*) from schema_migration where version='035_audit_writer_returning_privilege.sql'"
 wait_for_sql_equals "migration_036" "1" "select count(*) from schema_migration where version='036_audit_writer_security_contract.sql'"
+wait_for_sql_equals "migration_046" "1" "select count(*) from schema_migration where version='046_drop_stale_component_identity_triggers_20260723.sql'"
 
 trap - ERR
 cleanup_registry_auth
