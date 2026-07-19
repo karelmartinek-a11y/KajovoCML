@@ -12,6 +12,11 @@ export function renderNginxConfig(template, values) {
   if (![adminHost, authHost, registerHost].every((value) => value.endsWith(`.${domain}`))) {
     throw new Error("nginx_host_domain_mismatch");
   }
+  const secretApiHost = `secrets.${domain}`;
+  const routedHosts = [adminHost, authHost, registerHost, secretApiHost];
+  if (new Set(routedHosts).size !== routedHosts.length) {
+    throw new Error("nginx_host_collision");
+  }
   if (![certPath, keyPath].every((value) => SAFE_PATH_PATTERN.test(value))) {
     throw new Error("invalid_nginx_tls_path");
   }

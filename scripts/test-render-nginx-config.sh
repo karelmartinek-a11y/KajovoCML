@@ -32,6 +32,23 @@ if node deploy/scripts/render-nginx-config.mjs \
   exit 1
 fi
 
+for colliding_host in admin auth register; do
+  admin_host=admin.example.invalid
+  auth_host=auth.example.invalid
+  register_host=register.example.invalid
+  case "$colliding_host" in
+    admin) admin_host=secrets.example.invalid ;;
+    auth) auth_host=secrets.example.invalid ;;
+    register) register_host=secrets.example.invalid ;;
+  esac
+  if node deploy/scripts/render-nginx-config.mjs \
+    deploy/nginx/kcml.conf "$tmp" \
+    example.invalid "$admin_host" "$auth_host" "$register_host" \
+    /etc/kcml/tls/fullchain.pem /etc/kcml/tls/privkey.pem 2>/dev/null; then
+    exit 1
+  fi
+done
+
 derived_hosts="$(env -i PUBLIC_BASE_DOMAIN=example.invalid bash -c \
   '. deploy/scripts/control-plane-hosts.sh; printf "%s|%s|%s" "$ADMIN_HOST" "$AUTH_HOST" "$REGISTER_HOST"')"
 test "$derived_hosts" = 'admin.example.invalid|auth.example.invalid|register.example.invalid'
