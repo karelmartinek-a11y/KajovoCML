@@ -3,6 +3,7 @@ import type { Db } from "../db.js";
 import { tx } from "../db.js";
 import { fingerprintSecret, hmacToken, issueOpaqueSecret } from "../security/secrets.js";
 import { appendAudit } from "./audit.js";
+import { KCML_RELEASE } from "./release.js";
 
 export type ComponentAuthorizationReason =
   | "allowed"
@@ -74,7 +75,7 @@ export async function issueComponentAccessToken(db: Db, params: {
     const target = targetResult.rows[0];
     if (!target.enabled || !target.ingress_enabled) throw Object.assign(new Error("component_disabled"), { statusCode: 403 });
     if (target.lifecycle_state === "QUARANTINED" || target.operational_state === "QUARANTINED") throw Object.assign(new Error("component_quarantined"), { statusCode: 403 });
-    if (target.release_version !== "2026.07.21") throw Object.assign(new Error("catalog_incompatible"), { statusCode: 409 });
+    if (target.release_version !== KCML_RELEASE.catalogVersion) throw Object.assign(new Error("catalog_incompatible"), { statusCode: 409 });
     const permissions = await client.query(
       `select distinct scope_name from component_permission
         where source_component_id=$1 and target_component_id=$2 and revoked_at is null order by scope_name`,
@@ -143,7 +144,7 @@ export async function authorizeComponentCall(db: Db, params: {
         decision = denied("component_quarantined", params.correlationId, base);
       } else if (!row.target_enabled || !row.target_ingress_enabled || !row.source_enabled) {
         decision = denied("component_disabled", params.correlationId, base);
-      } else if (row.release_version !== "2026.07.21") {
+      } else if (row.release_version !== KCML_RELEASE.catalogVersion) {
         decision = denied("catalog_incompatible", params.correlationId, base);
       } else {
         const permission = await client.query(
