@@ -10,8 +10,11 @@ node deploy/scripts/render-nginx-config.mjs \
   /etc/kcml/tls/fullchain.pem /etc/kcml/tls/privkey.pem
 
 grep -Fq 'server_name admin.example.invalid;' "$tmp"
+grep -Fq 'server_name secrets.example.invalid;' "$tmp"
+grep -Fq 'location = /.well-known/kcml-secret-api {' "$tmp"
+grep -Fq 'location = /v1/secrets/resolve {' "$tmp"
 grep -Fq 'server_name "~^kcml[0-9]{4,}\.example\.invalid$";' "$tmp"
-grep -Fq 'server_name admin.example.invalid auth.example.invalid register.example.invalid reference-api.example.invalid ha-inventory.example.invalid alerts-primary.example.invalid alerts-backup.example.invalid "~^kcml[0-9]{4,}\.example\.invalid$";' "$tmp"
+grep -Fq 'server_name admin.example.invalid auth.example.invalid register.example.invalid secrets.example.invalid reference-api.example.invalid ha-inventory.example.invalid alerts-primary.example.invalid alerts-backup.example.invalid "~^kcml[0-9]{4,}\.example\.invalid$";' "$tmp"
 test "$(grep -Fc 'return 444;' "$tmp")" -eq 2
 # The nginx variables must remain literal in the rendered configuration.
 # shellcheck disable=SC2016
