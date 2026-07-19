@@ -299,6 +299,11 @@ unset login_payload
 curl -fsS -H "Host: ${AUTH_HOST:?AUTH_HOST is required}" \
   "http://127.0.0.1:${PORT:-3010}/.well-known/oauth-authorization-server" \
   | jq -e --arg issuer "https://${AUTH_HOST}" '.issuer == $issuer' >/dev/null
+curl -fsS -H "Host: secrets.${PUBLIC_BASE_DOMAIN:?PUBLIC_BASE_DOMAIN is required}" \
+  "http://127.0.0.1:${PORT:-3010}/.well-known/kcml-secret-api" \
+  | jq -e --arg issuer "https://secrets.${PUBLIC_BASE_DOMAIN}" \
+      --arg resolve "https://secrets.${PUBLIC_BASE_DOMAIN}/v1/secrets/resolve" \
+      '.issuer == $issuer and .resolveEndpoint == $resolve and (.auth | index("client_secret_basic")) and (.auth | index("integration_token_bearer"))' >/dev/null
 test "$(curl -sS -o /dev/null -w '%{http_code}' -H 'Host: unknown.invalid' \
   "http://127.0.0.1:${PORT:-3010}/health")" = "404"
 step smoke-reference-external-api
