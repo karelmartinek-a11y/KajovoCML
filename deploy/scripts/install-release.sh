@@ -304,6 +304,12 @@ curl -fsS -H "Host: secrets.${PUBLIC_BASE_DOMAIN:?PUBLIC_BASE_DOMAIN is required
   | jq -e --arg issuer "https://secrets.${PUBLIC_BASE_DOMAIN}" \
       --arg resolve "https://secrets.${PUBLIC_BASE_DOMAIN}/v1/secrets/resolve" \
       '.issuer == $issuer and .resolveEndpoint == $resolve and (.auth | index("client_secret_basic")) and (.auth | index("integration_token_bearer"))' >/dev/null
+curl -fsS "https://secrets.${PUBLIC_BASE_DOMAIN}/.well-known/kcml-secret-api" \
+  | jq -e --arg issuer "https://secrets.${PUBLIC_BASE_DOMAIN}" \
+      --arg resolve "https://secrets.${PUBLIC_BASE_DOMAIN}/v1/secrets/resolve" \
+      '.issuer == $issuer and .resolveEndpoint == $resolve and (.auth | index("client_secret_basic")) and (.auth | index("integration_token_bearer"))' >/dev/null
+curl -fsS "https://secrets.${PUBLIC_BASE_DOMAIN}/health" \
+  | jq -e '.status == "ok"' >/dev/null
 test "$(curl -sS -o /dev/null -w '%{http_code}' -H 'Host: unknown.invalid' \
   "http://127.0.0.1:${PORT:-3010}/health")" = "404"
 step smoke-reference-external-api
