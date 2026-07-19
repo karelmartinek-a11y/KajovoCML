@@ -90,6 +90,7 @@ import {
   type OperationalConfigSetting,
   type OperationalAlert,
   type Page,
+  type ReleaseInfo,
   type SecretResult,
   type Server,
   type ServerStateHistory,
@@ -194,7 +195,18 @@ function summarizeProbe(probe: MonitoringProbe): string {
   return `${probe.probe_type} · ${status}`;
 }
 
-function CreateIntegrationTokenModal({ resumeJobId, onClose, onCreated }: { resumeJobId?: string; onClose: () => void; onCreated: (secret: IntegrationSecret) => void }) {
+function shortBuildLabel(releaseInfo: ReleaseInfo | null): string {
+  if (!releaseInfo) return "Build se načítá";
+  return releaseInfo.commitSha && releaseInfo.commitSha !== "unknown"
+    ? `Build ${releaseInfo.commitSha.slice(0, 7)}`
+    : "Build neověřen";
+}
+
+function releaseLabel(releaseInfo: ReleaseInfo | null): string {
+  return releaseInfo ? `Release ${releaseInfo.applicationVersion}` : "Release se načítá";
+}
+
+function CreateIntegrationTokenModal({ resumeJobId, catalogVersion, onClose, onCreated }: { resumeJobId?: string; catalogVersion: string; onClose: () => void; onCreated: (secret: IntegrationSecret) => void }) {
   const [label, setLabel] = useState(resumeJobId ? `Pokračování integrace ${resumeJobId.slice(0, 8)}` : "");
   const [summary, setSummary] = useState("");
   const [businessPurpose, setBusinessPurpose] = useState("");
@@ -238,7 +250,7 @@ function CreateIntegrationTokenModal({ resumeJobId, onClose, onCreated }: { resu
   return (
     <Modal title={resumeJobId ? "Navazující implementační token" : integrationTokenActionLabel} onClose={onClose}>
       <form className="modal-form" onSubmit={(event) => { void submit(event); }}>
-        <div className="form-intro"><span className="modal-icon"><Workflow size={20} /></span><p>KajovoCML 2026.07.21, strukturovaný descriptor a integrační token.</p></div>
+        <div className="form-intro"><span className="modal-icon"><Workflow size={20} /></span><p>KajovoCML {catalogVersion}, strukturovaný descriptor a integrační token.</p></div>
         <label>Označení tokenu<span className="field-hint">Krátký interní název pro pozdější dohledání tokenu.</span><input autoFocus value={label} onChange={(event) => setLabel(event.target.value)} maxLength={120} placeholder="Např. Fakturační onboarding" /></label>
         <div className="descriptor-grid">
           <label>Shrnutí serveru<span className="field-hint">Jednovětý popis integračního záměru.</span><textarea value={summary} onChange={(event) => setSummary(event.target.value)} maxLength={120} rows={3} placeholder="Např. Zpracování fakturačních podkladů" /></label>
@@ -255,7 +267,7 @@ function CreateIntegrationTokenModal({ resumeJobId, onClose, onCreated }: { resu
   );
 }
 
-function IntegrationSecretModal({ secret, onClose }: { secret: IntegrationSecret; onClose: () => void }) {
+function IntegrationSecretModal({ secret, catalogVersion, onClose }: { secret: IntegrationSecret; catalogVersion: string; onClose: () => void }) {
   const [copied, setCopied] = useState<"token" | "instructions" | null>(null);
   async function copyToken() {
     await navigator.clipboard.writeText(secret.token);
@@ -267,7 +279,8 @@ function IntegrationSecretModal({ secret, onClose }: { secret: IntegrationSecret
       descriptor: secret.descriptor,
       token: secret.token,
       initialExpiresAt: secret.initialExpiresAt,
-      programmerApiUrl: secret.programmerApiUrl
+      programmerApiUrl: secret.programmerApiUrl,
+      catalogVersion
     }));
     setCopied("instructions");
   }
@@ -275,7 +288,7 @@ function IntegrationSecretModal({ secret, onClose }: { secret: IntegrationSecret
     <Modal title="Podklady pro programátora jsou připravené" onClose={onClose}>
       <div className="secret-dialog">
         <div className="notice success"><CheckCircle2 size={18} /><span><strong>Vaše práce tímto končí.</strong><br />Programátorovi předejte onboarding katalog a token. Stav, opravitelné chyby i nahrání nové revize obslouží sám přes programátorské API až do zeleného výsledku.</span></div>
-        <div className="handoff-step"><span>1</span><div><strong>Onboarding katalog</strong><p>Závazný registrační kontrakt 2026.07.21.</p><a className="button-link secondary" href={secret.onboardingCatalogUrl} download={secret.onboardingCatalogFileName}><Download size={16} /> Stáhnout onboarding katalog</a></div></div>
+        <div className="handoff-step"><span>1</span><div><strong>Onboarding katalog</strong><p>Závazný registrační kontrakt {catalogVersion}.</p><a className="button-link secondary" href={secret.onboardingCatalogUrl} download={secret.onboardingCatalogFileName}><Download size={16} /> Stáhnout onboarding katalog</a></div></div>
         <div className="handoff-step"><span>2</span><div><strong>Server descriptor</strong><p>{secret.descriptor.summary}</p><dl className="descriptor-dl"><dt>Účel</dt><dd>{secret.descriptor.businessPurpose}</dd><dt>Vlastník služby</dt><dd>{secret.descriptor.serviceOwner}</dd><dt>Technický vlastník</dt><dd>{secret.descriptor.technicalOwner}</dd><dt>Kritičnost</dt><dd>{secret.descriptor.criticality}</dd></dl></div></div>
         <div className="handoff-step"><span>3</span><div><strong>Integrační token</strong><p>Plnou hodnotu lze zobrazit i předat v tomto handoffu. První upload musí programátor provést do {formatDate(secret.initialExpiresAt)}.</p><div className="secret-once"><code>{secret.token}</code><small>Fingerprint {secret.fingerprint}</small></div><button type="button" className="secondary" onClick={() => { void copyToken(); }}><ClipboardCopy size={16} /> {copied === "token" ? "Token zkopírován" : "Zkopírovat token"}</button></div></div>
         <div className="permission-preview"><strong>Co proběhne po uploadu</strong><span>Systém přidělí KCML identitu a vlastní HTTPS adresu a provede PR/CI, podepsaný OCI build, izolované nasazení, katalog, autorizaci, logging, audit, monitoring, veřejné testy a aktivaci. Opravitelnou chybu API vrátí programátorovi jako <code>UPLOAD_REVISION</code>; po nové revizi pipeline sama pokračuje.</span></div>
@@ -406,6 +419,7 @@ function ServerDetailModal({
   probes,
   history,
   accountName,
+  catalogVersion,
   onClose,
   onToggleEnabled,
   onRunTest,
@@ -418,6 +432,7 @@ function ServerDetailModal({
   probes: MonitoringProbe[];
   history: ServerStateHistory[];
   accountName: string | null;
+  catalogVersion: string;
   onClose: () => void;
   onToggleEnabled: (server: Server, enabled: boolean) => Promise<void>;
   onRunTest: (server: Server) => Promise<ServerTestResult>;
@@ -573,7 +588,7 @@ function ServerDetailModal({
               </div>
               {monitoring && activeRevision ? <div className="server-inline-message">
                 <ShieldAlert size={16} />
-                <span>Monitoring aktivní revize je uzamčený. Změna profilu založí novou registrační revizi 2026.07.21 a znovu spustí povinné brány.</span>
+                <span>Monitoring aktivní revize je uzamčený. Změna profilu založí novou registrační revizi {catalogVersion} a znovu spustí povinné brány.</span>
               </div> : null}
               {monitoring && !activeRevision ? <details className="server-advanced-block">
                 <summary>Upravit monitoring profil</summary>
@@ -712,6 +727,7 @@ function ServerDetailModal({
 function MonitoringPage({
   servers,
   accountName,
+  catalogVersion,
   probes,
   overview,
   onRefresh,
@@ -729,6 +745,7 @@ function MonitoringPage({
 }: {
   servers: Server[];
   accountName: string | null;
+  catalogVersion: string;
   probes: MonitoringProbe[];
   overview: MonitoringOverview;
   onRefresh: () => void;
@@ -843,6 +860,7 @@ function MonitoringPage({
         probes={probes.filter((probe) => probe.server_id === detailServer.id)}
         history={overview.stateHistory.filter((entry) => entry.server_id === detailServer.id)}
         accountName={accountName}
+        catalogVersion={catalogVersion}
         onClose={() => setDetailServer(null)}
         onToggleEnabled={onToggleEnabled}
         onRunTest={onRunTest}
@@ -1064,7 +1082,7 @@ function IntegrationTokensPage({ tokens, jobs, onCreate, onOpenJob, onResume, on
   );
 }
 
-function Dashboard({ accountName, role, onLogout }: { accountName: string | null; role: AdminRole; onLogout: () => void }) {
+function Dashboard({ accountName, role, releaseInfo, onLogout }: { accountName: string | null; role: AdminRole; releaseInfo: ReleaseInfo | null; onLogout: () => void }) {
   const [page, setPage] = useState<Page>("components");
   const [components, setComponents] = useState<Component[]>([]);
   const [servers, setServers] = useState<Server[]>([]);
@@ -1093,6 +1111,7 @@ function Dashboard({ accountName, role, onLogout }: { accountName: string | null
   const [confirm, setConfirm] = useState<{ credential: KajaCredential; action: "revoke" | "delete" } | null>(null);
   const [renameCredential, setRenameCredential] = useState<KajaCredential | null>(null);
   const [error, setError] = useState("");
+  const catalogVersion = releaseInfo?.catalogVersion ?? releaseInfo?.applicationVersion ?? "neověřen";
   async function load() {
     setError("");
     try {
@@ -1461,13 +1480,15 @@ function Dashboard({ accountName, role, onLogout }: { accountName: string | null
       error={error}
       onPageChange={setPage}
       onLogout={() => { void logout(); }}
+      releaseLabel={releaseLabel(releaseInfo)}
+      buildLabel={shortBuildLabel(releaseInfo)}
       overlays={<>
         {createOpen && <CreateCredentialModal serverCount={servers.length} onClose={() => setCreateOpen(false)} onCreated={(created) => { setCreateOpen(false); setSecret(created); void load(); }} />}
         {secret && <CredentialSecretModal secret={secret} onClose={() => setSecret(null)} />}
         {confirm && <CredentialConfirmModal credential={confirm.credential} action={confirm.action} onClose={() => setConfirm(null)} onConfirm={runConfirm} />}
         {renameCredential && <RenameCredentialModal credential={renameCredential} onClose={() => setRenameCredential(null)} onRename={renameCredentialLabel} />}
-        {integrationCreate && <CreateIntegrationTokenModal resumeJobId={integrationCreate.resumeJobId} onClose={() => setIntegrationCreate(null)} onCreated={(created) => { setIntegrationCreate(null); setIntegrationSecret(created); setPage("integration"); void load(); }} />}
-        {integrationSecret && <IntegrationSecretModal secret={integrationSecret} onClose={() => setIntegrationSecret(null)} />}
+        {integrationCreate && <CreateIntegrationTokenModal resumeJobId={integrationCreate.resumeJobId} catalogVersion={catalogVersion} onClose={() => setIntegrationCreate(null)} onCreated={(created) => { setIntegrationCreate(null); setIntegrationSecret(created); setPage("integration"); void load(); }} />}
+        {integrationSecret && <IntegrationSecretModal secret={integrationSecret} catalogVersion={catalogVersion} onClose={() => setIntegrationSecret(null)} />}
         {integrationConfirm && <IntegrationConfirmModal token={integrationConfirm.token} action={integrationConfirm.action} onClose={() => setIntegrationConfirm(null)} onConfirm={runIntegrationConfirm} />}
         {selectedJobId && <OnboardingJobModal jobId={selectedJobId} onClose={() => setSelectedJobId(null)} onResume={(jobId) => { setSelectedJobId(null); setIntegrationCreate({ resumeJobId: jobId }); }} onCancel={cancelOnboardingJob} onReleaseQuarantine={(job) => { setSelectedJobId(null); setQuarantineRelease(job); }} />}
         {quarantineRelease && <QuarantineReleaseModal job={quarantineRelease} accountName={accountName} onClose={() => setQuarantineRelease(null)} onReleased={async () => { setQuarantineRelease(null); await load(); }} />}
@@ -1483,7 +1504,7 @@ function Dashboard({ accountName, role, onLogout }: { accountName: string | null
             setComponents((current) => current.map((entry) => entry.id === result.component.id ? result.component : entry));
             return result;
           }} />,
-        monitoring: <MonitoringPage servers={servers} accountName={accountName} probes={probes} overview={monitoringOverview} onRefresh={() => { void load(); }} onAutomatedOnboarding={() => setIntegrationCreate({})} onToggleEnabled={toggleServerEnabled} onRunTest={runServerTest} onLoadMonitoringProfile={loadMonitoringProfile} onSaveMonitoringProfile={saveMonitoringProfile} onStartRevision={startServerRevision} onDeleteServer={deleteServerRegistration} onTestWebhook={testAlertWebhooks} onAcknowledgeAlert={acknowledgeAlert} onSuppressAlert={suppressAlert} onRetryDelivery={retryAlertDelivery} />,
+        monitoring: <MonitoringPage servers={servers} accountName={accountName} catalogVersion={catalogVersion} probes={probes} overview={monitoringOverview} onRefresh={() => { void load(); }} onAutomatedOnboarding={() => setIntegrationCreate({})} onToggleEnabled={toggleServerEnabled} onRunTest={runServerTest} onLoadMonitoringProfile={loadMonitoringProfile} onSaveMonitoringProfile={saveMonitoringProfile} onStartRevision={startServerRevision} onDeleteServer={deleteServerRegistration} onTestWebhook={testAlertWebhooks} onAcknowledgeAlert={acknowledgeAlert} onSuppressAlert={suppressAlert} onRetryDelivery={retryAlertDelivery} />,
         integration: <IntegrationTokensPage tokens={integrationTokens} jobs={onboardingJobs} onCreate={() => setIntegrationCreate({})} onOpenJob={setSelectedJobId} onResume={(jobId) => setIntegrationCreate({ resumeJobId: jobId })} onRevoke={(token) => setIntegrationConfirm({ token, action: "revoke" })} onDelete={(token) => setIntegrationConfirm({ token, action: "delete" })} onRefresh={() => { void load(); }} />,
         secrets: role !== "AUDITOR" ? <SecretsPage secrets={managedSecrets} accountName={accountName} onRefresh={() => { void refreshSecrets(); }} /> : null,
         tokens: <CredentialsPage credentials={credentials} onOpenCreate={() => setCreateOpen(true)} onEditPermissions={openPermissions} onRename={setRenameCredential} onConfirm={(credential, action) => setConfirm({ credential, action })} onRefresh={() => { void load(); }} />,
@@ -1501,6 +1522,8 @@ function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [sessionNotice, setSessionNotice] = useState("");
   const [reauthRequired, setReauthRequired] = useState(false);
+  const [releaseInfo, setReleaseInfo] = useState<ReleaseInfo | null>(null);
+  useEffect(() => { void api<ReleaseInfo>("/api/version").then(setReleaseInfo).catch(() => setReleaseInfo(null)); }, []);
   useEffect(() => { void api<Session>("/api/session").then(setSession).catch(() => setSession({ authenticated: false, account: null, role: null, bootstrapRequired: false })); }, []);
   useEffect(() => {
     const handleExpiredSession = () => {
@@ -1518,7 +1541,7 @@ function App() {
   if (!session) return <main className="loading">Načítám</main>;
   if (session.bootstrapRequired) return <BootstrapPage onComplete={() => setSession({ authenticated: false, account: null, role: null, bootstrapRequired: false })} />;
   if (!session.authenticated || !session.role) return <Login notice={sessionNotice} onLogin={() => { void api<Session>("/api/session").then((next) => { setSessionNotice(""); setSession(next); }); }} />;
-  return <><Dashboard accountName={session.account} role={session.role} onLogout={() => { setSessionNotice(""); setSession({ authenticated: false, account: null, role: null, bootstrapRequired: false }); }} />{reauthRequired ? <ReauthModal onClose={() => setReauthRequired(false)} /> : null}</>;
+  return <><Dashboard accountName={session.account} role={session.role} releaseInfo={releaseInfo} onLogout={() => { setSessionNotice(""); setSession({ authenticated: false, account: null, role: null, bootstrapRequired: false }); }} />{reauthRequired ? <ReauthModal onClose={() => setReauthRequired(false)} /> : null}</>;
 }
 
 createRoot(document.getElementById("root")!).render(<App />);

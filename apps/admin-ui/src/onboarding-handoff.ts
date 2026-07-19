@@ -12,6 +12,7 @@ export type OnboardingHandoff = {
   token: string;
   initialExpiresAt: string;
   programmerApiUrl: string;
+  catalogVersion: string;
 };
 
 export function onboardingHandoffText(handoff: OnboardingHandoff): string {
@@ -29,7 +30,7 @@ export function onboardingHandoffText(handoff: OnboardingHandoff): string {
     `První upload proveďte nejpozději do: ${expiresAt}`,
     `Programátorské API: ${handoff.programmerApiUrl}`,
     "",
-    "Postupujte přesně podle přiloženého dokumentu KajovoCML 2026.07.21.",
+    `Postupujte přesně podle přiloženého dokumentu KajovoCML ${handoff.catalogVersion}.`,
     "Po přijetí manifestu a zdrojového ZIPu systém sám přidělí KCML identitu a HTTPS adresu a spustí PR/CI, nasazení, autorizaci, logging, monitoring, testy a aktivaci.",
     "Stav jobu průběžně načítejte přes programátorské API. Pokud vrátí UPLOAD_REVISION, opravte uvedenou chybu a nahrajte novou revizi podle katalogu; opakujte až do COMPLETE / ACTIVE."
   ].join("\n");

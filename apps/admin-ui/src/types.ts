@@ -1,6 +1,17 @@
 export type Page = "components" | "monitoring" | "integration" | "secrets" | "tokens" | "permissions" | "audit" | "config" | "security" | "admins";
 export type AdminRole = "OWNER" | "ADMIN" | "AUDITOR";
 export type Session = { authenticated: boolean; account: string | null; role: AdminRole | null; bootstrapRequired?: boolean };
+export type ReleaseInfo = {
+  applicationVersion: string;
+  blueprintVersion: string;
+  catalogVersion: string;
+  manifestSchemaVersion: string;
+  pulseEnvelopeVersion: string;
+  policyBaseline: string;
+  mcpProtocolVersion: string;
+  buildId: string;
+  commitSha: string;
+};
 export type Server = {
   id: string;
   code: string;
