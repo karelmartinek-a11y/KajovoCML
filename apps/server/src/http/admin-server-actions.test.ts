@@ -724,7 +724,8 @@ describe("admin server actions", () => {
 
   it("audits the internal login failure reason without exposing it to the client", async () => {
     const passwordHash = await argon2.hash("correct horse battery staple", { type: argon2.argon2id, memoryCost: 4096, timeCost: 2, parallelism: 1 });
-    const query = vi.fn(async (sql: string, _params?: unknown[]) => {
+    const query = vi.fn(async (...args: [string, unknown[]?]) => {
+      const [sql] = args;
       if (sql.startsWith("select * from admin_account where username=$1")) {
         return {
           rowCount: 1,
