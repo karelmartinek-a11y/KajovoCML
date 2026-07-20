@@ -40,6 +40,7 @@ grep -q 'migrate-mfa-secrets.js' "$tmpdir/release/deploy/scripts/install-release
 grep -q 'import-operational-config.js" --refresh-build-id' "$tmpdir/release/deploy/scripts/install-release.sh"
 grep -q 'CONFIG_VAULT_MASTER_KEY_BASE64_FILE=/etc/kcml/credentials/config_vault_master_key' "$tmpdir/release/deploy/scripts/install-release.sh"
 test "$(grep -c '^step sync-admin-password$' "$tmpdir/release/deploy/scripts/install-release.sh")" = "1"
+grep -Fq '"https://${admin_host}/api/login"' "$tmpdir/release/deploy/scripts/install-release.sh"
 grep -Fq "node \"\$source_dir/apps/server/dist/cli/sync-admin-password.js\"" "$tmpdir/release/deploy/scripts/install-release.sh"
 if grep -q 'admin_sync_totp_file' "$tmpdir/release/deploy/scripts/install-release.sh"; then
   exit 1

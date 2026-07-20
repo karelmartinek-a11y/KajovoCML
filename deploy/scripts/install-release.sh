@@ -306,6 +306,8 @@ step verify-core-hosts
 login_payload="$(jq -nc --arg username "$admin_username" --arg password "$PASS" '{username:$username,password:$password}')"
 curl -fsS -H "Host: $admin_host" -H 'content-type: application/json' \
   --data "$login_payload" "http://127.0.0.1:${PORT:-3010}/api/login" | jq -e '.ok == true' >/dev/null
+curl -fsS -H 'content-type: application/json' \
+  --data "$login_payload" "https://${admin_host}/api/login" | jq -e '.ok == true' >/dev/null
 unset login_payload
 curl -fsS -H "Host: ${AUTH_HOST:?AUTH_HOST is required}" \
   "http://127.0.0.1:${PORT:-3010}/.well-known/oauth-authorization-server" \

@@ -31,5 +31,6 @@ if grep -Fxq 'test -n "$kcml0002_server_id"' "$install_script"; then
   echo "KCML0002 clean-start deploy must not fail before the optional runtime smoke" >&2
   exit 1
 fi
+grep -Fq '"https://${admin_host}/api/login"' "$install_script"
 grep -Fq 'audit_archive_dir="$(dirname "${AUDIT_ARCHIVE_PATH:-/var/lib/kcml/audit/archive.jsonl}")"' "$preflight_script"
 grep -Fq 'runuser -u kcml -- test -w "$audit_archive_dir"' "$preflight_script"
