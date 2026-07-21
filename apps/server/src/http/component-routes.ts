@@ -7,7 +7,6 @@ import { ingestComponentAuditEvent } from "../domain/component-audit.js";
 import { authorizeComponentCall } from "../domain/component-auth.js";
 import {
   cancelComponentOnboarding,
-  claimComponentCredential,
   COMPONENT_CATALOG_VERSION,
   createComponentOnboarding,
   evaluateComponentReadiness,
@@ -47,7 +46,6 @@ import { requireCsrf, sessionAccount } from "./admin-routes.js";
 import { hostOf, sendError } from "./errors.js";
 
 const idempotencyKeyPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/;
-const claimSchema = z.object({ claimToken: z.string().min(32) }).strict();
 const activationSchema = z.object({ enabled: z.boolean() }).strict();
 const lifecycleSchema = z.object({ action: z.enum(["QUARANTINE", "RESTORE", "RETIRE", "DEREGISTER"]) }).strict();
 const permissionSchema = z.object({ enabled: z.boolean() }).strict();
@@ -319,7 +317,8 @@ export function registerComponentRoutes(app: FastifyInstance, db: Db, config: Ap
     try {
       const result = await evaluateComponentReadiness(db, {
         jobId: (request.params as { id: string }).id, integrationTokenId: principal.id,
-        claimHmacKey: config.INTEGRATION_TOKEN_HMAC_KEY_BASE64, correlationId
+        accessTokenHmacKey: config.ACCESS_TOKEN_HMAC_KEY_BASE64,
+        correlationId
       });
       return reply.header("etag", etagFor(result.job)).header("cache-control", "no-store").send(result);
     } catch (error) {
@@ -330,21 +329,7 @@ export function registerComponentRoutes(app: FastifyInstance, db: Db, config: Ap
   app.post("/v2/component-onboardings/:id/credential-claims", async (request, reply) => {
     const correlationId = randomUUID();
     if (hostOf(request.headers.host) !== config.REGISTER_HOST) return sendError(reply, 404, "not_found", undefined, correlationId);
-    const principal = await integrationPrincipal(db, config, request, reply, correlationId);
-    if (!principal) return;
-    try {
-      const body = claimSchema.parse(request.body);
-      const credential = await claimComponentCredential(db, {
-        jobId: (request.params as { id: string }).id, integrationTokenId: principal.id, claimToken: body.claimToken,
-        claimHmacKey: config.INTEGRATION_TOKEN_HMAC_KEY_BASE64,
-        credentialHmacKey: config.ACCESS_TOKEN_HMAC_KEY_BASE64,
-        keyId: config.ACCESS_TOKEN_HMAC_KEY_ID,
-        correlationId
-      });
-      return reply.header("cache-control", "no-store").send({ credential });
-    } catch (error) {
-      return routeError(reply, error, correlationId);
-    }
+    return sendError(reply, 410, "credential_claim_replaced_by_access_token_handoff", undefined, correlationId);
   });
 
   app.post("/v2/component-onboardings/:id/e2e-results", async (request, reply) => {

@@ -7,7 +7,6 @@ import { hmacToken } from "../security/secrets.js";
 import { ingestComponentAuditEvent } from "./component-audit.js";
 import { authorizeComponentCall, issueComponentAccessToken } from "./component-auth.js";
 import {
-  claimComponentCredential,
   createComponentOnboarding,
   evaluateComponentReadiness,
   recordComponentE2EResult,
@@ -272,19 +271,11 @@ describe.skipIf(!enabled)("component authorization and audit persistence", () =>
         correlationId: randomUUID()
       });
     }
-    const readiness = await evaluateComponentReadiness(db, { jobId: String(created.id), integrationTokenId, claimHmacKey: accessHmacKey, correlationId: randomUUID() });
+    const readiness = await evaluateComponentReadiness(db, { jobId: String(created.id), integrationTokenId, accessTokenHmacKey: accessHmacKey, correlationId: randomUUID() });
     expect(readiness.job.state).toBe("READY_FOR_ACTIVATION");
-    expect(readiness.credentialClaimToken).toBeTypeOf("string");
-    const credential = await claimComponentCredential(db, {
-      jobId: String(created.id), integrationTokenId, claimToken: readiness.credentialClaimToken!, claimHmacKey: accessHmacKey,
-      credentialHmacKey: accessHmacKey, keyId: "test", correlationId: randomUUID()
-    });
-    expect(credential.clientId).toMatch(/^KCML[0-9]+-C01$/);
+    expect(readiness.accessToken).toBeTypeOf("string");
+    expect((await db.query("select expires_at='infinity'::timestamptz as long_lived from principal_access_token")).rows[0].long_lived).toBe(true);
     expect((await db.query("select revoked_at is not null as revoked from integration_token where id=$1", [integrationTokenId])).rows[0].revoked).toBe(true);
-    await expect(claimComponentCredential(db, {
-      jobId: String(created.id), integrationTokenId, claimToken: readiness.credentialClaimToken!, claimHmacKey: accessHmacKey,
-      credentialHmacKey: accessHmacKey, keyId: "test", correlationId: randomUUID()
-    })).rejects.toThrow("credential_claim_invalid");
   });
 
   it("keeps lifecycle, permission and credential revocation as separate audited operations", async () => {

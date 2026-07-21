@@ -1001,9 +1001,9 @@ export async function reviseComponentOnboarding(db: Db, params: {
 export async function evaluateComponentReadiness(db: Db, params: {
   jobId: string;
   integrationTokenId: string;
-  claimHmacKey: Buffer;
+  accessTokenHmacKey: Buffer;
   correlationId: string;
-}): Promise<{ job: Record<string, unknown>; credentialClaimToken?: string }> {
+}): Promise<{ job: Record<string, unknown>; accessToken?: string }> {
   return tx(db, async (client) => {
     const jobResult = await client.query(
       "select * from component_onboarding_job where id=$1 and integration_token_id=$2 for update",
@@ -1016,26 +1016,44 @@ export async function evaluateComponentReadiness(db: Db, params: {
     const authorizationSnapshot = job.authorization_snapshot && typeof job.authorization_snapshot === "object"
       ? job.authorization_snapshot as Record<string, unknown>
       : {};
-    const componentCurrent = await client.query("select active_revision_id from component where id=$1", [job.component_id]);
+    const componentCurrent = await client.query("select active_revision_id,principal_id from component where id=$1 for update", [job.component_id]);
     const activeRevisionId = optionalText(componentCurrent.rows[0]?.active_revision_id);
     if (!activeRevisionId) throw Object.assign(new Error("catalog_incompatible"), { statusCode: 409 });
     const gates = await gateResults(client as unknown as Db, String(job.component_id), manifest, authorizationSnapshot);
     await persistGateEvidence(client, String(job.component_id), activeRevisionId, gates, params.correlationId);
     const passed = gates.every((gate) => gate.status === "PASS");
-    let claimToken: string | undefined;
-    let claimDigest: Buffer | null = job.credential_claim_digest ?? null;
-    if (passed && !job.credential_id && !job.credential_claimed_at) {
-      claimToken = issueOpaqueSecret().value;
-      claimDigest = hmacToken(claimToken, params.claimHmacKey);
+    let accessToken: string | undefined;
+    let accessDigest: Buffer | null = job.principal_access_token_digest ?? null;
+    let accessFingerprint: string | null = job.principal_access_token_fingerprint ?? null;
+    if (passed && !job.principal_access_token_handed_off_at) {
+      const issued = issueOpaqueSecret();
+      accessToken = issued.value;
+      accessDigest = hmacToken(issued.value, params.accessTokenHmacKey);
+      accessFingerprint = issued.fingerprint;
+      await client.query(
+        `insert into principal_access_token(
+          lookup_digest,fingerprint,source_principal_id,target_component_id,audience,scope_names,
+          issued_policy_epoch,issued_revocation_epoch,expires_at
+        ) values ($1,$2,$3,null,'kcml',array['component.invoke'],1,1,'infinity')`,
+        [accessDigest, issued.fingerprint, componentCurrent.rows[0].principal_id]
+      );
     }
     const updated = await client.query(
       `update component_onboarding_job
-          set state=$2, gate_results=$3::jsonb, credential_claim_digest=coalesce(credential_claim_digest,$4),
-              credential_claim_expires_at=case when credential_claimed_at is null then coalesce(credential_claim_expires_at,now()+interval '24 hours') else credential_claim_expires_at end,
+          set state=$2, gate_results=$3::jsonb,
+              principal_access_token_digest=coalesce(principal_access_token_digest,$4),
+              principal_access_token_fingerprint=coalesce(principal_access_token_fingerprint,$5),
+              principal_access_token_handed_off_at=case when $6 then now() else principal_access_token_handed_off_at end,
               lock_version=lock_version+1, updated_at=now()
         where id=$1 returning *`,
-      [params.jobId, passed ? "READY_FOR_ACTIVATION" : "BLOCKED", JSON.stringify(gates), claimDigest]
+      [params.jobId, passed ? "READY_FOR_ACTIVATION" : "BLOCKED", JSON.stringify(gates), accessDigest, accessFingerprint, Boolean(accessToken)]
     );
+    if (accessToken) {
+      await client.query(
+        "update integration_token set revoked_at=coalesce(revoked_at,now()), lock_version=lock_version+1 where id=$1 and revoked_at is null",
+        [params.integrationTokenId]
+      );
+    }
     await client.query(
       `update component
           set lifecycle_state=$2,
@@ -1053,7 +1071,7 @@ export async function evaluateComponentReadiness(db: Db, params: {
       eventType: "component_onboarding.readiness_evaluated", actorType: "integration_token", actorId: params.integrationTokenId,
       objectType: "component", objectId: String(job.component_id), after: { passed, gates }, correlationId: params.correlationId
     });
-    return { job: componentOnboardingView(updated.rows[0]), ...(claimToken ? { credentialClaimToken: claimToken } : {}) };
+    return { job: componentOnboardingView(updated.rows[0]), ...(accessToken ? { accessToken } : {}) };
   });
 }
 
