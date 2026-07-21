@@ -23,7 +23,9 @@ encrypted="$backup_dir/kcml-$stamp.dump.age"
 plain="$(mktemp "$backup_dir/.kcml-$stamp.XXXXXX.dump")"
 trap 'rm -f "$plain"' EXIT
 
-pg_dump --format=custom --no-owner --no-privileges --file "$plain" "$DATABASE_URL"
+pg_dump --format=custom --no-owner --no-privileges \
+  --exclude-table='public.admin_account_manual_fix_backup_*' \
+  --file "$plain" "$DATABASE_URL"
 age --recipient "$recipient" --output "$encrypted" "$plain"
 sha256sum "$encrypted" > "$encrypted.sha256"
 chmod 0600 "$encrypted" "$encrypted.sha256"
