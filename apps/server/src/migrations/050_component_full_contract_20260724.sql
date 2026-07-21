@@ -385,6 +385,7 @@ update component c
        policy_epoch=policy_epoch+1,
        updated_at=now()
  where c.lifecycle_state in ('APPROVED','ACTIVE')
+   and c.blueprint_component_id is not null
    and not exists (
      select 1
        from component_state_contract s
