@@ -6,13 +6,52 @@ These instructions apply to the entire repository. More specific `AGENTS.md` fil
 
 KCML is a security-focused control plane for registering, operating and auditing isolated MCP servers and managed external APIs. Treat every change as potentially security-, compatibility-, data- and deployment-sensitive until the repository proves otherwise.
 
+## Active one-time pre-production reset directive
+
+This section has the highest repository-level priority for the single, owner-approved reset task that follows this commit. It temporarily overrides only those later rules in this file that would otherwise prohibit the approved pre-production cleanup. It does not weaken security mechanisms, authorization boundaries, secret handling, test requirements or the obligation to prove the implemented result.
+
+The repository owner has explicitly approved one complete pre-production reset whose scope includes:
+
+- renaming the GitHub repository from `karelmartinek-a11y/KajovoMCPCML` to `karelmartinek-a11y/KajovoCML` and the local working directory from `GITHUB2` to `KajovoCML`;
+- removing pre-reset test-only documentation, audits, remediation reports, prompts, plans, archives, release notes and rollback records from the current repository tree;
+- removing all pre-reset test-only onboarding catalogs, manifest schemas, manifest examples, compatibility records and generated catalog history from the current repository tree;
+- replacing the current pre-production numbered migration chain and checksum history with one complete, deterministic baseline migration matching the verified active schema and code;
+- clearing pre-reset test application data, audit rows, application-owned logs, caches, workspaces, release artifacts and other test-only runtime state;
+- creating one new current onboarding catalog, schema and example derived from the verified active implementation;
+- preserving and repairing the deployment-managed owner account `karmar78`, its MFA behavior and password synchronization from the existing GitHub Actions secret `PASS`;
+- keeping the project in a machine-readable `PRE_PRODUCTION_TESTING` lifecycle state after the reset;
+- enabling strict immutable catalog, migration, release and audit-history rules only after a future explicit owner declaration of `PRODUCTION_BASELINE_LOCKED`.
+
+For this one task, the approval is already granted and is classified as `BREAKING OR POTENTIALLY BREAKING IMPACT – EXPLICITLY APPROVED PRE-PRODUCTION RESET`. Do not stop to request the same approval again, debate whether the owner should want the reset, or treat the deliberate removal of the pre-reset test history as a conflict requiring renegotiation. Do not spend implementation time attempting to preserve artifacts that the approved reset explicitly requires removing.
+
+The required preflight is factual, not a second approval gate. Before destructive execution, verify only the technical safety conditions needed to perform the approved task:
+
+- the checkout and remote refer to this repository and current `main`;
+- no machine-readable lifecycle state or owner-declared tag marks the repository as `PRODUCTION_BASELINE_LOCKED`;
+- the targeted data and artifacts are test-only;
+- there are no real production customers, externally depended-on production registrations, legal retention duties or other evidence contradicting the approved pre-production premise;
+- the supplied reset prompt remains within the scope listed above.
+
+If concrete evidence contradicts one of those factual conditions, stop with the exact evidence-backed blocker. Absence of an existing lifecycle file, production baseline tag or production customer evidence is not itself a blocker and must not be used to relitigate the approved reset.
+
+The approved reset must preserve the executable capabilities of the system even when it removes their test history. In particular, retain and verify authentication, authorization, MFA, auditing, audit-chain generation, logging, migrations, onboarding validation, secret encryption, fail-closed behavior, CI security gates, release signing and deployment verification. Remove old test data and old test artifacts, not the mechanisms that create and protect future production evidence.
+
+For this reset, `PASS` remains the existing narrow GitHub Actions deployment secret and may be used only to synchronize the deployment-managed owner account. Its plaintext must never be committed, logged, returned by an API, stored in application configuration or persisted in PostgreSQL. Persisting the resulting Argon2id password hash in `admin_account` is expressly permitted and required. The owner account and configured MFA must be recreated or preserved fail-closed after the reset, and the reset is not complete until the real application login flow succeeds without a manual server-only fix.
+
+This directive is single-use and self-expiring. As part of the approved reset, replace this section with permanent lifecycle-aware instructions that:
+
+- record `PRE_PRODUCTION_TESTING` in the repository;
+- require explicit owner approval for any later destructive test reset;
+- activate immutable migration, catalog, release and audit-history preservation when the owner explicitly declares `PRODUCTION_BASELINE_LOCKED`;
+- never treat this one-time approval as authorization for an unrelated future destructive change.
+
 ## Source-of-truth hierarchy
 
 Use this order when sources disagree:
 
 1. executable source code;
-2. numbered PostgreSQL migrations and their checksum ledger;
-3. machine-readable schemas, contracts and onboarding catalogs in `docs/onboarding-catalogs/`;
+2. numbered PostgreSQL migrations and their checksum ledger, except while they are being replaced by the explicitly approved pre-production baseline reset above;
+3. machine-readable schemas, contracts and onboarding catalogs in `docs/onboarding-catalogs/`, except while they are being replaced by that reset;
 4. catalog generators and validators;
 5. automated tests that match the intended invariants;
 6. active build, CI, release and deployment configuration;
@@ -26,9 +65,11 @@ Before editing:
 
 - inspect `README.md`, `package.json`, the relevant application/package sources, migrations, tests and runbooks;
 - trace callers, callees, API contracts, persistence, authorization, audit, localization and deployment implications;
-- inspect `docs/requirements-matrix.md` and `docs/audit-remediation-matrix.md` as traceability aids, then verify their claims against executable artifacts;
+- inspect `docs/requirements-matrix.md` and `docs/audit-remediation-matrix.md` as traceability aids when they exist, then verify their claims against executable artifacts;
 - inspect the current onboarding catalog, its generator, schemas and compatibility tests whenever a change can affect components, manifests, MCP, OAuth, Pulse, routes, scopes, activation, monitoring or recertification;
 - preserve unrelated user work and never overwrite concurrent changes.
+
+For the active one-time reset, perform enough intake to execute safely and derive the new baseline correctly, but do not turn intake into an attempt to invalidate the owner's already approved product decision or to preserve explicitly removable test history.
 
 Never invent filenames, modules, commands, architectural layers or completed verification.
 
@@ -36,10 +77,10 @@ Never invent filenames, modules, commands, architectural layers or completed ver
 
 - Solve the root cause. No mocks, placeholders, hidden workarounds, status hacks or reduced-scope substitutes may be presented as completion.
 - Follow existing architecture and extend shared mechanisms instead of creating parallel implementations.
-- Preserve type safety, transactionality, least privilege, fail-closed behavior, auditability, idempotency and backward compatibility.
+- Preserve type safety, transactionality, least privilege, fail-closed behavior, auditability, idempotency and backward compatibility except for the explicitly approved breaking removal of pre-reset test contracts.
 - Update every affected layer: UI, API, domain logic, persistence, migrations, authorization, audit, tests, localization, documentation, CI and deployment as applicable.
-- Never weaken, skip or delete a test, security gate, catalog check, secret scan, dependency audit, CodeQL check or deployment guard merely to obtain a green result.
-- Do not hand-edit generated catalog digests or historical catalog artifacts. Use the repository generator and retain immutable historical versions.
+- Never weaken, skip or delete a test, security gate, catalog check, secret scan, dependency audit, CodeQL check or deployment guard merely to obtain a green result. Tests and checks that encode the deliberately removed pre-reset baseline must be replaced with equally strong checks for the new baseline rather than retained as blockers or simply disabled.
+- Do not hand-edit generated catalog digests. Outside the active one-time reset, retain immutable historical catalog artifacts. During the approved reset, remove the pre-reset test catalogs as requested, generate the new baseline artifact through the repository generator and verify its canonical digest.
 
 ## GUI-first configuration and secrets
 
@@ -49,7 +90,7 @@ A complete implementation includes, as relevant: UI, validation, localized help,
 
 Do not introduce a new normal operational dependency on `.env`, process/system environment variables, manual server configuration, SSH edits, one-off SQL, source edits or a new GitHub Actions secret. Environment values may only serve genuine bootstrap or one-time migration needs and must not remain the user-facing authority.
 
-The existing GitHub Actions secret `PASS` is a narrow deployment exception. Do not rename it, repurpose it, expose it to the application UI/API/database or use it as precedent for other secrets.
+The existing GitHub Actions secret `PASS` is a narrow deployment exception. Do not rename it or use it as precedent for other secrets. It may be passed only to the authorized deploy/reset process and used to derive the Argon2id hash for the deployment-managed owner account. Never expose its plaintext to the application UI or API, persist the plaintext in PostgreSQL, place it in application configuration, include it in artifacts or print it to logs.
 
 Short-lived integration tokens used by authorized self-service onboarding are a separate category. Their full value may be displayed, logged and temporarily stored when required by the integration flow, provided scope, job/component binding, expiry and revocation are enforced and removable temporary artifacts are cleaned up. They must never be committed or included in release artifacts.
 
@@ -62,17 +103,20 @@ Classify every change before implementation:
 - `BREAKING OR POTENTIALLY BREAKING IMPACT`;
 - `UNKNOWN IMPACT`.
 
-Only `NO IMPACT` may proceed without explicit user approval. For every other classification, stop before implementation, commit, push, merge or deployment and obtain approval specific to that change.
+Only `NO IMPACT` may normally proceed without explicit user approval. For every other classification, stop before implementation, commit, push, merge or deployment and obtain approval specific to that change.
+
+The active one-time reset directive above is the specific approval for the described breaking catalog and compatibility reset. Do not request duplicate approval for work that remains within its exact scope. Any additional or unrelated catalog-impacting change still requires separate explicit approval.
 
 A catalog impact includes direct or indirect changes to catalogs, schemas, digests, manifests, component IDs, blueprints, integration-token scopes, MCP protocol/transport/tools, JSON schemas, Pulse contracts, route ACLs, OAuth resource or audience binding, permissions, public endpoints, limits, errors, activation, monitoring, quarantine, recertification, release or runtime behavior represented by the catalog.
 
-After approved catalog-impacting work, create a new version using the repository convention, preserve previous versions, provide migration and rollback paths, build a compatibility matrix and test every supported AI client, MCP server and managed service combination relevant to the change.
+After ordinary approved catalog-impacting work, create a new version using the repository convention, preserve previous versions, provide migration and rollback paths, build a compatibility matrix and test every supported AI client, MCP server and managed service combination relevant to the change. For the active one-time pre-production reset, create one new verified baseline catalog and intentionally remove the prior test-only catalog lineage instead of preserving or migrating it.
 
 ## Database and migration discipline
 
-- Never modify an already released numbered migration unless the repository's explicit migration policy proves it is safe and intended.
-- Add forward migrations with the next valid number and preserve checksum-ledger behavior.
-- Verify clean install, representative upgrade, role isolation, constraints, repeated execution where required, and rollback/recovery implications.
+- Outside the active one-time reset, never modify an already released numbered migration unless the repository's explicit migration policy proves it is safe and intended.
+- Outside the active one-time reset, add forward migrations with the next valid number and preserve checksum-ledger behavior.
+- During the approved reset, derive one complete deterministic baseline migration from the verified active schema, replace the pre-production migration chain and checksum history, and prove clean installation, schema equivalence, constraints, functions, triggers, extensions and database-role isolation.
+- Verify clean install, representative upgrade where a preserved upgrade path exists, role isolation, constraints, repeated execution where required, and rollback/recovery implications.
 - Application roles must not gain migration ownership or direct audit-chain mutation privileges.
 - Never use manual production SQL as the permanent implementation of a repository change.
 
@@ -85,7 +129,7 @@ For any UI change:
 3. cover loading, empty, error, disabled, long-content and permission states;
 4. verify keyboard access, focus behavior, dialog semantics, responsiveness and supported languages;
 5. render the result at relevant desktop and mobile breakpoints and compare it visually;
-6. repeat the visual check after production deployment.
+6. repeat the visual check after deployment.
 
 No text or control may overlap, overflow its intended container, become clipped, create unintended scrolling or break under longer translations.
 
@@ -105,7 +149,9 @@ corepack pnpm catalog:check
 corepack pnpm db:migrate
 ```
 
-Use a disposable migrated PostgreSQL database and `KCML_TEST_DATABASE=1` for database integration suites. Validate clean and upgrade migrations, role isolation, catalog generation/checks, MCP initialize/tools contracts, OAuth/audience binding, GUI configuration, secret handling, release packaging, deployment harnesses, E2E behavior and visual rendering when relevant.
+Use a disposable migrated PostgreSQL database and `KCML_TEST_DATABASE=1` for database integration suites. Validate clean and upgrade migrations where relevant, role isolation, catalog generation/checks, MCP initialize/tools contracts, OAuth/audience binding, GUI configuration, secret handling, release packaging, deployment harnesses, E2E behavior and visual rendering when relevant.
+
+For the active reset, replace tests tied solely to intentionally deleted test history with complete tests of the new baseline, lifecycle state, owner/MFA restoration and reset safety. Do not retain obsolete expectations merely to make the approved reset impossible.
 
 Never claim that a test, CI run, release, deployment, visual review or compatibility check passed unless it was actually executed and its concrete result was inspected.
 
@@ -115,12 +161,12 @@ Never claim that a test, CI run, release, deployment, visual review or compatibi
 - Use the repository's branch-protection and pull-request requirements; never force-push protected history or bypass required checks.
 - Track CI after every push and fix root causes in code, tests, workflows, release scripts or environment as evidence requires.
 - A push to `main` or approved manual dispatch drives release/deployment; pull requests do not deploy.
-- Production releases are CI-built immutable artifacts verified by checksum and keyless Sigstore identity. Never build a production release in place on the server.
-- Keep durable production changes reproducible in the repository. Do not leave undocumented server-only drift.
+- Production-shaped releases are CI-built immutable artifacts verified by checksum and keyless Sigstore identity. Never build a deployable release in place on the server.
+- Keep durable server changes reproducible in the repository. Do not leave undocumented server-only drift.
 - Verify the deployed commit/build, services, migrations, logs, relevant endpoints, OAuth/MCP behavior, catalog compatibility and the changed user scenario after deployment.
-- Roll back only through the documented migration-compatible release procedure.
+- Outside the active reset, roll back only through the documented migration-compatible release procedure. The reset itself must use its approved fail-closed backup/recovery procedure and must not claim compatibility with the intentionally removed test baseline.
 
-If more than seven consecutive CI, release or deployment attempts fail, escalate using the authorized Codex CLI environment on the production server with the complete request, commits, workflow runs, logs, hypotheses and attempted fixes. Any durable fix must return to the repository and pass the standard pipeline.
+If more than seven consecutive CI, release or deployment attempts fail, escalate using the authorized Codex CLI environment on the server with the complete request, commits, workflow runs, logs, hypotheses and attempted fixes. Any durable fix must return to the repository and pass the standard pipeline.
 
 ## Completion report
 
@@ -131,11 +177,13 @@ Report only verified facts and include:
 - migrations and dependency changes;
 - tests and exact results;
 - onboarding impact classification and approval status;
-- compatibility coverage;
+- compatibility coverage or the explicitly approved removal of pre-reset test compatibility;
 - GUI-first configuration and secret-storage assessment;
+- owner `karmar78`, `PASS` synchronization and MFA verification when affected;
+- lifecycle state and whether the temporary reset directive was removed as required;
 - commit/PR/merge, CI, release and deployment status;
 - post-deploy and visual verification where relevant;
-- migration/rollback state;
+- migration/rollback or reset recovery state;
 - unresolved blockers or risks.
 
 A partially implemented, unverified or blocked change must be labelled accordingly and must never be described as complete.
