@@ -78,10 +78,9 @@ describe("component public route protection", () => {
         max_expires_at: new Date(Date.now() + 120_000).toISOString(),
         service_kind: "MCP",
         allowed_pipeline: "MCP_ONBOARDING",
-        token_kind: "BLUEPRINT_RELEASE",
+        token_kind: "SINGLE_COMPONENT",
         release_version: KCML_RELEASE.catalogVersion,
-        release_wave_key: "baseline-2026-07-24",
-        max_child_jobs: 20
+        max_child_jobs: 1
       }]
     }));
     const revisionApp = Fastify();

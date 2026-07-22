@@ -153,10 +153,6 @@ async function dispatch(db: Db, config: AppServerConfig, component: RuntimeCompo
 }
 
 export async function handleCanonicalMcp(request: FastifyRequest, reply: FastifyReply, db: Db, config: AppServerConfig, component: RuntimeComponent, correlationId: string): Promise<FastifyReply> {
-  if (!component.enabled || !component.ingressEnabled || component.lifecycleState !== "ACTIVE" || component.activationState !== "ACTIVE"
-    || ["QUARANTINED", "UNHEALTHY", "RETIRED"].includes(component.operationalState)) {
-    return reply.code(503).send({ code: "component_unavailable", correlationId });
-  }
   if (Array.isArray(request.body)) return sendJsonRpc(reply, jsonRpcError(null, -32600, "Batch requests are not supported", correlationId));
   const parsed = rpcSchema.safeParse(request.body);
   if (!parsed.success) return sendJsonRpc(reply, jsonRpcError(null, -32600, "Invalid Request", correlationId));
@@ -191,7 +187,25 @@ export async function handleCanonicalMcp(request: FastifyRequest, reply: Fastify
   const validateInput = ajv.compile(tool.inputSchema);
   if (!validateInput(call.data.arguments ?? {})) return respond(jsonRpcError(body.id, -32602, "Input schema validation failed", correlationId, { issues: validateInput.errors ?? [] }));
   const inputJson = JSON.stringify(call.data.arguments ?? {});
-  const lease = await tx(db, async (client) => {
+  let lease: string;
+  try {
+    lease = await tx(db, async (client) => {
+    await client.query("select pg_advisory_xact_lock(hashtextextended($1,0))", [`${component.id}:${tool.name}`]);
+    await client.query(
+      `update component_operation_lease set success=false,finished_at=coalesce(finished_at,now()),process_trace=jsonb_build_object('error','operation_deadline_expired')
+        where target_component_id=$1 and operation_kind='TOOL' and operation_name=$2 and finished_at is null and expires_at<=now()`,
+      [component.id, tool.name]
+    );
+    const capacity = await client.query(
+      `select coalesce((runtime_resources->>'maxConcurrency')::int,1) max_concurrency,
+              (select count(*)::int from component_operation_lease lease
+                where lease.target_component_id=$1 and lease.operation_kind='TOOL' and lease.operation_name=$2
+                  and lease.finished_at is null and lease.expires_at>now()) active_count
+         from component_runtime_target where component_id=$1 and revision_id=$3`,
+      [component.id, tool.name, component.activeRevisionId]
+    );
+    const maxConcurrency = Math.max(1, Number(capacity.rows[0]?.max_concurrency ?? 1));
+    if (Number(capacity.rows[0]?.active_count ?? 0) >= maxConcurrency) throw Object.assign(new Error("operation_concurrency_exceeded"), { statusCode: 429 });
     const inserted = await client.query(
       `insert into component_operation_lease(
         source_principal_id,target_component_id,operation_kind,operation_name,input_payload,input_digest,
@@ -206,7 +220,13 @@ export async function handleCanonicalMcp(request: FastifyRequest, reply: Fastify
     await appendAudit(client, { eventType: "component.operation.started", actorType: "component", actorId: decision.sourceComponentId,
       objectType: "component_operation_lease", objectId: String(inserted.rows[0].id), after: { targetComponentId: component.id, tool: tool.name, inputDigest: sha256(inputJson), decisionId: decision.decisionId }, correlationId });
     return String(inserted.rows[0].id);
-  });
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message === "operation_concurrency_exceeded") {
+      return respond(jsonRpcError(body.id, -32004, "Component concurrency limit exceeded", correlationId, { retryable: true }));
+    }
+    throw error;
+  }
   try {
     const output = await dispatch(db, config, component, tool, call.data.arguments ?? {}, token, correlationId, decision.decisionId);
     const validateOutput = ajv.compile(tool.outputSchema);
@@ -221,7 +241,7 @@ export async function handleCanonicalMcp(request: FastifyRequest, reply: Fastify
       await appendAudit(client, { eventType: "component.operation.succeeded", actorType: "component", actorId: decision.sourceComponentId,
         objectType: "component_operation_lease", objectId: lease, after: { outputDigest: sha256(outputJson), tool: tool.name }, correlationId });
     });
-    return respond(jsonRpcResult(body.id, { structuredContent: output as Record<string, unknown>, content: [{ type: "text", text: outputJson }], isError: false }));
+    return respond(jsonRpcResult(body.id, { structuredContent: output, content: [{ type: "text", text: outputJson }], isError: false }));
   } catch (error) {
     await tx(db, async (client) => {
       await client.query("update component_operation_lease set success=false,finished_at=now(),process_trace=$2::jsonb where id=$1", [lease, JSON.stringify({ error: error instanceof Error ? error.message : "runtime_failed" })]);

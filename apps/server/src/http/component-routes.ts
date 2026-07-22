@@ -1,10 +1,10 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import type { AppServerConfig } from "../config.js";
 import type { Db } from "../db.js";
 import { ingestComponentAuditEvent } from "../domain/component-audit.js";
-import { authorizeComponentCall } from "../domain/component-auth.js";
+import { authorizeComponentCall, componentSourceIdentityMatches } from "../domain/component-auth.js";
 import {
   cancelComponentOnboarding,
   COMPONENT_CATALOG_VERSION,
@@ -15,12 +15,16 @@ import {
   ingestComponentOperationEvent,
   ingestComponentPulse,
   listComponents,
+  queueComponentE2ERun,
+  queueComponentHeartbeatChallenge,
+  queueComponentStateQuery,
   recordComponentControlAck,
   recordComponentHeartbeat,
   recordComponentStateObservation,
-  revokeComponentCredential,
+  recordComponentStateSnapshot,
+  revokeComponentAccessToken,
   reviseComponentOnboarding,
-  rotateComponentCredential,
+  rotateComponentAccessToken,
   setComponentActivation,
   setComponentLifecycle,
   setComponentPermissionEnabled,
@@ -28,14 +32,18 @@ import {
   validateComponentManifest
 } from "../domain/component.js";
 import { authenticateIntegrationToken } from "../domain/onboarding.js";
+import { fetchThroughEgress } from "../domain/egress-client.js";
+import { getPlatformWorkerAccessStatus, rotatePlatformWorkerAccessToken } from "../domain/platform-worker-access.js";
 import {
   createExternalPrincipal,
   createExternalTarget,
   dispatchExternalComponentCall,
   listExternalPermissions,
+  listExternalInboundPermissions,
   listExternalPrincipals,
   listExternalTargets,
-  rotateExternalPrincipalCredential,
+  rotateExternalPrincipalAccessToken,
+  setExternalInboundPermission,
   setExternalEntityStatus,
   setExternalPermission
 } from "../domain/external-component.js";
@@ -51,6 +59,7 @@ const externalPrincipalSchema = z.object({ publicId: z.string().min(3).max(120).
 const externalTargetSchema = z.object({ targetKey: z.string().min(3).max(120).regex(/^[a-z0-9][a-z0-9.-]*$/), displayName: z.string().min(2).max(200), baseUrl: z.string().url(), allowedPathPrefixes: z.array(z.string().min(1).max(500)).max(30).optional(), requestTimeoutMs: z.number().int().min(100).max(60000).default(15000), maxRetries: z.number().int().min(0).max(3).default(1), circuitFailureThreshold: z.number().int().min(1).max(100).default(5), circuitOpenSeconds: z.number().int().min(1).max(3600).default(60) }).strict();
 const externalStatusSchema = z.object({ status: z.enum(["ACTIVE", "DISABLED", "REVOKED"]) }).strict();
 const externalPermissionSchema = z.object({ componentId: z.string().uuid().optional(), externalPrincipalId: z.string().uuid().optional(), externalTargetId: z.string().uuid(), routePattern: z.string().min(1).max(500), scopeName: z.string().min(2).max(200), enabled: z.boolean() }).strict();
+const externalInboundPermissionSchema = z.object({ externalPrincipalId: z.string().uuid(), targetComponentId: z.string().uuid(), routePattern: z.string().startsWith("/").max(500), scopeName: z.string().min(2).max(200), enabled: z.boolean() }).strict();
 const outboundGatewaySchema = z.object({ targetKey: z.string().min(3).max(120), routePath: z.string().startsWith("/").max(500), scopeName: z.string().min(2).max(200), payload: requiredJson }).strict();
 const identitySchema = z.object({
   clientId: z.string().min(3).max(160),
@@ -95,6 +104,11 @@ const stateObservationSchema = z.object({
   policyEpoch: z.number().int().nonnegative(),
   queryId: z.string().uuid().optional(),
   statePayload: requiredJson
+}).strict();
+const stateSnapshotSchema = z.object({
+  queryId: z.string().uuid(), queryNonce: z.string().uuid(), observedAt: z.string().datetime({ offset: true }),
+  correlationId: z.string().uuid(), declaredClientId: z.string().min(3).max(160), componentCode: z.string().min(3).max(120),
+  policyEpoch: z.number().int().nonnegative(), states: z.record(z.unknown())
 }).strict();
 const controlAckSchema = z.object({
   commandId: z.string().uuid(),
@@ -205,12 +219,7 @@ function assertSourceIdentity(
   decision: Awaited<ReturnType<typeof authorizeComponentCall>>
 ) {
   if (!decision?.allow) return;
-  if (declared.clientId !== decision.sourceClientId) {
-    throw Object.assign(new Error("client_id_mismatch"), { statusCode: 403 });
-  }
-  if (declared.componentCode !== decision.sourceComponentCode) {
-    throw Object.assign(new Error("source_component_mismatch"), { statusCode: 403 });
-  }
+  if (!componentSourceIdentityMatches(decision, declared)) throw Object.assign(new Error("source_identity_mismatch"), { statusCode: 403 });
 }
 
 function assertTargetIdentity(
@@ -237,8 +246,7 @@ export function registerComponentRoutes(app: FastifyInstance, db: Db, config: Ap
     try {
       const manifest = validateComponentManifest(request.body);
       const job = await createComponentOnboarding(db, {
-        integrationTokenId: principal.id, idempotencyKey: key, manifest,
-        claimHmacKey: config.INTEGRATION_TOKEN_HMAC_KEY_BASE64, baseDomain: config.PUBLIC_BASE_DOMAIN, correlationId
+        integrationTokenId: principal.id, idempotencyKey: key, manifest, correlationId
       });
       return reply.code(202).header("etag", etagFor(job)).header("cache-control", "no-store").send({ job });
     } catch (error) {
@@ -292,8 +300,20 @@ export function registerComponentRoutes(app: FastifyInstance, db: Db, config: Ap
       const result = await evaluateComponentReadiness(db, {
         jobId: (request.params as { id: string }).id, integrationTokenId: principal.id,
         accessTokenHmacKey: config.ACCESS_TOKEN_HMAC_KEY_BASE64,
+        accessTokenHmacKeyId: config.ACCESS_TOKEN_HMAC_KEY_ID,
+        vaultMasterKey: config.CONFIG_VAULT_MASTER_KEY_BASE64,
+        vaultMasterKeyId: config.CONFIG_VAULT_MASTER_KEY_ID,
+        integrationTokenHmacKey: config.INTEGRATION_TOKEN_HMAC_KEY_BASE64,
+        integrationTokenHmacKeyId: config.INTEGRATION_TOKEN_HMAC_KEY_ID,
         correlationId
       });
+      if (!result.accessToken) {
+        await queueComponentE2ERun(db, {
+          jobId: (request.params as { id: string }).id,
+          integrationTokenId: principal.id,
+          correlationId
+        });
+      }
       return reply.header("etag", etagFor(result.job)).header("cache-control", "no-store").send(result);
     } catch (error) {
       return routeError(reply, error, correlationId);
@@ -330,6 +350,23 @@ export function registerComponentRoutes(app: FastifyInstance, db: Db, config: Ap
     return { components: await listComponents(db), catalogVersion: COMPONENT_CATALOG_VERSION };
   });
 
+  app.get("/api/platform-worker-access", async (request, reply) => {
+    const correlationId = randomUUID();
+    if (!await adminPrincipal(db, config, request, reply, correlationId)) return;
+    return { status: await getPlatformWorkerAccessStatus(db) };
+  });
+
+  app.post("/api/platform-worker-access/rotate", async (request, reply) => {
+    const correlationId = randomUUID();
+    const actorId = await adminPrincipal(db, config, request, reply, correlationId, true);
+    if (!actorId) return;
+    try {
+      return reply.header("cache-control", "no-store").send(await rotatePlatformWorkerAccessToken(db, config, { actorId, correlationId }));
+    } catch (error) {
+      return routeError(reply, error, correlationId);
+    }
+  });
+
   app.get("/api/external-principals", async (request, reply) => {
     const correlationId = randomUUID();
     if (!await adminPrincipal(db, config, request, reply, correlationId)) return;
@@ -344,12 +381,28 @@ export function registerComponentRoutes(app: FastifyInstance, db: Db, config: Ap
     catch (error) { return routeError(reply, error, correlationId); }
   });
 
-  app.post("/api/external-principals/:id/credentials/rotate", async (request, reply) => {
+  app.post("/api/external-principals/:id/access-tokens/rotate", async (request, reply) => {
     const correlationId = randomUUID();
     const actorId = await adminPrincipal(db, config, request, reply, correlationId, true);
     if (!actorId) return;
-    try { return await rotateExternalPrincipalCredential(db, { principalId: (request.params as { id: string }).id, actorId, hmacKey: config.ACCESS_TOKEN_HMAC_KEY_BASE64, keyId: config.ACCESS_TOKEN_HMAC_KEY_ID, correlationId }); }
+    try { return reply.header("cache-control", "no-store").send(await rotateExternalPrincipalAccessToken(db, { principalId: (request.params as { id: string }).id, actorId, hmacKey: config.ACCESS_TOKEN_HMAC_KEY_BASE64, hmacKeyId: config.ACCESS_TOKEN_HMAC_KEY_ID, correlationId })); }
     catch (error) { return routeError(reply, error, correlationId); }
+  });
+
+  app.post("/api/external-principals/:id/credentials/rotate", async (_request, reply) => sendError(reply, 410, "external_principal_credentials_retired"));
+
+  app.post("/api/external-inbound-permissions", async (request, reply) => {
+    const correlationId = randomUUID();
+    const actorId = await adminPrincipal(db, config, request, reply, correlationId, true);
+    if (!actorId) return;
+    try { await setExternalInboundPermission(db, { ...externalInboundPermissionSchema.parse(request.body), actorId, correlationId }); return { ok: true }; }
+    catch (error) { return routeError(reply, error, correlationId); }
+  });
+
+  app.get("/api/external-inbound-permissions", async (request, reply) => {
+    const correlationId = randomUUID();
+    if (!await adminPrincipal(db, config, request, reply, correlationId)) return;
+    return { permissions: await listExternalInboundPermissions(db) };
   });
 
   app.post("/api/external-principals/:id/status", async (request, reply) => {
@@ -447,33 +500,70 @@ export function registerComponentRoutes(app: FastifyInstance, db: Db, config: Ap
     }
   });
 
-  app.post("/api/components/:id/credentials/:credentialId/revoke", async (request, reply) => {
+  app.post("/api/components/:id/access-tokens/:tokenId/revoke", async (request, reply) => {
     const correlationId = randomUUID();
     const actorId = await adminPrincipal(db, config, request, reply, correlationId, true);
     if (!actorId) return;
     try {
-      const params = request.params as { id: string; credentialId: string };
-      return { component: await revokeComponentCredential(db, {
-        componentId: params.id, credentialId: params.credentialId, actorId, correlationId
+      const params = request.params as { id: string; tokenId: string };
+      return { component: await revokeComponentAccessToken(db, {
+        componentId: params.id, tokenId: params.tokenId, actorId, correlationId
       }) };
     } catch (error) {
       return routeError(reply, error, correlationId);
     }
   });
 
-  app.post("/api/components/:id/credentials/:credentialId/rotate", async (request, reply) => {
+  app.post("/api/components/:id/access-tokens/:tokenId/rotate", async (request, reply) => {
     const correlationId = randomUUID();
     const actorId = await adminPrincipal(db, config, request, reply, correlationId, true);
     if (!actorId) return;
     try {
-      const params = request.params as { id: string; credentialId: string };
-      return reply.header("cache-control", "no-store").send(await rotateComponentCredential(db, {
-        componentId: params.id, credentialId: params.credentialId, actorId,
-        credentialHmacKey: config.ACCESS_TOKEN_HMAC_KEY_BASE64, keyId: config.ACCESS_TOKEN_HMAC_KEY_ID, correlationId
+      const params = request.params as { id: string; tokenId: string };
+      return reply.header("cache-control", "no-store").send(await rotateComponentAccessToken(db, {
+        componentId: params.id, tokenId: params.tokenId, actorId,
+        accessTokenHmacKey: config.ACCESS_TOKEN_HMAC_KEY_BASE64, accessTokenHmacKeyId: config.ACCESS_TOKEN_HMAC_KEY_ID, correlationId
       }));
     } catch (error) {
       return routeError(reply, error, correlationId);
     }
+  });
+
+  app.post("/api/components/:id/credentials/:credentialId/revoke", async (_request, reply) =>
+    sendError(reply, 410, "component_credentials_retired"));
+  app.post("/api/components/:id/credentials/:credentialId/rotate", async (_request, reply) =>
+    sendError(reply, 410, "component_credentials_retired"));
+
+  app.post("/api/components/:id/e2e-runs", async (request, reply) => {
+    const correlationId = randomUUID();
+    const actorId = await adminPrincipal(db, config, request, reply, correlationId, true);
+    if (!actorId) return;
+    try {
+      const run = await queueComponentE2ERun(db, { componentId: (request.params as { id: string }).id, correlationId });
+      return reply.code(202).send({ run, correlationId });
+    } catch (error) {
+      return routeError(reply, error, correlationId);
+    }
+  });
+
+  app.post("/api/components/:id/state-queries", async (request, reply) => {
+    const correlationId = randomUUID();
+    const actorId = await adminPrincipal(db, config, request, reply, correlationId, true);
+    if (!actorId) return;
+    try {
+      const dispatch = await queueComponentStateQuery(db, { componentId: (request.params as { id: string }).id, actorId, correlationId });
+      return reply.code(202).send({ dispatch, correlationId });
+    } catch (error) { return routeError(reply, error, correlationId); }
+  });
+
+  app.post("/api/components/:id/heartbeat-challenges", async (request, reply) => {
+    const correlationId = randomUUID();
+    const actorId = await adminPrincipal(db, config, request, reply, correlationId, true);
+    if (!actorId) return;
+    try {
+      const dispatch = await queueComponentHeartbeatChallenge(db, { componentId: (request.params as { id: string }).id, actorId, correlationId });
+      return reply.code(202).send({ dispatch, correlationId });
+    } catch (error) { return routeError(reply, error, correlationId); }
   });
 
   app.get("/.well-known/kcml-component", { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } }, async (request, reply) => {
@@ -502,7 +592,10 @@ export function registerComponentRoutes(app: FastifyInstance, db: Db, config: Ap
       const body = fullPulseSchema.parse(request.body) as ComponentPulseEnvelope;
       assertSourceIdentity(body.source as { clientId: string; componentCode: string }, decision);
       assertTargetIdentity(body.target as { componentCode: string; audience?: string }, decision);
-      const receipt = await ingestComponentPulse(db, decision.targetComponentId, body);
+      if (body.accessTokenFingerprint !== decision.tokenFingerprint) return sendError(reply, 403, "access_token_fingerprint_mismatch", undefined, correlationId);
+      const receipt = await ingestComponentPulse(db, decision.targetComponentId, body, {
+        tokenFingerprint: decision.tokenFingerprint ?? "", permissionEpoch: decision.policyEpoch ?? 0, sourceClientId: decision.sourceClientId ?? ""
+      });
       return reply.code(202).send({ ...receipt, policyEpoch: decision.policyEpoch });
     } catch (error) {
       return routeError(reply, error, correlationId);
@@ -516,6 +609,8 @@ export function registerComponentRoutes(app: FastifyInstance, db: Db, config: Ap
     try {
       const gateway = outboundGatewaySchema.safeParse(request.body);
       if (gateway.success) {
+        const accessToken = bearer(request);
+        if (!accessToken || !decision.tokenFingerprint) return sendError(reply, 401, "invalid_token", undefined, correlationId);
         return reply.code(202).send(await dispatchExternalComponentCall(db, {
           sourceComponentId: decision.sourceComponentId,
           targetKey: gateway.data.targetKey,
@@ -523,15 +618,45 @@ export function registerComponentRoutes(app: FastifyInstance, db: Db, config: Ap
           scopeName: gateway.data.scopeName,
           payload: gateway.data.payload,
           correlationId,
-          hmacKey: config.ACCESS_TOKEN_HMAC_KEY_BASE64,
-          keyId: config.ACCESS_TOKEN_HMAC_KEY_ID
+          accessToken,
+          tokenFingerprint: decision.tokenFingerprint
         }));
       }
       const body = fullPulseSchema.parse(request.body) as ComponentPulseEnvelope;
       if (body.direction !== "OUTGOING") return sendError(reply, 400, "invalid_pulse_direction", undefined, correlationId);
       assertSourceIdentity(body.source as { clientId: string; componentCode: string }, decision);
-      const receipt = await ingestComponentPulse(db, decision.sourceComponentId, body);
-      return reply.code(202).send({ ...receipt, policyEpoch: decision.policyEpoch });
+      if (body.accessTokenFingerprint !== decision.tokenFingerprint) return sendError(reply, 403, "access_token_fingerprint_mismatch", undefined, correlationId);
+      const rawTargetCode = (body.target as Record<string, unknown>).componentCode;
+      const targetCode = typeof rawTargetCode === "string" ? rawTargetCode : "";
+      const target = await db.query("select id,hostname from component where code=$1 and lifecycle_state<>'DEREGISTERED'", [targetCode]);
+      if (!target.rowCount) return sendError(reply, 404, "target_component_not_found", undefined, correlationId);
+      const targetHostname = String(target.rows[0].hostname);
+      const token = bearer(request);
+      if (!token) return sendError(reply, 401, "invalid_token", undefined, correlationId);
+      const deliveredEnvelope = { ...body, direction: "INCOMING" as const };
+      try {
+        const delivered = await fetchThroughEgress(config, {
+          url: `https://${targetHostname}/v2/component-pulse`, method: "POST",
+          headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+          body: Buffer.from(JSON.stringify(deliveredEnvelope)), allowlist: [targetHostname],
+          purpose: "component.pulse.registered_dispatch", correlationId: body.correlationId, ttlSeconds: 45
+        });
+        if (delivered.status < 200 || delivered.status >= 300) throw new Error(`pulse_delivery_http_${delivered.status}`);
+        const receipt = await ingestComponentPulse(db, decision.sourceComponentId, body, {
+          tokenFingerprint: decision.tokenFingerprint ?? "", permissionEpoch: decision.policyEpoch ?? 0, sourceClientId: decision.sourceClientId ?? ""
+        });
+        return reply.code(202).send({ ...receipt, delivered: true, targetHostname, policyEpoch: decision.policyEpoch });
+      } catch (error) {
+        const output = { error: error instanceof Error ? error.message : "pulse_delivery_failed", targetHostname };
+        await ingestComponentOperationEvent(db, decision.sourceComponentId, {
+          operationKey: `pulse:${body.pulseType}:delivery`, inputDigest: `sha256:${createHash("sha256").update(JSON.stringify(body.input)).digest("hex")}`,
+          inputPayload: body.input, processTrace: { transport: "KCML_EGRESS", targetHostname },
+          outputDigest: `sha256:${createHash("sha256").update(JSON.stringify(output)).digest("hex")}`, outputPayload: output,
+          success: false, correlationId: body.correlationId, causationId: body.causationId, traceId: body.traceId,
+          accessTokenFingerprint: decision.tokenFingerprint ?? undefined, occurredAt: new Date().toISOString()
+        });
+        return sendError(reply, 502, "pulse_delivery_failed", undefined, correlationId);
+      }
     } catch (error) {
       return routeError(reply, error, correlationId);
     }
@@ -569,7 +694,7 @@ export function registerComponentRoutes(app: FastifyInstance, db: Db, config: Ap
         ...body,
         declaredComponentCode: body.componentCode
       });
-      return reply.code(202).send({ ...receipt, correlationId: body.correlationId });
+      return reply.code(receipt.accepted ? 202 : 422).send({ ...receipt, correlationId: body.correlationId });
     } catch (error) {
       return routeError(reply, error, correlationId);
     }
@@ -578,6 +703,22 @@ export function registerComponentRoutes(app: FastifyInstance, db: Db, config: Ap
   app.post("/v2/component-state-query", { config: { rateLimit: { max: 120, timeWindow: "1 minute" } } }, async (request, reply) => {
     const correlationId = randomUUID();
     return sendError(reply, 410, "state_query_requires_control_dispatch", "KCML issues state queries through the durable control-dispatch worker.", correlationId);
+  });
+
+  app.post("/v2/component-state-response", { config: { rateLimit: { max: 120, timeWindow: "1 minute" } } }, async (request, reply) => {
+    const correlationId = randomUUID();
+    const decision = await authorizeRuntime(db, config, request, "component.state.query", "/v2/component-state-response", correlationId);
+    if (!decision?.allow || !decision.targetComponentId) return sendError(reply, 403, decision?.reasonCode ?? "invalid_token", undefined, correlationId);
+    try {
+      const body = stateSnapshotSchema.parse(request.body);
+      if (body.declaredClientId !== decision.sourceClientId || body.componentCode !== decision.targetComponentCode) {
+        return sendError(reply, 403, "client_id_mismatch", undefined, correlationId);
+      }
+      const receipt = await recordComponentStateSnapshot(db, decision.targetComponentId, { ...body, declaredComponentCode: body.componentCode });
+      return reply.code(receipt.accepted ? 202 : 422).send({ ...receipt, correlationId: body.correlationId });
+    } catch (error) {
+      return routeError(reply, error, correlationId);
+    }
   });
 
   app.post("/v2/component-control-ack", { config: { rateLimit: { max: 120, timeWindow: "1 minute" } } }, async (request, reply) => {

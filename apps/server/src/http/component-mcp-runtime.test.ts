@@ -18,7 +18,7 @@ const component = {
 const cleanup: string[] = [];
 afterEach(async () => Promise.all(cleanup.splice(0).map((directory) => rm(directory, { recursive: true, force: true }))));
 
-function fakeDb(socketPath: string): Db {
+function fakeDb(socketPath: string, activeCount = 0): Db {
   const query = async (sql: string) => {
     if (sql.includes("from component_tool_contract")) return { rowCount: 1, rows: [{
       name: "inventory", title: "Inventory", description: "Return inventory", scope_name: "mcp.tools.call", timeout_ms: 5_000,
@@ -27,14 +27,17 @@ function fakeDb(socketPath: string): Db {
     }] };
     if (sql.includes("from principal_access_token token")) return { rowCount: 1, rows: [{
       source_client_id: "KCML90001", source_principal_status: "ACTIVE", current_source_revocation_epoch: 1,
+      source_principal_kind: "COMPONENT",
       issued_revocation_epoch: 1, source_component_id: component.id, source_component_code: component.code,
       source_enabled: true, source_lifecycle_state: "ACTIVE", target_component_id: component.id,
       target_component_code: component.code, target_hostname: component.hostname, target_enabled: true,
-      target_ingress_enabled: true, target_lifecycle_state: "ACTIVE", target_operational_state: "HEALTHY",
+      target_ingress_enabled: true, target_lifecycle_state: "ACTIVE", target_activation_state: "ACTIVE", target_operational_state: "HEALTHY",
       policy_epoch: 3, release_version: "2026.07.24", token_expired: false, revoked_at: null,
-      scope_names: ["component.invoke"], fingerprint: "access-fingerprint"
+      audience: `https://${component.hostname}`,
+      scope_names: ["component.invoke", "mcp.tools.call"], fingerprint: "access-fingerprint"
     }] };
     if (sql.includes("from component_permission")) return { rowCount: 1, rows: [{}] };
+    if (sql.includes("select coalesce((runtime_resources->>'maxConcurrency')")) return { rowCount: 1, rows: [{ max_concurrency: 1, active_count: activeCount }] };
     if (sql.includes("from component_runtime_target")) return { rowCount: 1, rows: [{
       transport: "UDS", upstream: socketPath, socket_path: socketPath, status: "HEALTHY"
     }] };
@@ -76,5 +79,18 @@ describe("canonical component MCP runtime", () => {
     expect(received[0]).toMatchObject({ operation: "tools/call", tool: "inventory" });
     await app.close();
     await new Promise<void>((resolve, reject) => runtime.close((error) => error ? reject(error) : resolve()));
+  });
+
+  it("returns a retryable JSON-RPC saturation error before runtime dispatch", async () => {
+    const app = Fastify();
+    const config = { ACCESS_TOKEN_HMAC_KEY_BASE64: hmacKey } as AppServerConfig;
+    app.post("/mcp", (request, reply) => handleCanonicalMcp(request, reply, fakeDb("/unused/runtime.sock", 1), config, component, "90000000-0000-4000-8000-000000000006"));
+    const reply = await app.inject({
+      method: "POST", url: "/mcp", headers: { authorization: "Bearer long-lived-token", host: component.hostname },
+      payload: { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "inventory", arguments: {} } }
+    });
+    expect(reply.statusCode).toBe(200);
+    expect(reply.json().error).toMatchObject({ code: -32004, message: "Component concurrency limit exceeded", data: { retryable: true } });
+    await app.close();
   });
 });
