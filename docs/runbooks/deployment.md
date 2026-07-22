@@ -24,7 +24,7 @@
 1. Install nginx and systemd definitions, including the separate `kcml-monitor.service` and the Secret API virtual host `secrets.<PUBLIC_BASE_DOMAIN>`.
    Legacy installations missing explicit control-plane host variables derive `admin`, `auth`, `register` and `secrets` hostnames from `PUBLIC_BASE_DOMAIN`; explicitly configured custom hostnames remain unchanged.
 2. Materialize per-service environment and credential files with modes `0700/0600`.
-3. Run preflight for TLS SAN coverage of both `*.<PUBLIC_BASE_DOMAIN>` and the catalog-derived canonical component suffix (currently `*.kajovocml.hcasc.cz`), rootless Podman, Cosign identity, two separately keyed signed HTTPS alert sinks, `age`, service credentials and writable isolated paths.
+3. Keep TLS SAN coverage for both `*.<PUBLIC_BASE_DOMAIN>` and the catalog-derived canonical component suffix (currently `*.kajovocml.hcasc.cz`). If coverage is missing or has less than 30 days remaining, the root-only release installer requests a replacement certificate and exposes the short-lived DNS-01 challenge at `http://admin.<PUBLIC_BASE_DOMAIN>/.well-known/acme-challenge/kcml-dns-challenge.json` for an authorized DNS operator. The private key is generated and retained on the production server. Preflight then verifies both SANs before any release activation.
 4. Create an encrypted custom-format PostgreSQL backup plus checksum.
 5. Apply checksum-locked forward migrations under advisory lock and timeouts.
 6. Create/update the non-owner `kcml_app` role through local PostgreSQL administration and revoke direct audit-table mutation.

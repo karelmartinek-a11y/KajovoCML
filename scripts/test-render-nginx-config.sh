@@ -15,6 +15,8 @@ grep -Fq 'location = /.well-known/kcml-secret-api {' "$tmp"
 grep -Fq 'location = /v1/secrets/resolve {' "$tmp"
 grep -Fq 'server_name "~^kcml[0-9]{4,}\.components\.example\.invalid$";' "$tmp"
 grep -Fq 'server_name admin.example.invalid auth.example.invalid register.example.invalid secrets.example.invalid reference-api.example.invalid alerts-primary.example.invalid alerts-backup.example.invalid "~^kcml[0-9]{4,}\.components\.example\.invalid$";' "$tmp"
+grep -Fq 'location ^~ /.well-known/acme-challenge/ {' "$tmp"
+grep -Fq 'try_files $uri =404;' "$tmp"
 test "$(grep -Fc 'return 444;' "$tmp")" -eq 2
 # The nginx variables must remain literal in the rendered configuration.
 # shellcheck disable=SC2016

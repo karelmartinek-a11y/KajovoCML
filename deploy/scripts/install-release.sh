@@ -138,6 +138,12 @@ chmod 0644 /etc/systemd/system/kcml-monitor.service.d/runtime-user.conf
 
 step split-config-initial
 DATABASE_APP_URL="${DATABASE_APP_URL:-$DATABASE_URL}" bash "$source_dir/deploy/scripts/split-service-config.sh" "$release_id"
+step ensure-canonical-tls
+tls_cert_path="${WILDCARD_TLS_CERT_PATH:-/etc/kcml/tls/fullchain.pem}"
+tls_key_path="${WILDCARD_TLS_KEY_PATH:-${tls_cert_path%/*}/privkey.pem}"
+bash "$source_dir/deploy/scripts/ensure-canonical-tls.sh" \
+  "$PUBLIC_BASE_DOMAIN" "$component_hostname_suffix" "$tls_cert_path" "$tls_key_path"
+
 step preflight
 export KCML_COMPONENT_HOST_SUFFIX="$component_hostname_suffix"
 KCML_RELEASE_SOURCE="$source_dir" bash "$source_dir/deploy/scripts/preflight.sh"
