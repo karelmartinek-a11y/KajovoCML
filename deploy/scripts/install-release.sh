@@ -131,6 +131,29 @@ restart_core_services() {
   systemctl restart kcml-monitor
 }
 
+queue_webhook_smoke() {
+  test_alert_id="$(psql "$DATABASE_APP_URL" --no-psqlrc --tuples-only --no-align --quiet --set ON_ERROR_STOP=1 \
+    --set correlation="$test_correlation" --set release_id="$release_id" <<'SQL' | tail -n 1
+begin;
+update operational_alert
+   set status='CLOSED',closed_at=now(),last_seen_at=now()
+ where alert_type='deployment.webhook_test' and status in ('OPEN','ACKNOWLEDGED','SUPPRESSED');
+insert into operational_alert(severity,alert_type,title,detail,correlation_id)
+values ('CRITICAL','deployment.webhook_test','KCML deployment webhook test',jsonb_build_object('buildId', :'release_id'),:'correlation'::uuid)
+returning id \gset
+insert into alert_webhook_delivery(alert_id,channel,idempotency_key)
+values (:'id','PRIMARY',gen_random_uuid()),(:'id','BACKUP',gen_random_uuid());
+select append_audit_event(
+  'deployment.webhook_test.opened','deployment',null,'operational_alert',:'id',null,
+  jsonb_build_object('buildId', :'release_id'),:'correlation'::uuid
+);
+commit;
+\echo :id
+SQL
+)"
+  [[ "$test_alert_id" =~ ^[0-9a-f-]{36}$ ]]
+}
+
 wait_for_runtime_health() {
   local admin_host="$1"
   local healthy=false
@@ -263,27 +286,10 @@ nginx -t
 systemctl reload nginx
 
 test_correlation="$(cat /proc/sys/kernel/random/uuid)"
-step queue-webhook-smoke
-test_alert_id="$(psql "$DATABASE_APP_URL" --no-psqlrc --tuples-only --no-align --quiet --set ON_ERROR_STOP=1 \
-  --set correlation="$test_correlation" --set release_id="$release_id" <<'SQL' | tail -n 1
-begin;
-update operational_alert
-   set status='CLOSED',closed_at=now(),last_seen_at=now()
- where alert_type='deployment.webhook_test' and status in ('OPEN','ACKNOWLEDGED','SUPPRESSED');
-insert into operational_alert(severity,alert_type,title,detail,correlation_id)
-values ('CRITICAL','deployment.webhook_test','KCML deployment webhook test',jsonb_build_object('buildId', :'release_id'),:'correlation'::uuid)
-returning id \gset
-insert into alert_webhook_delivery(alert_id,channel,idempotency_key)
-values (:'id','PRIMARY',gen_random_uuid()),(:'id','BACKUP',gen_random_uuid());
-select append_audit_event(
-  'deployment.webhook_test.opened','deployment',null,'operational_alert',:'id',null,
-  jsonb_build_object('buildId', :'release_id'),:'correlation'::uuid
-);
-commit;
-\echo :id
-SQL
-)"
-[[ "$test_alert_id" =~ ^[0-9a-f-]{36}$ ]]
+if [ -z "${KCML_FACTORY_RESET_CONFIRM:-}" ]; then
+  step queue-webhook-smoke
+  queue_webhook_smoke
+fi
 
 restart_core_services
 
@@ -315,6 +321,9 @@ if [ -n "${KCML_FACTORY_RESET_CONFIRM:-}" ]; then
 
   step wait-runtime-health-post-reset
   wait_for_runtime_health "$admin_host"
+
+  step queue-webhook-smoke-post-reset
+  queue_webhook_smoke
 fi
 
 app_database_url="$(cat /etc/kcml/database-app.url)"
