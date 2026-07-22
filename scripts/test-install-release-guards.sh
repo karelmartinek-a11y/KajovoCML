@@ -30,6 +30,9 @@ grep -Fq 'curl -fsS "https://${canonical_component_hostname}/.well-known/oauth-p
 grep -Fq 'deploy/scripts/ensure-canonical-tls.sh' "$install_script"
 grep -Fq 'canonical-tls:WAITING_DNS record=$record value=$CERTBOT_VALIDATION' deploy/scripts/ensure-canonical-tls.sh
 grep -Fq -- '-d "*.${component_suffix}"' deploy/scripts/ensure-canonical-tls.sh
+if bash deploy/scripts/ensure-canonical-tls.sh 'hcasc.cz|kajovocml.hcasc.cz' 'kajovocml.hcasc.cz' /missing/cert /missing/key 2>/dev/null; then
+  exit 1
+fi
 grep -Fq "component_hostname_pattern=\"\$(jq -er '.identityAssignment.hostnamePattern' \"\$component_catalog\")\"" "$install_script"
 grep -Fq "component_hostname_suffix" "$install_script"
 if grep -F 'canonical_component_identity' "$install_script" | grep -Fq 'PUBLIC_BASE_DOMAIN'; then

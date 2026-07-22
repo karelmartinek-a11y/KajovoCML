@@ -9,9 +9,11 @@ private_key_path="${4:?private key path required}"
 status_root="/var/www/letsencrypt"
 status_file="$status_root/kcml-dns-challenge.json"
 
-case "$base_domain|$component_suffix" in
-  *[!a-z0-9.-]*) echo "invalid TLS domain" >&2; exit 1 ;;
-esac
+for domain in "$base_domain" "$component_suffix"; do
+  case "$domain" in
+    ""|.*|*.|*..*|*[!a-z0-9.-]*) echo "invalid TLS domain" >&2; exit 1 ;;
+  esac
+done
 case "$component_suffix" in
   "$base_domain"|*."$base_domain") ;;
   *) echo "component suffix is outside the base domain" >&2; exit 1 ;;
