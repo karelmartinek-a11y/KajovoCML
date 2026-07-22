@@ -33,6 +33,11 @@ if psql "$app_url" --no-psqlrc --set ON_ERROR_STOP=1 --quiet --command \
   exit 1
 fi
 if psql "$app_url" --no-psqlrc --set ON_ERROR_STOP=1 --quiet --command \
+  "select public.kcml_factory_reset_truncate('{}'::text[])" >/dev/null 2>&1; then
+  echo "application role can execute factory reset truncation helper" >&2
+  exit 1
+fi
+if psql "$app_url" --no-psqlrc --set ON_ERROR_STOP=1 --quiet --command \
   "update component_audit_event set event_type='forbidden' where false" >/dev/null 2>&1; then
   echo "application role can update component_audit_event" >&2
   exit 1
@@ -42,5 +47,21 @@ if psql "$app_url" --no-psqlrc --set ON_ERROR_STOP=1 --quiet --command \
   echo "application role can delete component_audit_event" >&2
   exit 1
 fi
+psql "$DATABASE_URL" --no-psqlrc --set ON_ERROR_STOP=1 --quiet <<'SQL'
+drop table if exists public.factory_reset_isolation_probe;
+create table public.factory_reset_isolation_probe (
+  id bigint generated always as identity primary key,
+  label text not null
+);
+insert into public.factory_reset_isolation_probe(label) values ('probe-row');
+select public.kcml_factory_reset_truncate(array['factory_reset_isolation_probe']::text[]);
+do $$
+begin
+  if exists (select 1 from public.factory_reset_isolation_probe) then
+    raise exception 'factory_reset_probe_not_truncated';
+  end if;
+end $$;
+drop table public.factory_reset_isolation_probe;
+SQL
 test "$(psql "$app_url" --no-psqlrc --tuples-only --no-align --quiet --command 'select valid from verify_audit_chain()')" = "t"
 echo "database-role-isolation-ok"
