@@ -49,6 +49,14 @@ select case when
        and manifest_schema_version='${release_version}'
        and pulse_envelope_version='${release_version}'
   )
+  and not exists (
+    select 1
+      from information_schema.columns
+     where table_schema='public'
+       and column_name='release_version'
+       and column_default is not null
+       and column_default <> quote_literal('${release_version}') || '::text'
+  )
   and (select count(*) from release_wave) = 0
   and (select count(*) from release_wave_component) = 0
   and exists (
@@ -106,6 +114,14 @@ select case when
        and checksum_sha256 ~ '^[0-9a-f]{64}$'
   )
   and (select count(*) from release_epoch) = 1
+  and not exists (
+    select 1
+      from information_schema.columns
+     where table_schema='public'
+       and column_name='release_version'
+       and column_default is not null
+       and column_default <> quote_literal('${release_version}') || '::text'
+  )
   and exists (select 1 from principal where public_id='KCML-PLATFORM-WORKER' and kind='PLATFORM')
   and exists (select 1 from admin_account where username='karmar78')
   and (select valid from verify_audit_chain()) is true

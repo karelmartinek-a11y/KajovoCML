@@ -5,6 +5,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import type pg from "pg";
 import { loadBootstrapConfig } from "../config.js";
 import { createDb } from "../db.js";
+import { KCML_RELEASE } from "../domain/release.js";
 
 const MIGRATION_NAME = /^(\d{3})_([a-z0-9_]+)[.]sql$/;
 const BASELINE_MIGRATION = "001_pre_production_baseline.sql";
@@ -106,6 +107,44 @@ async function compactLegacyLedger(client: pg.PoolClient, baseline: MigrationFil
   );
 }
 
+async function ensureCanonicalReleaseEpoch(client: pg.PoolClient): Promise<void> {
+  await client.query(
+    `insert into public.release_epoch(
+       release_version,
+       blueprint_version,
+       catalog_version,
+       manifest_schema_version,
+       pulse_envelope_version,
+       policy_baseline,
+       mcp_protocol_version,
+       sealed_previous_epoch_hash
+     )
+     values ($1,$1,$1,$1,$1,$2::date,$3,'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855')
+     on conflict (release_version) do update
+       set blueprint_version=excluded.blueprint_version,
+           catalog_version=excluded.catalog_version,
+           manifest_schema_version=excluded.manifest_schema_version,
+           pulse_envelope_version=excluded.pulse_envelope_version,
+           policy_baseline=excluded.policy_baseline,
+           mcp_protocol_version=excluded.mcp_protocol_version`,
+    [KCML_RELEASE.catalogVersion, KCML_RELEASE.policyBaseline, KCML_RELEASE.mcpProtocolVersion]
+  );
+
+  for (const tableName of [
+    "component",
+    "component_onboarding_job",
+    "integration_token",
+    "integration_token_allowed_component",
+    "integration_token_child_job",
+    "mcp_server",
+    "onboarding_job"
+  ]) {
+    const exists = await client.query("select to_regclass($1) is not null as exists", [`public.${tableName}`]);
+    if (!exists.rows[0]?.exists) continue;
+    await client.query(`alter table public.${tableName} alter column release_version set default '${KCML_RELEASE.catalogVersion}'::text`);
+  }
+}
+
 export async function runMigrations(): Promise<void> {
   const config = loadBootstrapConfig();
   const db = createDb(config);
@@ -160,6 +199,7 @@ export async function runMigrations(): Promise<void> {
 
     applied = await appliedMigrations(client);
     validateAppliedSet(migrations, applied);
+    await ensureCanonicalReleaseEpoch(client);
   } finally {
     await client.query("select pg_advisory_unlock(hashtextextended('kcml-schema-migrations', 0))").catch(() => undefined);
     client.release();

@@ -994,10 +994,21 @@ export async function createExternalApiManagedService(
     const job = await client.query(
       `insert into onboarding_job(
           token_id, state, correlation_id, manifest, manifest_digest, source_digest, source_archive_path,
-          source_revision, kcml_number, code, hostname, service_kind, completed_at
-       ) values ($1,'REGISTERED_DISABLED',$2,$3,$4,$5,$6,1,$7,$8,$9,'EXTERNAL_API',now())
+          source_revision, kcml_number, code, hostname, service_kind, release_version, completed_at
+       ) values ($1,'REGISTERED_DISABLED',$2,$3,$4,$5,$6,1,$7,$8,$9,'EXTERNAL_API',$10,now())
        returning id, lock_version`,
-      [principal.id, correlationId, manifest, manifestDigest, manifestDigest, "external-api://manifest", allocation.number, allocation.code, allocation.hostname]
+      [
+        principal.id,
+        correlationId,
+        manifest,
+        manifestDigest,
+        manifestDigest,
+        "external-api://manifest",
+        allocation.number,
+        allocation.code,
+        allocation.hostname,
+        String(token.rows[0].release_version)
+      ]
     );
     const jobId = String(job.rows[0].id);
     await client.query("update integration_token set onboarding_job_id=$2, lock_version=lock_version+1 where id=$1", [principal.id, jobId]);
