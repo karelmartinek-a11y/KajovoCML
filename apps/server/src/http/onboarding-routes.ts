@@ -216,7 +216,7 @@ async function adminIdentity(db: Db, config: OnboardingRouteConfig, request: Fas
 export function registerOnboardingRoutes(app: FastifyInstance, db: Db, config: OnboardingRouteConfig): void {
   app.addHook("onRequest", async (request, reply) => {
     const path = request.url.split("?", 1)[0] ?? "";
-    if (/^\/v1\/(?:service-)?onboardings(?:\/|$)/.test(path)) {
+    if (/^\/v1\/onboardings(?:\/|$)/.test(path)) {
       if (hostOf(request.headers.host) !== config.REGISTER_HOST) return sendError(reply, 404, "not_found");
       return sendError(reply, 410, "legacy_onboarding_retired_use_component_intake");
     }
@@ -492,14 +492,14 @@ export function registerOnboardingRoutes(app: FastifyInstance, db: Db, config: O
     config: { rateLimit: { max: 5, timeWindow: "1 minute" } }
   }, async (request, reply) => {
     const token = bearer(request);
-    if (!token) return createMcpOnboarding(request, reply);
+    if (!token) return sendError(reply, 410, "legacy_onboarding_retired_use_component_intake");
     try {
       const principal = await authenticateIntegrationToken(db, token, config);
       return principal.serviceKind === "EXTERNAL_API"
         ? createExternalApiOnboarding(request, reply)
-        : createMcpOnboarding(request, reply);
+        : sendError(reply, 410, "legacy_onboarding_retired_use_component_intake");
     } catch {
-      return createMcpOnboarding(request, reply);
+      return sendError(reply, 410, "legacy_onboarding_retired_use_component_intake");
     }
   });
 
