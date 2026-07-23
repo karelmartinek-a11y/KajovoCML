@@ -302,6 +302,16 @@ export type IntegrationToken = {
   hostname: string | null;
   heartbeatAt: string | null;
   tokenExtendedAt: string | null;
+  secretGrants: Array<{
+    id: string;
+    secretStableName: string | null;
+    allSecrets: boolean;
+    grantedAt: string;
+    revokedAt: string | null;
+    transferredComponentId: string | null;
+    transferredComponentPublicId: string | null;
+    transferredAt: string | null;
+  }>;
 };
 export type IntegrationSecret = IntegrationToken & {
   token: string;
@@ -315,6 +325,7 @@ export type IntegrationSecret = IntegrationToken & {
     repositoryComponentCatalogVersion: string;
     repositoryComponentCatalogPath: string;
     repositoryComponentCatalogFileName: string;
+    secretApiDiscoveryUrl?: string;
   };
 };
 export type OnboardingGate = { gate_name: string; stage: string; status: string; evidence: Record<string, unknown>; correlation_id: string; started_at: string | null; completed_at: string | null };

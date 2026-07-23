@@ -6,9 +6,10 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const release = "2026.07.22-compliance.1";
+const onboardingCatalogVersion = "1.1";
 const schemaPath = path.join(root, `apps/server/src/contracts/component-manifest-${release}.schema.json`);
 const examplePath = path.join(root, `docs/onboarding-manifest-${release}.example.json`);
-const catalogPath = path.join(root, `docs/onboarding-catalogs/component-${release}.json`);
+const catalogPath = path.join(root, `docs/onboarding-catalogs/onboarding-${onboardingCatalogVersion}.json`);
 const digest = (value) => `sha256:${crypto.createHash("sha256").update(value).digest("hex")}`;
 const sha = { type: "string", pattern: "^sha256:[a-f0-9]{64}$" };
 const objectSchema = { type: "object", minProperties: 1 };
@@ -108,7 +109,7 @@ const example = {
 };
 
 const catalog = {
-  version: release, normativeLabel: "2026.07.22-COMPLIANCE.1", serviceKind: "COMPONENT",
+  version: onboardingCatalogVersion, normativeLabel: "1.1", serviceKind: "COMPONENT",
   manifestSchemaVersion: release, pulseEnvelopeVersion: release, policyBaseline: "2026-07-22", mcpProtocolVersion: "2025-11-25",
   manifestSchemaPath: `apps/server/src/contracts/component-manifest-${release}.schema.json`,
   manifestExamplePath: `docs/onboarding-manifest-${release}.example.json`,

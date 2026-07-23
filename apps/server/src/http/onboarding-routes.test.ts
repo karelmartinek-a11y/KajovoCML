@@ -6,6 +6,7 @@ import { authenticator } from "otplib";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { loadConfig, type AppConfig } from "../config.js";
 import type { Db } from "../db.js";
+import { MCP_CATALOG_VERSION } from "../domain/onboarding-catalog.js";
 import { KCML_RELEASE } from "../domain/release.js";
 import { encryptMfaSecret } from "../security/secrets.js";
 import { registerOnboardingRoutes, verifyEncryptedMfaTotp } from "./onboarding-routes.js";
@@ -93,7 +94,7 @@ describe("programmer onboarding API authorization", () => {
     expect(response.statusCode).toBe(404);
   });
 
-  it(`serves the approved ${KCML_RELEASE.catalogVersion} onboarding catalog to an authenticated administrator`, async () => {
+  it(`serves the approved ${MCP_CATALOG_VERSION} onboarding catalog to an authenticated administrator`, async () => {
     const response = await app.inject({
       method: "GET",
       url: "/api/onboarding-catalog",
@@ -101,8 +102,8 @@ describe("programmer onboarding API authorization", () => {
     });
     expect(response.statusCode).toBe(200);
     expect(response.headers["content-type"]).toContain("application/json");
-    expect(response.headers["content-disposition"]).toContain(`component-${KCML_RELEASE.catalogVersion}.json`);
-    expect(response.json()).toMatchObject({ version: KCML_RELEASE.catalogVersion, serviceKind: "COMPONENT" });
+    expect(response.headers["content-disposition"]).toContain(`onboarding-${MCP_CATALOG_VERSION}.json`);
+    expect(response.json()).toMatchObject({ version: MCP_CATALOG_VERSION, serviceKind: "COMPONENT" });
   });
 
   it.each([
@@ -226,7 +227,7 @@ describe("machine-readable onboarding catalogs", () => {
   it("serves the JSON onboarding catalog to an authenticated programmer on the register host", async () => {
     const response = await app.inject({
       method: "GET",
-      url: `/api/onboarding-catalogs/component/${KCML_RELEASE.catalogVersion}`,
+      url: `/api/onboarding-catalogs/component/${MCP_CATALOG_VERSION}`,
       headers: {
         host: config.REGISTER_HOST,
         authorization: `Bearer kci_${"a".repeat(86)}`
@@ -234,7 +235,7 @@ describe("machine-readable onboarding catalogs", () => {
     });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({
-      version: KCML_RELEASE.catalogVersion,
+      version: MCP_CATALOG_VERSION,
       serviceKind: "COMPONENT"
     });
   });

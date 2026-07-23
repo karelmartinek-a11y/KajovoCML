@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repositoryCatalogVersion = "1.1";
+const onboardingCatalogVersion = "1.1";
 const componentCatalogVersion = "2026.07.22-compliance.1";
 const companionManifestSchemaPath = `apps/server/src/contracts/component-manifest-${componentCatalogVersion}.schema.json`;
 const sourceManifestSchemaPath = `apps/server/src/contracts/repository-component-source-manifest-${repositoryCatalogVersion}.schema.json`;
@@ -389,7 +390,7 @@ function repositoryCatalog() {
     serviceKind: "REPOSITORY_COMPONENT_SOURCE",
     status: "ACTIVE",
     maintenanceModes: ["EXTERNAL", "IN_REPOSITORY"],
-    companionComponentCatalog: `component-${componentCatalogVersion}.json`,
+    companionComponentCatalog: `onboarding-${onboardingCatalogVersion}.json`,
     companionComponentManifestSchema: companionManifestSchemaPath,
     purpose: "Normative source-layout and delivery contract for AI agents, MCP-facing components and deterministic microsteps that may be maintained either outside KajovoCML or in components/<repository-key>/ inside the KajovoCML repository.",
     repository: {
@@ -509,7 +510,7 @@ function repositoryCatalog() {
       }
     },
     separationOfAuthorities: {
-      integrationTokenDoesNotAuthorize: ["GitHub write", "pull request merge", "deployment", "administrator activation", "secret access without grant"],
+      integrationTokenDoesNotAuthorize: ["GitHub write", "pull request merge", "deployment", "secret access without grant"],
       sourceMergeIsNotRegistration: true,
       signedImageIsNotRegistration: true,
       registrationIsNotActivation: true

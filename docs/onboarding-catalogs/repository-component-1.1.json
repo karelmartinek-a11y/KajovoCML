@@ -6,7 +6,7 @@
     "EXTERNAL",
     "IN_REPOSITORY"
   ],
-  "companionComponentCatalog": "component-2026.07.22-compliance.1.json",
+  "companionComponentCatalog": "onboarding-1.1.json",
   "companionComponentManifestSchema": "apps/server/src/contracts/component-manifest-2026.07.22-compliance.1.schema.json",
   "purpose": "Normative source-layout and delivery contract for AI agents, MCP-facing components and deterministic microsteps that may be maintained either outside KajovoCML or in components/<repository-key>/ inside the KajovoCML repository.",
   "repository": {
@@ -251,7 +251,6 @@
       "GitHub write",
       "pull request merge",
       "deployment",
-      "administrator activation",
       "secret access without grant"
     ],
     "sourceMergeIsNotRegistration": true,
@@ -269,5 +268,5 @@
     "binary executables",
     "direct production configuration outside KCML GUI"
   ],
-  "canonicalDigest": "sha256:59892006d32d7681a502bfa6eb6ead69aabbae44a42ce648c77bc3c50c13ff59"
+  "canonicalDigest": "sha256:ec018db62e7858af08c2f13e46f05cc4f18b39172a7117f836b0463d227ca932"
 }

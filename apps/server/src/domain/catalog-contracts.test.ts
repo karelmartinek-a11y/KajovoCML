@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { Ajv2020, type AnySchema } from "ajv/dist/2020.js";
 import { describe, expect, it } from "vitest";
-import { onboardingCatalogDigest } from "./onboarding-catalog.js";
+import { MCP_CATALOG_PATH, MCP_CATALOG_VERSION, onboardingCatalogDigest } from "./onboarding-catalog.js";
 import { KCML_RELEASE } from "./release.js";
 import { validateComponentManifest } from "./component.js";
 
@@ -9,15 +9,15 @@ function readJson(path: string): Record<string, unknown> {
   return JSON.parse(readFileSync(new URL(path, import.meta.url), "utf8")) as Record<string, unknown>;
 }
 
-const catalog = readJson(`../../../../docs/onboarding-catalogs/component-${KCML_RELEASE.catalogVersion}.json`);
+const catalog = readJson(`../../../../${MCP_CATALOG_PATH}`);
 const schema = readJson(`../contracts/component-manifest-${KCML_RELEASE.manifestSchemaVersion}.schema.json`);
 const example = readJson(`../../../../docs/onboarding-manifest-${KCML_RELEASE.manifestSchemaVersion}.example.json`);
 
-describe(`generic component onboarding catalog ${KCML_RELEASE.catalogVersion}`, () => {
+describe(`generic component onboarding catalog ${MCP_CATALOG_VERSION}`, () => {
   it("publishes the generated schema and canonical digest", () => {
     expect(catalog).toMatchObject({
-      version: KCML_RELEASE.catalogVersion,
-      normativeLabel: KCML_RELEASE.normativeLabel,
+      version: MCP_CATALOG_VERSION,
+      normativeLabel: MCP_CATALOG_VERSION,
       serviceKind: "COMPONENT",
       manifestSchemaVersion: KCML_RELEASE.manifestSchemaVersion,
       mcpProtocolVersion: KCML_RELEASE.mcpProtocolVersion,

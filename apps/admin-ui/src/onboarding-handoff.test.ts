@@ -18,12 +18,14 @@ describe("onboarding handoff", () => {
       intakeUrls: {
         recommendedIntakeUrl: "https://register.hcasc.cz/v2/component-onboardings",
         nativeComponentIntakeUrl: "https://register.hcasc.cz/v2/component-onboardings",
-        componentCatalogUrl: "https://register.hcasc.cz/api/onboarding-catalogs/component/2026.07.22-compliance.1",
+        componentCatalogUrl: "https://register.hcasc.cz/api/onboarding-catalogs/component/1.1",
         repositoryComponentCatalogVersion: "1.1",
         repositoryComponentCatalogPath: "docs/onboarding-catalogs/repository-component-1.1.json",
-        repositoryComponentCatalogFileName: "repository-component-1.1.json"
+        repositoryComponentCatalogFileName: "repository-component-1.1.json",
+        secretApiDiscoveryUrl: "https://secrets.hcasc.cz/.well-known/kcml-secret-api"
       },
-      catalogVersion: "2026.07.22-compliance.1"
+      catalogVersion: "1.1",
+      secretGrants: [{ secretStableName: "API_KEY_VECTOR", allSecrets: false }]
     });
 
     expect(text).toContain("Označení integračního toku: Fakturační AI agent");
@@ -40,6 +42,9 @@ describe("onboarding handoff", () => {
     expect(text).toContain("/revisions");
     expect(text).toContain("If-Match");
     expect(text).toContain("/readiness");
+    expect(text).toContain("Secret API discovery");
+    expect(text).toContain("API_KEY_VECTOR");
+    expect(text).toContain("automaticky do ACTIVE");
     expect(text).not.toContain("UPLOAD_REVISION");
   });
 
@@ -56,11 +61,11 @@ describe("onboarding handoff", () => {
       token: "kci_generic",
       initialExpiresAt: "2026-07-24T14:00:00.000Z",
       programmerApiUrl: "https://register.hcasc.cz/v2/component-onboardings",
-      catalogVersion: "2026.07.22-compliance.1"
+      catalogVersion: "1.1"
     });
 
     expect(text).toContain("Doporučené programátorské API: https://register.hcasc.cz/v2/component-onboardings");
     expect(text).toContain("Kanonický component intake: https://register.hcasc.cz/v2/component-onboardings");
-    expect(text).toContain("Kanonický component katalog: /api/onboarding-catalogs/component/2026.07.22-compliance.1");
+    expect(text).toContain("Kanonický component katalog: /api/onboarding-catalogs/component/1.1");
   });
 });

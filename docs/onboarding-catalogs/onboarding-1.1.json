@@ -1,6 +1,6 @@
 {
-  "version": "2026.07.22-compliance.1",
-  "normativeLabel": "2026.07.22-COMPLIANCE.1",
+  "version": "1.1",
+  "normativeLabel": "1.1",
   "serviceKind": "COMPONENT",
   "manifestSchemaVersion": "2026.07.22-compliance.1",
   "pulseEnvelopeVersion": "2026.07.22-compliance.1",
@@ -1195,5 +1195,5 @@
       }
     }
   },
-  "canonicalDigest": "sha256:a0f10a19994b83ffd08e102e207282b05dbb3f5624fa2cdc27fa3ff868da57f5"
+  "canonicalDigest": "sha256:a419b6acc7be8eae4ad8e27abbcdf6b0e21042723d633275ec699f9651835ee8"
 }

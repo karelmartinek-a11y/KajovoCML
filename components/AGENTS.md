@@ -158,7 +158,7 @@ Every completed component creation or update report must list only verified fact
 - readiness status
 - access-token handoff status
 - secret grant status without secret values
-- administrator activation status
+- automatic activation status
 - health, heartbeat, state, control, Pulse and audit check results
 - result of a real functional component scenario
 - rollback availability status

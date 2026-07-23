@@ -215,13 +215,15 @@ function releaseLabel(releaseInfo: ReleaseInfo | null): string {
   return releaseInfo ? `Release ${releaseInfo.applicationVersion}` : "Release se načítá";
 }
 
-function CreateIntegrationTokenModal({ catalogVersion, onClose, onCreated }: { catalogVersion: string; onClose: () => void; onCreated: (secret: IntegrationSecret) => void }) {
+function CreateIntegrationTokenModal({ catalogVersion, secrets, onClose, onCreated }: { catalogVersion: string; secrets: ManagedSecret[]; onClose: () => void; onCreated: (secret: IntegrationSecret) => void }) {
   const [label, setLabel] = useState("");
   const [summary, setSummary] = useState("");
   const [businessPurpose, setBusinessPurpose] = useState("");
   const [serviceOwner, setServiceOwner] = useState("");
   const [technicalOwner, setTechnicalOwner] = useState("");
   const [criticality, setCriticality] = useState<OnboardingDescriptor["criticality"]>("MEDIUM");
+  const [grantAllSecrets, setGrantAllSecrets] = useState(false);
+  const [selectedSecrets, setSelectedSecrets] = useState<string[]>([]);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   async function submit(event: React.FormEvent) {
@@ -245,7 +247,10 @@ function CreateIntegrationTokenModal({ catalogVersion, onClose, onCreated }: { c
             serviceOwner: serviceOwner.trim(),
             technicalOwner: technicalOwner.trim(),
             criticality
-          }
+          },
+          secretGrants: grantAllSecrets
+            ? [{ allSecrets: true }]
+            : selectedSecrets.map((secretStableName) => ({ secretStableName }))
         })
       });
       onCreated(result);
@@ -262,7 +267,7 @@ function CreateIntegrationTokenModal({ catalogVersion, onClose, onCreated }: { c
         <label>Označení tokenu<span className="field-hint">Krátký interní název pro pozdější dohledání tokenu.</span><input autoFocus value={label} onChange={(event) => setLabel(event.target.value)} maxLength={120} placeholder="Např. Fakturační onboarding" /></label>
         <div className="permission-preview">
           <strong>Rozsah tokenu</strong>
-          <span>Token platí 24 hodin a umožní úspěšně integrovat jeden libovolný prvek splňující onboarding katalog {catalogVersion}. Po předání přístupového tokenu automaticky pozbývá platnost.</span>
+          <span>Token platí 24 hodin a umožní úspěšně integrovat jeden libovolný prvek splňující onboarding katalog {catalogVersion}. Umí číst jen zde přidělené KCML Secrets a po předání přístupového tokenu automaticky pozbývá platnost.</span>
         </div>
         <div className="descriptor-grid">
           <label>Shrnutí serveru<span className="field-hint">Jednovětý popis integračního záměru.</span><textarea value={summary} onChange={(event) => setSummary(event.target.value)} maxLength={120} rows={3} placeholder="Např. Zpracování fakturačních podkladů" /></label>
@@ -270,6 +275,13 @@ function CreateIntegrationTokenModal({ catalogVersion, onClose, onCreated }: { c
           <label>Vlastník služby<input value={serviceOwner} onChange={(event) => setServiceOwner(event.target.value)} maxLength={160} placeholder="Např. Finance Ops" /></label>
           <label>Technický vlastník<input value={technicalOwner} onChange={(event) => setTechnicalOwner(event.target.value)} maxLength={160} placeholder="Např. Platform Engineering" /></label>
           <label>Kritičnost<select value={criticality} onChange={(event) => setCriticality(event.target.value as OnboardingDescriptor["criticality"])}><option value="LOW">Low</option><option value="MEDIUM">Medium</option><option value="HIGH">High</option><option value="CRITICAL">Critical</option></select></label>
+        </div>
+        <div className="permission-preview">
+          <strong>Secret grants pro onboarding</strong>
+          <label className="checkbox-line"><input type="checkbox" checked={grantAllSecrets} onChange={(event) => { setGrantAllSecrets(event.target.checked); if (event.target.checked) setSelectedSecrets([]); }} /> Povolím všechny aktivní KCML Secrets pro tento integrační token</label>
+          {!grantAllSecrets ? <label>Konkrétní secrets<select multiple value={selectedSecrets} onChange={(event) => setSelectedSecrets(Array.from(event.target.selectedOptions, (option) => option.value))}>
+            {secrets.filter((secret) => secret.status === "ACTIVE").map((secret) => <option key={secret.id} value={secret.stableName}>{secret.stableName}</option>)}
+          </select><span className="field-hint">Výběr je podle stabilního názvu. Do pole nikdy nevkládejte plnou hodnotu tokenu ani public ID komponenty.</span></label> : null}
         </div>
         {error && <p className="error">{error}</p>}
         <footer className="modal-actions"><button type="button" className="secondary" onClick={onClose} disabled={busy}>Zrušit</button><button type="submit" disabled={busy}><Rocket size={16} /> {busy ? "Generuji…" : integrationTokenActionLabel}</button></footer>
@@ -292,7 +304,8 @@ function IntegrationSecretModal({ secret, catalogVersion, onClose }: { secret: I
       initialExpiresAt: secret.initialExpiresAt,
       programmerApiUrl: secret.programmerApiUrl,
       intakeUrls: secret.intakeUrls,
-      catalogVersion
+      catalogVersion,
+      secretGrants: secret.secretGrants
     }));
     setCopied("instructions");
   }
@@ -305,8 +318,9 @@ function IntegrationSecretModal({ secret, catalogVersion, onClose }: { secret: I
         <div className="handoff-step"><span>2</span><div><strong>Server descriptor</strong><p>{secret.descriptor.summary}</p><dl className="descriptor-dl"><dt>Účel</dt><dd>{secret.descriptor.businessPurpose}</dd><dt>Vlastník služby</dt><dd>{secret.descriptor.serviceOwner}</dd><dt>Technický vlastník</dt><dd>{secret.descriptor.technicalOwner}</dd><dt>Kritičnost</dt><dd>{secret.descriptor.criticality}</dd></dl></div></div>
         <div className="handoff-step"><span>3</span><div><strong>Integrační token</strong><p>Plnou hodnotu lze zobrazit i předat v tomto handoffu. První upload musí programátor provést do {formatDate(secret.initialExpiresAt)}.</p><div className="secret-once"><code>{secret.token}</code><small>Fingerprint {secret.fingerprint}</small></div><button type="button" className="secondary" onClick={() => { void copyToken(); }}><ClipboardCopy size={16} /> {copied === "token" ? "Token zkopírován" : "Zkopírovat token"}</button></div></div>
         <div className="handoff-step"><span>4</span><div><strong>Programátorské API</strong><p>{recommendedIntakeUrl}</p><dl className="descriptor-dl"><dt>Rozsah</dt><dd>Jeden libovolný prvek</dd><dt>Intake</dt><dd>{secret.intakeUrls?.nativeComponentIntakeUrl ?? recommendedIntakeUrl}</dd></dl></div></div>
-        <div className="handoff-step"><span>5</span><div><strong>Aktuální katalogy</strong><p>Program musí použít aktivní component katalog a odpovídající source katalog pro in-repo variantu. Aktuální testovací source katalog je `repository-component-1.1`.</p><dl className="descriptor-dl"><dt>Component katalog</dt><dd>{secret.intakeUrls?.componentCatalogUrl ?? secret.onboardingCatalogUrl}</dd><dt>Source katalog</dt><dd>{secret.intakeUrls?.repositoryComponentCatalogPath ?? "docs/onboarding-catalogs/repository-component-1.1.json"}</dd></dl></div></div>
-        <div className="permission-preview"><strong>Co proběhne po uploadu</strong><span>Kanonický component intake ověří generický manifest, skutečný runtime a readiness gates. KájovoCML přidělí identitu, jediný hostname a po úplném úspěchu jednorázově předá dlouhodobý přístupový token.</span></div>
+        <div className="handoff-step"><span>5</span><div><strong>Secret API a granty</strong><p>Discovery endpoint je {secret.intakeUrls?.secretApiDiscoveryUrl ?? "nedostupný"}.</p><dl className="descriptor-dl"><dt>Granty</dt><dd>{secret.secretGrants.length ? secret.secretGrants.map((grant) => grant.allSecrets ? "ALL_SECRETS" : grant.secretStableName).join(", ") : "žádné"}</dd><dt>Pravidlo</dt><dd>Neexistující a negrantovaný secret musí vracet stejnou nerozlišitelnou odpověď.</dd></dl></div></div>
+        <div className="handoff-step"><span>6</span><div><strong>Aktuální katalogy</strong><p>Program musí použít aktivní component katalog a odpovídající source katalog pro in-repo variantu. Aktuální testovací source katalog je `repository-component-1.1`.</p><dl className="descriptor-dl"><dt>Component katalog</dt><dd>{secret.intakeUrls?.componentCatalogUrl ?? secret.onboardingCatalogUrl}</dd><dt>Source katalog</dt><dd>{secret.intakeUrls?.repositoryComponentCatalogPath ?? "docs/onboarding-catalogs/repository-component-1.1.json"}</dd></dl></div></div>
+        <div className="permission-preview"><strong>Co proběhne po uploadu</strong><span>Kanonický component intake ověří generický manifest, skutečný runtime a readiness gates. KájovoCML přidělí identitu, převede secret grants na komponentní identitu, po úplném úspěchu jednorázově předá dlouhodobý přístupový token a komponentu automaticky aktivuje.</span></div>
         <footer className="modal-actions"><button className="secondary" onClick={onClose}>Zavřít</button><button onClick={() => { void copyInstructions(); }}><ClipboardCopy size={16} /> {copied === "instructions" ? "Pokyny zkopírovány" : "Zkopírovat pokyny i token"}</button></footer>
       </div>
     </Modal>
@@ -1075,7 +1089,7 @@ function IntegrationTokensPage({ tokens, jobs, onCreate, onOpenJob, onRevoke, on
         <button onClick={onCreate}><Plus size={17} /> {integrationTokenActionLabel}</button><IconButton label="Obnovit" onClick={onRefresh}><RefreshCw size={17} /></IconButton>
       </PageHeader>
       <section className="panel table-panel"><div className="panel-head"><div><h2>Vydané tokeny</h2><p>Plná hodnota je v create response a handoffu; tento přehled trvale uchovává fingerprint.</p></div><span className="panel-count">{filtered.length} záznamů</span></div>
-        {filtered.length === 0 ? <div className="empty-state"><Workflow size={34} /><strong>Žádné integrační tokeny</strong><p>Vygeneruj první token a předej jej programátorovi bezpečným kanálem.</p></div> : <div className="table-scroll"><table className="integration-token-table"><thead><tr><th>Token</th><th>KCML / job</th><th>Stav integrace</th><th>Platnost 24 hodin</th><th>Akce</th></tr></thead><tbody>{filtered.map((token) => <tr key={token.id}><td><strong>{token.label}</strong><span className="cell-subtitle">{token.descriptor.summary}</span><span className="cell-subtitle">Vydán {formatDate(token.issuedAt)}</span><code className="cell-fingerprint">{token.fingerprint}</code><span className="cell-subtitle">jeden libovolný prvek · spotřeba až po úplném úspěchu</span></td><td>{token.code ?? "Čeká na upload"}<span className="cell-subtitle">{token.jobId ? token.jobId.slice(0, 8) : "Nevázaný"}</span></td><td><div className="integration-state-cell"><span className={`badge ${token.active ? "ok" : "danger"}`}>{token.jobState ?? (token.active ? "PŘIPRAVEN" : "NEPLATNÝ")}</span><IntegrationTokenRunIndicator token={token} nowMs={nowMs} /></div></td><td><div className="token-timing-cell"><IntegrationTokenExpiry token={token} nowMs={nowMs} /></div></td><td><div className="row-actions integration-row-actions">{token.jobId ? <button className="small-button" onClick={() => onOpenJob(token.jobId!)}>Detail</button> : null}<button className="small-button" disabled={!token.active} onClick={() => onRevoke(token)}>Revokovat</button><button className="small-button danger-link" onClick={() => onDelete(token)}>Smazat</button></div></td></tr>)}</tbody></table></div>}
+        {filtered.length === 0 ? <div className="empty-state"><Workflow size={34} /><strong>Žádné integrační tokeny</strong><p>Vygeneruj první token a předej jej programátorovi bezpečným kanálem.</p></div> : <div className="table-scroll"><table className="integration-token-table"><thead><tr><th>Token</th><th>KCML / job</th><th>Secret grants</th><th>Stav integrace</th><th>Platnost 24 hodin</th><th>Akce</th></tr></thead><tbody>{filtered.map((token) => <tr key={token.id}><td><strong>{token.label}</strong><span className="cell-subtitle">{token.descriptor.summary}</span><span className="cell-subtitle">Vydán {formatDate(token.issuedAt)}</span><code className="cell-fingerprint">{token.fingerprint}</code><span className="cell-subtitle">jeden libovolný prvek · spotřeba až po úplném úspěchu</span></td><td>{token.code ?? "Čeká na upload"}<span className="cell-subtitle">{token.jobId ? token.jobId.slice(0, 8) : "Nevázaný"}</span></td><td>{token.secretGrants.length ? token.secretGrants.map((grant) => grant.allSecrets ? "ALL_SECRETS" : grant.secretStableName).join(", ") : "žádné"}<span className="cell-subtitle">{token.secretGrants.some((grant) => grant.transferredComponentPublicId) ? `převedeno na ${token.secretGrants.find((grant) => grant.transferredComponentPublicId)?.transferredComponentPublicId}` : "čeká na převod"}</span></td><td><div className="integration-state-cell"><span className={`badge ${token.active ? "ok" : "danger"}`}>{token.jobState ?? (token.active ? "PŘIPRAVEN" : "NEPLATNÝ")}</span><IntegrationTokenRunIndicator token={token} nowMs={nowMs} /></div></td><td><div className="token-timing-cell"><IntegrationTokenExpiry token={token} nowMs={nowMs} /></div></td><td><div className="row-actions integration-row-actions">{token.jobId ? <button className="small-button" onClick={() => onOpenJob(token.jobId!)}>Detail</button> : null}<button className="small-button" disabled={!token.active} onClick={() => onRevoke(token)}>Revokovat</button><button className="small-button danger-link" onClick={() => onDelete(token)}>Smazat</button></div></td></tr>)}</tbody></table></div>}
       </section>
       <section className="panel"><div className="panel-head"><h2>Onboardingové joby</h2><span className="panel-count">{jobs.length} jobů</span></div>{jobs.length === 0 ? <div className="empty-state server-empty"><Rocket size={32} /><strong>Zatím nebyl zahájen žádný upload</strong></div> : <div className="job-cards">{jobs.map((job) => <button key={job.id} onClick={() => onOpenJob(job.id)}><span className={`status-dot ${job.state === "ACTIVE" ? "ok" : ["FAILED", "QUARANTINED", "CANCELLED"].includes(job.state) ? "danger" : "warn"}`} /><span><strong>{job.code ?? "Čeká na identitu"}</strong><small>{job.state} · {formatDate(job.updatedAt)}</small></span><ChevronDown className="item-chevron" size={15} /></button>)}</div>}</section>
     </>
@@ -1503,7 +1517,7 @@ function Dashboard({ accountName, role, releaseInfo, onLogout }: { accountName: 
         {secret && <CredentialSecretModal secret={secret} onClose={() => setSecret(null)} />}
         {confirm && <CredentialConfirmModal credential={confirm.credential} action={confirm.action} onClose={() => setConfirm(null)} onConfirm={runConfirm} />}
         {renameCredential && <RenameCredentialModal credential={renameCredential} onClose={() => setRenameCredential(null)} onRename={renameCredentialLabel} />}
-        {integrationCreate && <CreateIntegrationTokenModal catalogVersion={catalogVersion} onClose={() => setIntegrationCreate(false)} onCreated={(created) => { setIntegrationCreate(false); setIntegrationSecret(created); setPage("integration"); void load(); }} />}
+        {integrationCreate && <CreateIntegrationTokenModal catalogVersion={catalogVersion} secrets={managedSecrets} onClose={() => setIntegrationCreate(false)} onCreated={(created) => { setIntegrationCreate(false); setIntegrationSecret(created); setPage("integration"); void load(); }} />}
         {integrationSecret && <IntegrationSecretModal secret={integrationSecret} catalogVersion={catalogVersion} onClose={() => setIntegrationSecret(null)} />}
         {integrationConfirm && <IntegrationConfirmModal token={integrationConfirm.token} action={integrationConfirm.action} onClose={() => setIntegrationConfirm(null)} onConfirm={runIntegrationConfirm} />}
         {selectedJobId && <OnboardingJobModal jobId={selectedJobId} onClose={() => setSelectedJobId(null)} onCancel={cancelOnboardingJob} onReleaseQuarantine={(job) => { setSelectedJobId(null); setQuarantineRelease(job); }} />}

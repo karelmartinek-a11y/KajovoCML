@@ -50,9 +50,21 @@ const onboardingDescriptorSchema = z.object({
   criticality: z.enum(["LOW", "MEDIUM", "HIGH", "CRITICAL"])
 }).strict();
 const integrationIntentServiceKindSchema = z.enum(["COMPONENT", "EXTERNAL_API"]);
+const integrationTokenSecretGrantSchema = z.object({
+  secretStableName: z.string().trim().min(3).max(128).regex(/^[A-Z][A-Z0-9_]{2,127}$/).optional(),
+  allSecrets: z.boolean().optional()
+}).strict().superRefine((value, ctx) => {
+  if (value.allSecrets === true && value.secretStableName) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "allSecrets grant must not also name a secret" });
+  }
+  if (value.allSecrets !== true && !value.secretStableName) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "secretStableName is required for scoped grants" });
+  }
+});
 const integrationTokenRequestSchema = z.object({
   label: z.string().trim().min(1).max(120),
-  descriptor: onboardingDescriptorSchema
+  descriptor: onboardingDescriptorSchema,
+  secretGrants: z.array(integrationTokenSecretGrantSchema).max(100).default([])
 }).strict();
 const integrationIntentRequestSchema = integrationTokenRequestSchema.extend({
   serviceKind: integrationIntentServiceKindSchema.optional()
@@ -178,7 +190,8 @@ function onboardingHandoffUrls(registerHost: string) {
     repositoryComponentCatalogVersion: REPOSITORY_COMPONENT_CATALOG_VERSION,
     repositoryComponentCatalogPath: REPOSITORY_COMPONENT_CATALOG_PATH,
     repositoryComponentCatalogFileName: REPOSITORY_COMPONENT_CATALOG_FILE,
-    externalApiCatalogUrl: `https://${registerHost}/api/onboarding-catalogs/external-api/1.0`
+    externalApiCatalogUrl: `https://${registerHost}/api/onboarding-catalogs/external-api/1.0`,
+    secretApiDiscoveryUrl: `https://secrets.${registerHost.replace(/^register\./, "")}/.well-known/kcml-secret-api`
   };
 }
 
@@ -306,7 +319,7 @@ export function registerOnboardingRoutes(app: FastifyInstance, db: Db, config: O
           serviceKind: "COMPONENT",
           allowedPipeline: "COMPONENT_ONBOARDING",
           releaseVersion: KCML_RELEASE.catalogVersion
-        }),
+        }, parsed.secretGrants),
         onboardingCatalogUrl: "/api/onboarding-catalog",
         onboardingCatalogFileName: MCP_CONNECT_FILE,
         programmerApiUrl: onboardingHandoffUrls(config.REGISTER_HOST).recommendedIntakeUrl,

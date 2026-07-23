@@ -8,6 +8,7 @@ import { decryptVaultSecret, encryptVaultSecret, hmacToken, issueOpaqueSecret } 
 import { appendAudit } from "./audit.js";
 import { authorizeComponentCall, componentSourceIdentityMatches } from "./component-auth.js";
 import { CANONICAL_COMPONENT_HOST_SUFFIX } from "./hostnames.js";
+import { transferIntegrationTokenSecretGrants } from "./onboarding.js";
 import { KCML_RELEASE } from "./release.js";
 import { resolveSecret, type SecretPrincipal } from "./secret-manager.js";
 
@@ -1229,6 +1230,7 @@ export async function createComponentOnboarding(db: Db, params: {
         JSON.stringify(params.manifest), COMPONENT_CATALOG_VERSION, JSON.stringify(authorizationSnapshot)]
     );
     await client.query("update component set active_revision_id=$2 where id=$1", [componentId, revision.rows[0].id]);
+    await transferIntegrationTokenSecretGrants(client, params.integrationTokenId, componentId, code);
     await appendAudit(client, {
       eventType: "component_onboarding.created", actorType: "integration_token", actorId: params.integrationTokenId,
       objectType: "component", objectId: componentId,
@@ -1472,7 +1474,7 @@ export async function evaluateComponentReadiness(db: Db, params: {
               principal_access_token_handed_off_at=case when $6 then now() else principal_access_token_handed_off_at end,
               lock_version=lock_version+1, updated_at=now()
         where id=$1 returning *`,
-      [params.jobId, passed ? "READY_FOR_ACTIVATION" : "BLOCKED", JSON.stringify(gates), accessDigest, accessFingerprint, Boolean(accessToken), accessCiphertext, accessCiphertextKeyId]
+      [params.jobId, passed ? "ACTIVE" : "BLOCKED", JSON.stringify(gates), accessDigest, accessFingerprint, Boolean(accessToken), accessCiphertext, accessCiphertextKeyId]
     );
     if (accessToken) {
       await client.query(
@@ -1484,10 +1486,22 @@ export async function evaluateComponentReadiness(db: Db, params: {
       `update component
           set lifecycle_state=$2,
               activation_state=$3,
-              monitoring_state=case when $4 then monitoring_state else 'PENDING' end
+              monitoring_state=case when $4 then 'HEALTHY' else 'PENDING' end,
+              enabled=$4,
+              ingress_enabled=$4,
+              pulse_enabled=$4,
+              egress_enabled=$4,
+              operational_state=case when $4 then 'HEALTHY' else operational_state end,
+              activated_at=case when $4 then coalesce(activated_at,now()) else activated_at end
         where id=$1`,
-      [job.component_id, passed ? "APPROVED" : "REVIEW", passed ? "READY_FOR_ACTIVATION" : "BLOCKED", passed]
+      [job.component_id, passed ? "ACTIVE" : "REVIEW", passed ? "ACTIVE" : "BLOCKED", passed]
     );
+    if (passed) {
+      await client.query(
+        "update principal set status='ACTIVE',updated_at=now() where id=$1",
+        [componentCurrent.rows[0].principal_id]
+      );
+    }
     await client.query(
       `update component_revision set validation_state=$2,approved_at=case when $2='APPROVED' then now() else approved_at end
         where id=(select active_revision_id from component where id=$1)`,

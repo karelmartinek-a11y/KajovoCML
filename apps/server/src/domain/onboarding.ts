@@ -97,6 +97,17 @@ export type OnboardingDescriptor = {
   criticality: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
 };
 
+export type IntegrationTokenSecretGrant = {
+  id: string;
+  secretStableName: string | null;
+  allSecrets: boolean;
+  grantedAt: string;
+  revokedAt: string | null;
+  transferredComponentId: string | null;
+  transferredComponentPublicId: string | null;
+  transferredAt: string | null;
+};
+
 export type CreateIntegrationTokenOptions = {
   serviceKind?: "COMPONENT" | "MCP" | "EXTERNAL_API";
   allowedPipeline?: "COMPONENT_ONBOARDING" | "MCP_ONBOARDING" | "EXTERNAL_API_REGISTRATION";
@@ -206,8 +217,41 @@ function mapToken(row: Record<string, unknown>) {
     code: optionalText(row.code),
     hostname: optionalText(row.hostname),
     heartbeatAt: asIso(row.heartbeat_at),
-    tokenExtendedAt: asIso(row.token_extended_at)
+    tokenExtendedAt: asIso(row.token_extended_at),
+    secretGrants: []
   };
+}
+
+function mapSecretGrant(row: Record<string, unknown>): IntegrationTokenSecretGrant {
+  return {
+    id: String(row.id),
+    secretStableName: optionalText(row.secret_stable_name),
+    allSecrets: Boolean(row.all_secrets),
+    grantedAt: asIso(row.granted_at) ?? "",
+    revokedAt: asIso(row.revoked_at),
+    transferredComponentId: optionalText(row.transferred_component_id),
+    transferredComponentPublicId: optionalText(row.transferred_component_public_id),
+    transferredAt: asIso(row.transferred_at)
+  };
+}
+
+async function listTokenSecretGrants(client: Db | pg.PoolClient, tokenIds: string[]): Promise<Map<string, IntegrationTokenSecretGrant[]>> {
+  if (tokenIds.length === 0) return new Map();
+  const result = await client.query(
+    `select *
+       from integration_token_secret_grant
+      where token_id = any($1::uuid[])
+      order by granted_at asc`,
+    [tokenIds]
+  );
+  const grants = new Map<string, IntegrationTokenSecretGrant[]>();
+  for (const row of result.rows) {
+    const tokenId = String(row.token_id);
+    const current = grants.get(tokenId) ?? [];
+    current.push(mapSecretGrant(row as Record<string, unknown>));
+    grants.set(tokenId, current);
+  }
+  return grants;
 }
 
 function normalizeTokenOptions(options?: CreateIntegrationTokenOptions): Required<Pick<CreateIntegrationTokenOptions, "serviceKind" | "allowedPipeline" | "tokenKind" | "releaseVersion" | "maxChildJobs">> {
@@ -231,7 +275,8 @@ export async function createIntegrationToken(
   label: string,
   descriptor: OnboardingDescriptor,
   resumeJobId?: string,
-  options?: CreateIntegrationTokenOptions
+  options?: CreateIntegrationTokenOptions,
+  secretGrants?: Array<{ secretStableName?: string | null; allSecrets?: boolean }>
 ) {
   if (resumeJobId) throw Object.assign(new Error("resume_token_not_supported"), { statusCode: 410 });
   const secret = issueIntegrationSecret();
@@ -253,6 +298,24 @@ export async function createIntegrationToken(
         false,
         deadlines.issuedAt, deadlines.initialExpiresAt, deadlines.expiresAt, deadlines.maxExpiresAt]
     );
+    for (const grant of secretGrants ?? []) {
+      const secretStableName = grant.allSecrets ? null : (grant.secretStableName?.trim().toUpperCase() ?? null);
+      if (!grant.allSecrets && !secretStableName) {
+        throw Object.assign(new Error("integration_token_secret_grant_invalid"), { statusCode: 400 });
+      }
+      if (secretStableName) {
+        const secret = await client.query(
+          "select 1 from secret_record where stable_name=$1 and deleted_at is null",
+          [secretStableName]
+        );
+        if (!secret.rowCount) throw Object.assign(new Error("integration_token_secret_unknown"), { statusCode: 404 });
+      }
+      await client.query(
+        `insert into integration_token_secret_grant(token_id,secret_stable_name,all_secrets,granted_by)
+         values ($1,$2,$3,$4)`,
+        [inserted.rows[0].id, secretStableName, grant.allSecrets === true, actorId]
+      );
+    }
     await appendAudit(client, {
       eventType: "integration_token.created",
       actorType: "admin",
@@ -268,6 +331,10 @@ export async function createIntegrationToken(
          releaseVersion: normalizedOptions.releaseVersion,
          genericComponentScope: true,
          maxChildJobs: normalizedOptions.maxChildJobs,
+         secretGrants: (secretGrants ?? []).map((grant) => ({
+           secretStableName: grant.allSecrets ? null : grant.secretStableName?.trim().toUpperCase() ?? null,
+           allSecrets: grant.allSecrets === true
+         })),
          fingerprint: secret.fingerprint,
          initialExpiresAt: deadlines.initialExpiresAt,
          maxExpiresAt: deadlines.maxExpiresAt
@@ -276,8 +343,10 @@ export async function createIntegrationToken(
     });
     return inserted.rows[0] as Record<string, unknown>;
   });
+  const grants = await listTokenSecretGrants(db, [String(result.id)]);
   return {
     ...mapToken(result),
+    secretGrants: grants.get(String(result.id)) ?? [],
     token: secret.value
   };
 }
@@ -367,7 +436,26 @@ export async function listIntegrationTokens(db: Db) {
      where it.deleted_at is null
      order by it.issued_at desc
   `);
-  return result.rows.map((row) => mapToken(row as Record<string, unknown>));
+  const tokenIds = result.rows.map((row) => String(row.id));
+  const grants = await listTokenSecretGrants(db, tokenIds);
+  return result.rows.map((row) => ({ ...mapToken(row as Record<string, unknown>), secretGrants: grants.get(String(row.id)) ?? [] }));
+}
+
+export async function transferIntegrationTokenSecretGrants(
+  client: pg.PoolClient,
+  tokenId: string,
+  componentId: string,
+  componentPublicId: string
+): Promise<void> {
+  await client.query(
+    `update integration_token_secret_grant
+        set transferred_component_id=$2,
+            transferred_component_public_id=$3,
+            transferred_at=coalesce(transferred_at,now())
+      where token_id=$1
+        and revoked_at is null`,
+    [tokenId, componentId, componentPublicId]
+  );
 }
 
 export async function authenticateIntegrationToken(db: Db, token: string, config: IntegrationTokenConfig): Promise<IntegrationTokenPrincipal> {

@@ -5,6 +5,7 @@ import type { AppServerConfig } from "../config.js";
 import type { Db } from "../db.js";
 import { appendAudit } from "../domain/audit.js";
 import {
+  authenticateIntegrationTokenForSecretResolve,
   authenticatePrincipalAccessToken,
   resolveSecret,
   secretRequestDigest,
@@ -25,7 +26,9 @@ function bearer(request: FastifyRequest): string | null {
   return authorization?.startsWith("Bearer ") ? authorization.slice("Bearer ".length).trim() : null;
 }
 
-function requestedCredentialKind(request: FastifyRequest): "access_token" | "unsupported" | "missing" {
+function requestedCredentialKind(request: FastifyRequest): "access_token" | "integration_token" | "unsupported" | "missing" {
+  const token = bearer(request);
+  if (token?.startsWith("kci_")) return "integration_token";
   if (bearer(request)) return "access_token";
   if (request.headers.authorization) return "unsupported";
   return "missing";
@@ -33,7 +36,9 @@ function requestedCredentialKind(request: FastifyRequest): "access_token" | "uns
 
 async function principalFor(db: Db, config: AppServerConfig, request: FastifyRequest): Promise<SecretPrincipal | null> {
   const token = bearer(request);
-  if (token) return authenticatePrincipalAccessToken(db, token, config);
+  if (!token) return null;
+  if (token.startsWith("kci_")) return authenticateIntegrationTokenForSecretResolve(db, token, config);
+  if (token.startsWith("kca_")) return authenticatePrincipalAccessToken(db, token, config);
   return null;
 }
 
@@ -47,9 +52,10 @@ export function registerSecretApiRoutes(app: FastifyInstance, db: Db, config: Ap
     if (!isSecretApiHostname(hostOf(request.headers.host), config)) return sendError(reply, 404, "not_found", undefined, correlationId);
     return reply.header("cache-control", "no-store").send({
       issuer: `https://${secretHost(config)}`,
+      discoveryEndpoint: `https://${secretHost(config)}/.well-known/kcml-secret-api`,
       resolveEndpoint: `https://${secretHost(config)}/v1/secrets/resolve`,
-      auth: ["access_token_bearer"],
-      catalogVersion: "2026.07.22-compliance.1"
+      auth: ["integration_token_bearer", "access_token_bearer"],
+      catalogVersion: "1.1"
     });
   });
 

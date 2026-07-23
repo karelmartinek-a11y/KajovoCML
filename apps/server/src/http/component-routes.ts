@@ -210,7 +210,8 @@ async function authorizeRuntime(db: Db, config: AppServerConfig, request: Fastif
     scope,
     route,
     hmacKey: config.ACCESS_TOKEN_HMAC_KEY_BASE64,
-    correlationId
+    correlationId,
+    allowOnboardingProbe: true
   });
 }
 
