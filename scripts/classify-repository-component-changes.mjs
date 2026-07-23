@@ -5,7 +5,7 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const catalogPath = path.join(root, "docs/onboarding-catalogs/repository-component-1.0.json");
+const catalogPath = path.join(root, "docs/onboarding-catalogs/repository-component-1.1.json");
 const catalog = JSON.parse(fs.readFileSync(catalogPath, "utf8"));
 const repositoryKeyPattern = new RegExp(catalog.componentDescriptor.schema.properties.repositoryKey.pattern);
 

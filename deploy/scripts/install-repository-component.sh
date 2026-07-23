@@ -16,85 +16,152 @@ receipt_path="${9:?receipt path required}"
 [[ "$source_commit" =~ ^[a-f0-9]{40}$ ]] || { echo "invalid source commit" >&2; exit 2; }
 [[ "$image_digest" =~ ^sha256:[a-f0-9]{64}$ ]] || { echo "invalid image digest" >&2; exit 2; }
 case "$build_run_id:$deploy_run_id:$deploy_run_attempt" in *[!0-9:]*) echo "invalid run identifiers" >&2; exit 2 ;; esac
-test "$(id -u)" = "0"
-test -f /etc/kcml/kcml.env
+if [ "${KCML_REQUIRE_ROOT:-1}" = "1" ]; then
+  test "$(id -u)" = "0"
+fi
+env_file="${KCML_ENV_FILE:-/etc/kcml/kcml.env}"
+test -f "$env_file"
 
 set -a
 # shellcheck source=/dev/null
-. /etc/kcml/kcml.env
+. "$env_file"
 set +a
 
 podman_binary="${PODMAN_BINARY:-podman}"
-runtime_root="/var/lib/kcml/repository-components/${repository_key}"
-candidate_root="${runtime_root}/candidate"
+runuser_binary="${RUNUSER_BINARY:-runuser}"
+curl_binary="${CURL_BINARY:-curl}"
+jq_binary="${JQ_BINARY:-jq}"
+runtime_owner="${KCML_RUNTIME_OWNER:-kcml}"
+runtime_group="${KCML_RUNTIME_GROUP:-kcml}"
+runtime_root="${KCML_REPOSITORY_COMPONENT_RUNTIME_ROOT:-/var/lib/kcml/repository-components/${repository_key}}"
+release_root="${runtime_root}/releases/${source_commit}-${image_digest#sha256:}"
+candidate_root="${release_root}/candidate"
 live_root="${runtime_root}/live"
+previous_root="${runtime_root}/previous-runtime"
+health_path="${KCML_REPOSITORY_COMPONENT_HEALTH_PATH:-/tmp/repository-component-health.json}"
+healthcheck_attempts="${KCML_REPOSITORY_COMPONENT_HEALTHCHECK_ATTEMPTS:-60}"
+healthcheck_sleep_seconds="${KCML_REPOSITORY_COMPONENT_HEALTHCHECK_SLEEP_SECONDS:-1}"
 container_name="kcml-repository-component-${repository_key}"
 candidate_name="${container_name}-candidate"
+short_digest="${image_digest#sha256:}"
 requested_git_ref_json="null"
 if [ -n "$requested_git_ref" ]; then
-  requested_git_ref_json="$(jq -Rn --arg value "$requested_git_ref" '$value')"
+  requested_git_ref_json="$(printf '%s' "$requested_git_ref" | "$jq_binary" -Rn '$ARGS.positional[0]' --args "$requested_git_ref")"
 fi
 
-install -d -m 0750 -o kcml -g kcml "$runtime_root" "$candidate_root" "$live_root"
-rm -f "${candidate_root}/worker.sock"
+run_as_kcml() {
+  "$runuser_binary" -u "$runtime_owner" -- "$@"
+}
 
-previous_digest="$(
-  runuser -u kcml -- "$podman_binary" container inspect "$container_name" --format '{{index .Config.Labels "cz.hcasc.kcml.image-digest"}}' 2>/dev/null || true
-)"
-previous_image_reference="$(
-  runuser -u kcml -- "$podman_binary" container inspect "$container_name" --format '{{.ImageName}}' 2>/dev/null || true
-)"
+container_image_name() {
+  run_as_kcml "$podman_binary" container inspect "$1" --format '{{.ImageName}}' 2>/dev/null || true
+}
+
+container_image_digest() {
+  run_as_kcml "$podman_binary" container inspect "$1" --format '{{index .Config.Labels "cz.hcasc.kcml.image-digest"}}' 2>/dev/null || true
+}
+
+wait_for_health() {
+  local socket_path="$1"
+  local output_path="$2"
+  for _attempt in $(seq 1 "$healthcheck_attempts"); do
+    if { [ -S "$socket_path" ] || { [ "${KCML_ACCEPT_TEST_SOCKET_FILE:-0}" = "1" ] && [ -f "$socket_path" ]; }; } \
+      && "$curl_binary" --fail --silent --show-error --unix-socket "$socket_path" http://localhost/health > "$output_path" 2>/dev/null; then
+      return 0
+    fi
+    sleep "$healthcheck_sleep_seconds"
+  done
+  return 1
+}
+
+start_container() {
+  local name="$1"
+  local mount_source="$2"
+  local immutable_image="$3"
+  run_as_kcml "$podman_binary" rm --force --ignore "$name" >/dev/null 2>&1 || true
+  run_as_kcml "$podman_binary" run --detach --replace \
+    --name "$name" \
+    --label "cz.hcasc.kcml.repository-component=true" \
+    --label "cz.hcasc.kcml.repository-key=${repository_key}" \
+    --label "cz.hcasc.kcml.image-digest=${image_digest}" \
+    --read-only \
+    --cap-drop=ALL \
+    --security-opt=no-new-privileges \
+    --network none \
+    --log-driver none \
+    --pids-limit 256 \
+    --memory 256m \
+    --cpus 1.0 \
+    --tmpfs /tmp:rw,noexec,nosuid,nodev,size=16m \
+    --volume "${mount_source}:/run/kcml:rw,z" \
+    --env KCML_SOCKET_PATH=/run/kcml/worker.sock \
+    --env KCML_SERVER_CODE="repository-${repository_key}" \
+    --env KCML_IMAGE_DIGEST="${image_digest}" \
+    "$immutable_image" >/dev/null
+}
+
+restore_previous_runtime() {
+  local previous_image="$1"
+  local previous_digest="$2"
+  if [ -n "$previous_image" ] && [ -n "$previous_digest" ] && [ -d "$previous_root" ]; then
+    image_digest="$previous_digest"
+    ln -sfn "$previous_root" "$live_root"
+    start_container "$container_name" "$live_root" "${previous_image%@*}@${previous_digest}"
+    wait_for_health "${previous_root}/worker.sock" "$health_path" >/dev/null 2>&1 || true
+  fi
+}
+
+install -d -m 0750 -o "$runtime_owner" -g "$runtime_group" "$runtime_root" "$(dirname "$release_root")"
+rm -rf "$candidate_root"
+mkdir -p "$candidate_root"
+chown -R "$runtime_owner:$runtime_group" "$runtime_root"
+
+previous_digest="$(container_image_digest "$container_name")"
+previous_image_reference="$(container_image_name "$container_name")"
+previous_live_target="$(readlink -f "$live_root" 2>/dev/null || true)"
+rm -rf "$previous_root"
+if [ -n "$previous_live_target" ] && [ -d "$previous_live_target" ]; then
+  cp -a "$previous_live_target" "$previous_root"
+  chown -R "$runtime_owner:$runtime_group" "$previous_root"
+fi
 
 immutable_image="${image_reference%@*}@${image_digest}"
-runuser -u kcml -- "$podman_binary" pull "$immutable_image" >/dev/null
-runuser -u kcml -- "$podman_binary" rm --force --ignore "$candidate_name" >/dev/null 2>&1 || true
-runuser -u kcml -- "$podman_binary" run --detach --replace \
-  --name "$candidate_name" \
-  --label "cz.hcasc.kcml.repository-component=true" \
-  --label "cz.hcasc.kcml.repository-key=${repository_key}" \
-  --label "cz.hcasc.kcml.image-digest=${image_digest}" \
-  --read-only \
-  --cap-drop=ALL \
-  --security-opt=no-new-privileges \
-  --network none \
-  --log-driver none \
-  --pids-limit 256 \
-  --memory 256m \
-  --cpus 1.0 \
-  --tmpfs /tmp:rw,noexec,nosuid,nodev,size=16m \
-  --volume "${candidate_root}:/run/kcml:rw,z" \
-  --env KCML_SOCKET_PATH=/run/kcml/worker.sock \
-  --env KCML_SERVER_CODE="repository-${repository_key}" \
-  --env KCML_IMAGE_DIGEST="${image_digest}" \
-  "$immutable_image" >/dev/null
+run_as_kcml "$podman_binary" pull "$immutable_image" >/dev/null
+start_container "$candidate_name" "$candidate_root" "$immutable_image"
 
-health_ok=false
-for _attempt in $(seq 1 60); do
-  if [ -S "${candidate_root}/worker.sock" ] && curl --fail --silent --show-error --unix-socket "${candidate_root}/worker.sock" http://localhost/health >/tmp/repository-component-health.json 2>/dev/null; then
-    health_ok=true
-    break
-  fi
-  sleep 1
-done
-if [ "$health_ok" != "true" ]; then
-  runuser -u kcml -- "$podman_binary" logs "$candidate_name" >/dev/null 2>&1 || true
-  runuser -u kcml -- "$podman_binary" rm --force --ignore "$candidate_name" >/dev/null 2>&1 || true
+if ! wait_for_health "${candidate_root}/worker.sock" "$health_path"; then
+  run_as_kcml "$podman_binary" logs "$candidate_name" >/dev/null 2>&1 || true
+  run_as_kcml "$podman_binary" rm --force --ignore "$candidate_name" >/dev/null 2>&1 || true
+  rm -rf "$release_root"
   echo "candidate runtime failed health check" >&2
   exit 1
 fi
 
-runuser -u kcml -- "$podman_binary" rm --force --ignore "$container_name" >/dev/null 2>&1 || true
-runuser -u kcml -- "$podman_binary" rename "$candidate_name" "$container_name"
-rm -f "${live_root}/worker.sock"
-mv "${candidate_root}/worker.sock" "${live_root}/worker.sock"
+run_as_kcml "$podman_binary" rm --force --ignore "$container_name" >/dev/null 2>&1 || true
+ln -sfn "$candidate_root" "$live_root"
+run_as_kcml "$podman_binary" rm --force --ignore "$candidate_name" >/dev/null 2>&1 || true
+start_container "$container_name" "$live_root" "$immutable_image"
 
-actual_image_reference="$(runuser -u kcml -- "$podman_binary" container inspect "$container_name" --format '{{.ImageName}}')"
-actual_digest="$(runuser -u kcml -- "$podman_binary" container inspect "$container_name" --format '{{index .Config.Labels "cz.hcasc.kcml.image-digest"}}')"
+if ! wait_for_health "${candidate_root}/worker.sock" "$health_path"; then
+  run_as_kcml "$podman_binary" logs "$container_name" >/dev/null 2>&1 || true
+  run_as_kcml "$podman_binary" rm --force --ignore "$container_name" >/dev/null 2>&1 || true
+  rm -f "$live_root"
+  if [ -n "$previous_live_target" ]; then
+    ln -sfn "$previous_live_target" "$live_root"
+  fi
+  restore_previous_runtime "$previous_image_reference" "$previous_digest"
+  rm -rf "$release_root"
+  echo "live runtime failed final verification" >&2
+  exit 1
+fi
+
+actual_image_reference="$(container_image_name "$container_name")"
+actual_digest="$(container_image_digest "$container_name")"
 checked_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-health_body="$(cat /tmp/repository-component-health.json)"
+health_body="$(cat "$health_path")"
 evidence_digest="$(printf '%s' "$health_body" | sha256sum | awk '{print "sha256:" $1}')"
 
-jq -n \
+"$jq_binary" -n \
   --arg repositoryKey "$repository_key" \
   --arg sourceCommit "$source_commit" \
   --arg imageReference "$actual_image_reference" \

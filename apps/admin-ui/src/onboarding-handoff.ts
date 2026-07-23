@@ -37,13 +37,17 @@ export function onboardingHandoffText(handoff: OnboardingHandoff): string {
     `Doporučené programátorské API: ${intakeUrl}`,
     `Kanonický component intake: ${handoff.intakeUrls?.nativeComponentIntakeUrl ?? intakeUrl}`,
     `Kanonický component katalog: ${handoff.intakeUrls?.componentCatalogUrl ?? `/api/onboarding-catalogs/component/${handoff.catalogVersion}`}`,
-    "Zdrojový monorepo katalog: docs/onboarding-catalogs/repository-component-1.0.json",
-    "Zdrojový kód patří výhradně do components/<repository-key>/; klíč adresáře není KCML identita.",
+    "Zdrojový monorepo katalog: docs/onboarding-catalogs/repository-component-1.1.json",
+    "Komponenta může být udržována externě nebo přímo v KajovoCML.",
+    "Pokud je udržována v KajovoCML, zdrojový kód patří výhradně do components/<repository-key>/; klíč adresáře není KCML identita.",
+    "Požadovaná struktura zdrojového balíku: component.kcml.json, manifest.kcml.json, README.md, package.json, pnpm-lock.yaml, tsconfig.json, src/, evidence/.",
     "Rozsah tokenu: registrace jednoho libovolného prvku; token se spotřebuje až po úspěšném předání přístupového tokenu.",
     "Integrační token autorizuje registraci v KajovoCML, nikoli zápis do GitHubu, merge, build, deploy ani administrátorskou aktivaci.",
     "",
-    `Postupujte přesně podle component katalogu KajovoCML ${handoff.catalogVersion} a zdrojového katalogu repository-component-1.0.`,
-    "Nejprve vytvořte a ověřte izolovaný zdrojový balík, následně sestavte a nasaďte neměnný runtime a teprve poté odešlete finální manifest přes /v2/component-onboardings.",
-    "Stav jobu načítejte přes GET /v2/component-onboardings/{id}. Při blokaci odešlete úplný opravený manifest na /revisions s aktuálním ETag v hlavičce If-Match; readiness spusťte přes /readiness."
+    `Postupujte přesně podle component katalogu KajovoCML ${handoff.catalogVersion} a zdrojového katalogu repository-component-1.1.`,
+    "Životní cyklus je přesně tento: zdrojový kontrakt v manifest.kcml.json -> build OCI image -> produkční deploy receipt -> finalizovaný manifest uploadovaný přes /v2/component-onboardings.",
+    "Codex připraví ve zdrojovém adresáři jen source-phase kontrakt. Image digest, image reference, runtime digest a produkční runtime location vznikají až po buildu a deployi a nesmí být nahrazeny placeholderem.",
+    "Stav jobu načítejte přes GET /v2/component-onboardings/{id}. Při blokaci odešlete úplný opravený finální manifest na /revisions s aktuálním ETag v hlavičce If-Match; readiness spusťte přes /readiness.",
+    "Za úspěšné dokončení lze považovat pouze stav, kdy registrace, revisions, readiness a access-token handoff doběhnou bez blokátorů a navazující administrátorská aktivace může bezpečně pokračovat."
   ].join("\n");
 }

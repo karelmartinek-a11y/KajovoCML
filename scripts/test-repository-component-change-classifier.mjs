@@ -39,6 +39,12 @@ function classify(entries) {
 }
 
 {
+  const result = classify([{ status: "M", path: "components/AGENTS.md" }]);
+  assert.equal(result.componentInfrastructureOnly, true);
+  assert.equal(result.hasComponentChange, false);
+}
+
+{
   const result = classify([{ status: "M", path: "components/Invalid-Key/src/index.ts" }]);
   assert.deepEqual(result.invalidPaths, ["components/Invalid-Key/src/index.ts"]);
 }
@@ -51,6 +57,12 @@ function classify(entries) {
 {
   const result = classify([{ status: "D", path: "components/alpha-service/src/index.ts" }]);
   assert.deepEqual(result.deletedComponentKeys, ["alpha-service"]);
+}
+
+{
+  const result = classify([{ status: "R100", paths: ["components/README.md", "components/AGENTS.md"] }]);
+  assert.equal(result.componentInfrastructureOnly, true);
+  assert.equal(result.hasComponentChange, false);
 }
 
 {

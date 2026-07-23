@@ -9,6 +9,8 @@ const schema = JSON.parse(fs.readFileSync(path.join(root, "apps/server/src/contr
 const ajv = new Ajv2020({ strict: true, allErrors: true, validateFormats: false });
 const validate = ajv.compile(schema);
 
+assert.equal(schema.$id, "https://kajovocml.hcasc.cz/contracts/repository-component-deploy-receipt-1.0.schema.json");
+
 const validReceipt = {
   schemaVersion: "1.0",
   repositoryKey: "alpha-service",

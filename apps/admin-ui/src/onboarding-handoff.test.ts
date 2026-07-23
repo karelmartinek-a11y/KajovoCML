@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { onboardingHandoffText } from "./onboarding-handoff.js";
 
 describe("onboarding handoff", () => {
-  it("contains the current catalogs, token boundary and v2 revision flow", () => {
+  it("contains the current catalogs, external-or-repository storage rule and v2 revision flow", () => {
     const text = onboardingHandoffText({
       label: "Fakturační AI agent",
       descriptor: {
@@ -26,10 +26,14 @@ describe("onboarding handoff", () => {
     expect(text).toContain("Označení integračního toku: Fakturační AI agent");
     expect(text).toContain("Shrnutí prvku: Zpracování faktur");
     expect(text).toContain("Integrační token: kci_example");
-    expect(text).toContain("repository-component-1.0.json");
+    expect(text).toContain("repository-component-1.1.json");
+    expect(text).toContain("Komponenta může být udržována externě");
     expect(text).toContain("components/<repository-key>/");
+    expect(text).toContain("component.kcml.json, manifest.kcml.json");
     expect(text).toContain("nikoli zápis do GitHubu, merge, build, deploy");
     expect(text).toContain("/v2/component-onboardings");
+    expect(text).toContain("build OCI image");
+    expect(text).toContain("deploy receipt");
     expect(text).toContain("/revisions");
     expect(text).toContain("If-Match");
     expect(text).toContain("/readiness");
