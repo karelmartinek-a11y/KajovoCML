@@ -91,16 +91,24 @@ jobs:
             echo "Component deployment diff contains invalid component paths." >&2
             exit 1
           fi
-          if [ "$count" -ne 1 ] || [ -z "$repository_key" ]; then
-            echo "Component deployment requires exactly one repository component in scope." >&2
-            exit 1
-          fi
           should_build=true
           if [ "$EVENT_NAME" = "push" ] && [ "$pure_change" != "true" ]; then
             should_build=false
           fi
           if [ "$EVENT_NAME" = "workflow_run" ] && [ "$mixed_change" != "true" ]; then
             should_build=false
+          fi
+          if [ "$should_build" != "true" ]; then
+            echo "repository_key=$repository_key" >> "$GITHUB_OUTPUT"
+            echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+            echo "requested_git_ref=$requested_git_ref" >> "$GITHUB_OUTPUT"
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+            echo "mode=$mode" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$count" -ne 1 ] || [ -z "$repository_key" ]; then
+            echo "Component deployment requires exactly one repository component in scope." >&2
+            exit 1
           fi
           echo "repository_key=$repository_key" >> "$GITHUB_OUTPUT"
           echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
