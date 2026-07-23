@@ -1,0 +1,77 @@
+name: Repository component PR gates
+
+on:
+  pull_request:
+    paths:
+      - "components/*/**"
+
+permissions:
+  contents: read
+
+jobs:
+  validate-component:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Classify changed paths
+        id: changes
+        run: |
+          node scripts/classify-repository-component-changes.mjs \
+            --base "origin/${{ github.base_ref }}" \
+            --head HEAD > /tmp/component-change.json
+          cat /tmp/component-change.json
+          echo "repository_key=$(jq -r '.selectedRepositoryKey // ""' /tmp/component-change.json)" >> "$GITHUB_OUTPUT"
+          echo "repository_key_count=$(jq -r '.repositoryKeyCount' /tmp/component-change.json)" >> "$GITHUB_OUTPUT"
+          echo "mixed_change=$(jq -r '.mixedChange' /tmp/component-change.json)" >> "$GITHUB_OUTPUT"
+      - name: Enforce exactly one changed component
+        run: |
+          count="${{ steps.changes.outputs.repository_key_count }}"
+          key="${{ steps.changes.outputs.repository_key }}"
+          if [ "$count" -ne 1 ] || [ -z "$key" ]; then
+            echo "One component PR must touch exactly one valid components/<repository-key>/ tree; current diff touches $count components." >&2
+            exit 1
+          fi
+      - name: Reject invalid component paths
+        run: |
+          test "$(jq '.invalidPaths | length' /tmp/component-change.json)" = "0"
+      - name: Validate repository source contract
+        run: node scripts/validate-repository-components.mjs --repository-key "${{ steps.changes.outputs.repository_key }}"
+      - name: Install isolated dependencies
+        working-directory: components/${{ steps.changes.outputs.repository_key }}
+        run: pnpm install --ignore-workspace --frozen-lockfile --ignore-scripts
+      - name: Lint
+        working-directory: components/${{ steps.changes.outputs.repository_key }}
+        run: pnpm lint
+      - name: Typecheck
+        working-directory: components/${{ steps.changes.outputs.repository_key }}
+        run: pnpm typecheck
+      - name: Unit tests
+        working-directory: components/${{ steps.changes.outputs.repository_key }}
+        run: pnpm test
+      - name: Build
+        working-directory: components/${{ steps.changes.outputs.repository_key }}
+        run: pnpm build
+      - name: KCML invoke contract
+        run: node scripts/onboarding/contract-test.mjs "components/${{ steps.changes.outputs.repository_key }}"
+      - name: Dependency audit
+        working-directory: components/${{ steps.changes.outputs.repository_key }}
+        run: pnpm --ignore-workspace audit --prod --audit-level high
+      - name: Reproducible build
+        working-directory: components/${{ steps.changes.outputs.repository_key }}
+        run: |
+          rm -rf dist
+          pnpm build
+          find dist -type f -print0 | sort -z | xargs -0 sha256sum > /tmp/component-build-1
+          rm -rf dist
+          pnpm build
+          find dist -type f -print0 | sort -z | xargs -0 sha256sum > /tmp/component-build-2
+          diff -u /tmp/component-build-1 /tmp/component-build-2

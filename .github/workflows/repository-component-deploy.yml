@@ -1,0 +1,231 @@
+name: Repository component deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "components/*/**"
+  workflow_run:
+    workflows: ["CI and production deploy"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      repository_key:
+        description: "Repository component key"
+        required: true
+        type: string
+      git_ref:
+        description: "Git ref to deploy; defaults to main"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+  packages: write
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    outputs:
+      repository_key: ${{ steps.resolve.outputs.repository_key }}
+      source_sha: ${{ steps.resolve.outputs.source_sha }}
+      requested_git_ref: ${{ steps.resolve.outputs.requested_git_ref }}
+      should_build: ${{ steps.resolve.outputs.should_build }}
+      mode: ${{ steps.resolve.outputs.mode }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event_name == 'workflow_dispatch' && (inputs.git_ref || 'main') || github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+          persist-credentials: false
+      - name: Resolve deployment target
+        id: resolve
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          WORKFLOW_CONCLUSION: ${{ github.event.workflow_run.conclusion || '' }}
+          WORKFLOW_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch || '' }}
+          WORKFLOW_HEAD_SHA: ${{ github.event.workflow_run.head_sha || '' }}
+          INPUT_REPOSITORY_KEY: ${{ inputs.repository_key || '' }}
+          INPUT_GIT_REF: ${{ inputs.git_ref || '' }}
+        run: |
+          set -euo pipefail
+          mode="push"
+          requested_git_ref=""
+          source_sha="${GITHUB_SHA}"
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            mode="manual"
+            requested_git_ref="${INPUT_GIT_REF:-main}"
+            source_sha="$(git rev-parse --verify "${requested_git_ref}^{commit}")"
+            git checkout --detach "$source_sha"
+            jq -n --arg key "$INPUT_REPOSITORY_KEY" --arg sha "$source_sha" --arg ref "$requested_git_ref" \
+              '{selectedRepositoryKey:$key,repositoryKeyCount:1,invalidPaths:[],hasChanges:true,pureComponentChange:true,mixedChange:false}' \
+              > /tmp/component-change.json
+            cat /tmp/component-change.json
+          elif [ "$EVENT_NAME" = "workflow_run" ]; then
+            mode="workflow_run"
+            if [ "$WORKFLOW_CONCLUSION" != "success" ] || [ "$WORKFLOW_HEAD_BRANCH" != "main" ]; then
+              echo "should_build=false" >> "$GITHUB_OUTPUT"
+              echo "mode=$mode" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            source_sha="$WORKFLOW_HEAD_SHA"
+            git checkout --detach "$source_sha"
+            node scripts/classify-repository-component-changes.mjs --base "${source_sha}^" --head "$source_sha" > /tmp/component-change.json
+            cat /tmp/component-change.json
+          else
+            node scripts/classify-repository-component-changes.mjs --base "${{ github.event.before }}" --head "${GITHUB_SHA}" > /tmp/component-change.json
+            cat /tmp/component-change.json
+          fi
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            printf '%s\n' "$INPUT_REPOSITORY_KEY" > /tmp/repository_key
+          else
+            jq -r '.selectedRepositoryKey // ""' /tmp/component-change.json > /tmp/repository_key
+          fi
+          repository_key="$(cat /tmp/repository_key)"
+          count="$(jq -r '.repositoryKeyCount // 1' /tmp/component-change.json)"
+          invalid_count="$(jq -r '.invalidPaths | length // 0' /tmp/component-change.json)"
+          pure_change="$(jq -r '.pureComponentChange // true' /tmp/component-change.json)"
+          mixed_change="$(jq -r '.mixedChange // false' /tmp/component-change.json)"
+          if [ "$invalid_count" -ne 0 ]; then
+            echo "Component deployment diff contains invalid component paths." >&2
+            exit 1
+          fi
+          if [ "$count" -ne 1 ] || [ -z "$repository_key" ]; then
+            echo "Component deployment requires exactly one repository component in scope." >&2
+            exit 1
+          fi
+          should_build=true
+          if [ "$EVENT_NAME" = "push" ] && [ "$pure_change" != "true" ]; then
+            should_build=false
+          fi
+          if [ "$EVENT_NAME" = "workflow_run" ] && [ "$mixed_change" != "true" ]; then
+            should_build=false
+          fi
+          echo "repository_key=$repository_key" >> "$GITHUB_OUTPUT"
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+          echo "requested_git_ref=$requested_git_ref" >> "$GITHUB_OUTPUT"
+          echo "should_build=$should_build" >> "$GITHUB_OUTPUT"
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+
+  build-sign-publish:
+    needs: discover
+    if: needs.discover.outputs.should_build == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.names.outputs.image }}
+      image_digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.discover.outputs.source_sha }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Validate repository component
+        run: node scripts/validate-repository-components.mjs --repository-key "${{ needs.discover.outputs.repository_key }}"
+      - name: Install isolated dependencies
+        working-directory: components/${{ needs.discover.outputs.repository_key }}
+        run: pnpm install --ignore-workspace --frozen-lockfile --ignore-scripts
+      - name: Lint, test and build
+        working-directory: components/${{ needs.discover.outputs.repository_key }}
+        run: |
+          pnpm lint
+          pnpm typecheck
+          pnpm test
+          pnpm build
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: names
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/kajovocml-components/${{ needs.discover.outputs.repository_key }}:${{ needs.discover.outputs.source_sha }}"
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/handler-runtime/Dockerfile
+          build-args: HANDLER_DIR=components/${{ needs.discover.outputs.repository_key }}
+          push: true
+          tags: ${{ steps.names.outputs.image }}
+          provenance: false
+          sbom: false
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
+        with:
+          cosign-release: v3.1.1
+      - uses: anchore/sbom-action@v0
+        with:
+          image: ${{ steps.names.outputs.image }}@${{ steps.build.outputs.digest }}
+          format: spdx-json
+          output-file: /tmp/component.spdx.json
+          upload-artifact: false
+      - name: Create trusted provenance predicate
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          jq -n \
+            --arg commit "${{ needs.discover.outputs.source_sha }}" \
+            --arg builder "https://github.com/${GITHUB_REPOSITORY}/.github/workflows/repository-component-deploy.yml@refs/heads/main" \
+            --arg source "git+https://github.com/${GITHUB_REPOSITORY}@${{ needs.discover.outputs.source_sha }}" \
+            --arg component "${{ needs.discover.outputs.repository_key }}" \
+            --arg digest "$IMAGE_DIGEST" \
+            '{builder:{id:$builder},buildType:"https://kajovocml.invalid/repository-component-deploy/v1",invocation:{configSource:{uri:$source,digest:{sha1:$commit},entryPoint:".github/workflows/repository-component-deploy.yml"},parameters:{repository_key:$component},environment:{}},metadata:{buildInvocationID:env.GITHUB_RUN_ID,reproducible:true},materials:[{uri:$source,digest:{sha1:$commit}}],subject:[{name:$component,digest:{sha256:($digest|sub("^sha256:";""))}}]}' \
+            > /tmp/provenance.json
+      - name: Keyless-sign image, SBOM and provenance
+        env:
+          IMAGE: ${{ steps.names.outputs.image }}@${{ steps.build.outputs.digest }}
+        run: |
+          cosign sign --yes "$IMAGE"
+          cosign attest --yes --type spdxjson --predicate /tmp/component.spdx.json "$IMAGE"
+          cosign attest --yes --type slsaprovenance --predicate /tmp/provenance.json "$IMAGE"
+
+  deploy:
+    needs: [discover, build-sign-publish]
+    if: needs.discover.outputs.should_build == 'true'
+    runs-on: [self-hosted, kcml-deploy]
+    timeout-minutes: 30
+    concurrency:
+      group: repository-component-${{ needs.discover.outputs.repository_key }}
+      cancel-in-progress: false
+    environment: production
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Deploy repository component runtime
+        env:
+          RECEIPT_PATH: ${{ runner.temp }}/repository-component-receipt.json
+        run: |
+          set -euo pipefail
+          sudo /usr/local/sbin/kcml-repository-component-deploy-wrapper \
+            "${{ github.repository }}" \
+            "${{ needs.discover.outputs.repository_key }}" \
+            "${{ needs.discover.outputs.source_sha }}" \
+            "${{ needs.build-sign-publish.outputs.image }}" \
+            "${{ needs.build-sign-publish.outputs.image_digest }}" \
+            "${{ github.run_id }}" \
+            "${{ github.run_id }}" \
+            "${{ github.run_attempt }}" \
+            "${{ needs.discover.outputs.requested_git_ref }}" \
+            "$RECEIPT_PATH"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: repository-component-receipt-${{ needs.discover.outputs.repository_key }}-${{ needs.discover.outputs.source_sha }}
+          path: ${{ runner.temp }}/repository-component-receipt.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Publish job summary
+        run: |
+          {
+            echo "## Repository component deploy receipt"
+            echo
+            jq . "${{ runner.temp }}/repository-component-receipt.json"
+          } >> "$GITHUB_STEP_SUMMARY"

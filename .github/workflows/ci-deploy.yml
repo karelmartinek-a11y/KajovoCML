@@ -3,7 +3,11 @@ name: CI and production deploy
 on:
   push:
     branches: ["**"]
+    paths-ignore:
+      - "components/*/**"
   pull_request:
+    paths-ignore:
+      - "components/*/**"
   workflow_dispatch:
     inputs:
       perform_factory_reset:

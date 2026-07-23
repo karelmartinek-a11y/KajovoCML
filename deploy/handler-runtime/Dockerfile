@@ -1,7 +1,7 @@
 FROM node:24-alpine3.22 AS build
 ARG HANDLER_DIR
 WORKDIR /build/handler
-RUN corepack enable && corepack prepare pnpm@9.15.4 --activate
+RUN corepack enable && corepack prepare pnpm@11.7.0 --activate
 COPY ${HANDLER_DIR}/package.json ${HANDLER_DIR}/pnpm-lock.yaml ${HANDLER_DIR}/tsconfig.json ./
 RUN pnpm install --frozen-lockfile --ignore-scripts
 COPY ${HANDLER_DIR}/src ./src
