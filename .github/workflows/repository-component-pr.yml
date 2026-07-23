@@ -1,0 +1,74 @@
+name: Repository component PR gates
+
+on:
+  pull_request:
+    paths:
+      - "components/**"
+
+permissions:
+  contents: read
+
+jobs:
+  validate-component:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.7.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Enforce one isolated component directory
+        id: component
+        run: |
+          base="origin/${{ github.base_ref }}"
+          mapfile -t changed < <(git diff --name-only "$base...HEAD" -- components/)
+          test "${#changed[@]}" -gt 0
+          mapfile -t roots < <(printf '%s\n' "${changed[@]}" | awk -F/ '/^components\/[a-z0-9][a-z0-9-]{2,62}\// {print $1"/"$2}' | sort -u)
+          if [ "${#roots[@]}" -ne 1 ]; then
+            echo "One component PR must modify exactly one components/<repository-key>/ directory" >&2
+            exit 1
+          fi
+          for file in "${changed[@]}"; do
+            case "$file" in
+              "${roots[0]}"/*) ;;
+              *) echo "Disallowed component PR path: $file" >&2; exit 1 ;;
+            esac
+          done
+          echo "directory=${roots[0]}" >> "$GITHUB_OUTPUT"
+      - name: Validate repository source contract
+        run: node scripts/validate-repository-components.mjs
+      - name: Install isolated dependencies
+        working-directory: ${{ steps.component.outputs.directory }}
+        run: pnpm install --ignore-workspace --frozen-lockfile --ignore-scripts
+      - name: Lint
+        working-directory: ${{ steps.component.outputs.directory }}
+        run: pnpm lint
+      - name: Typecheck
+        working-directory: ${{ steps.component.outputs.directory }}
+        run: pnpm typecheck
+      - name: Unit tests
+        working-directory: ${{ steps.component.outputs.directory }}
+        run: pnpm test
+      - name: Build
+        working-directory: ${{ steps.component.outputs.directory }}
+        run: pnpm build
+      - name: KCML invoke contract
+        run: node scripts/onboarding/contract-test.mjs "${{ steps.component.outputs.directory }}"
+      - name: Dependency audit
+        working-directory: ${{ steps.component.outputs.directory }}
+        run: pnpm --ignore-workspace audit --prod --audit-level high
+      - name: Reproducible build
+        working-directory: ${{ steps.component.outputs.directory }}
+        run: |
+          rm -rf dist
+          pnpm build
+          find dist -type f -print0 | sort -z | xargs -0 sha256sum > /tmp/component-build-1
+          rm -rf dist
+          pnpm build
+          find dist -type f -print0 | sort -z | xargs -0 sha256sum > /tmp/component-build-2
+          diff -u /tmp/component-build-1 /tmp/component-build-2
