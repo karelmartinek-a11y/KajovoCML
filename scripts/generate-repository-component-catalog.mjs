@@ -69,6 +69,7 @@ const catalog = {
   deliveryPipeline: {
     sourcePullRequest: { scope: "exactly one components/<repository-key>/ directory", requiredChecks: ["descriptor-schema", "manifest-schema", "lint", "typecheck", "unit-tests", "invoke-contract", "secret-scan", "dependency-audit", "reproducible-build"] },
     build: { output: "immutable OCI image", registryPath: "ghcr.io/<owner>/kajovocml-components/<repository-key>:<commit-sha>", requirements: ["SBOM", "keyless signature", "SLSA-style provenance"] },
+    deployment: { workflow: ".github/workflows/repository-component-deploy.yml", receiptSchema: "apps/server/src/contracts/repository-component-deploy-receipt-1.0.schema.json", runtimeVerification: ["immutable digest", "health endpoint", "runtime identity", "previous runtime preservation"] },
     registration: { authorization: "short-lived integration token", intake: "/v2/component-onboardings", idempotencyHeader: "Idempotency-Key", readiness: "/v2/component-onboardings/{id}/readiness", revision: "/v2/component-onboardings/{id}/revisions", concurrencyControl: "ETag/If-Match", tokenConsumption: "after successful access-token handoff" }
   },
   separationOfAuthorities: {

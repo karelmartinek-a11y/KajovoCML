@@ -3,7 +3,7 @@ import tseslint from "typescript-eslint";
 
 export default tseslint.config(
   {
-    ignores: ["**/dist/**", "**/coverage/**", "**/node_modules/**", "**/._*", "eslint.config.js", "vitest.config.mjs", "deploy/alert-sink/*.mjs", "deploy/handler-runtime/*.mjs", "deploy/scripts/*.mjs", "scripts/onboarding/*.mjs", "scripts/clean-appledouble.mjs", "scripts/external-api-soak.mjs", "scripts/generate-mcp-onboarding-catalog.mjs"]
+    ignores: ["**/dist/**", "**/coverage/**", "**/node_modules/**", "**/._*", "eslint.config.js", "vitest.config.mjs", "deploy/alert-sink/*.mjs", "deploy/handler-runtime/*.mjs", "deploy/scripts/*.mjs", "scripts/onboarding/*.mjs", "scripts/clean-appledouble.mjs", "scripts/external-api-soak.mjs", "scripts/generate-mcp-onboarding-catalog.mjs", "scripts/generate-repository-component-catalog.mjs", "scripts/validate-repository-components.mjs", "scripts/classify-repository-component-changes.mjs", "scripts/test-repository-component-change-classifier.mjs", "scripts/test-repository-component-deploy-receipt.mjs"]
   },
   js.configs.recommended,
   ...tseslint.configs.recommendedTypeChecked,

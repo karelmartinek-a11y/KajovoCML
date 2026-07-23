@@ -201,13 +201,17 @@ require_stable_runtime_health() {
 render_nginx_config "$source_dir/deploy/nginx/kcml.conf" /etc/nginx/sites-available/kcml.conf
 ln -sfn /etc/nginx/sites-available/kcml.conf /etc/nginx/sites-enabled/kcml.conf
 install -m 0755 "$source_dir/deploy/scripts/kcml-deploy-wrapper.sh" /usr/local/sbin/kcml-deploy-wrapper
+install -m 0755 "$source_dir/deploy/scripts/kcml-repository-component-deploy-wrapper.sh" /usr/local/sbin/kcml-repository-component-deploy-wrapper
 install -m 0755 "$source_dir/deploy/scripts/kcml-handler-preload-wrapper.sh" /usr/local/sbin/kcml-handler-preload-wrapper
+install -d -m 0755 /usr/local/libexec
+install -m 0755 "$source_dir/deploy/scripts/install-repository-component.sh" /usr/local/libexec/kcml-install-repository-component
 for unit in kcml.service kcml-onboarding-worker.service kcml-component-control-worker.service kcml-component-e2e-worker.service kcml-monitor.service kcml-egress-proxy.service kcml-alert-primary.service kcml-alert-backup.service; do
   install -m 0644 "$source_dir/deploy/systemd/$unit" "/etc/systemd/system/$unit"
 done
 install -d -m 0755 /opt/kcml/alert-sink
 install -m 0755 "$source_dir/deploy/alert-sink/receiver.mjs" /opt/kcml/alert-sink/receiver.mjs
 install -d -m 0700 -o kcml -g kcml /var/lib/kcml/alert-primary-sink /var/lib/kcml/alert-backup-sink
+install -d -m 0750 -o kcml -g kcml /var/lib/kcml/repository-components
 kcml_uid="$(id -u kcml)"
 install -d -m 0755 /etc/systemd/system/kcml-onboarding-worker.service.d
 sed "s/@KCML_UID@/${kcml_uid}/g" "$source_dir/deploy/systemd/kcml-onboarding-worker-runtime.conf.in" \

@@ -3,7 +3,7 @@ name: Repository component PR gates
 on:
   pull_request:
     paths:
-      - "components/**"
+      - "components/*/**"
 
 permissions:
   contents: read
@@ -22,48 +22,51 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - name: Enforce one isolated component directory
-        id: component
+      - name: Classify changed paths
+        id: changes
         run: |
-          base="origin/${{ github.base_ref }}"
-          mapfile -t changed < <(git diff --name-only "$base...HEAD" -- components/)
-          test "${#changed[@]}" -gt 0
-          mapfile -t roots < <(printf '%s\n' "${changed[@]}" | awk -F/ '/^components\/[a-z0-9][a-z0-9-]{2,62}\// {print $1"/"$2}' | sort -u)
-          if [ "${#roots[@]}" -ne 1 ]; then
-            echo "One component PR must modify exactly one components/<repository-key>/ directory" >&2
+          node scripts/classify-repository-component-changes.mjs \
+            --base "origin/${{ github.base_ref }}" \
+            --head HEAD > /tmp/component-change.json
+          cat /tmp/component-change.json
+          echo "repository_key=$(jq -r '.selectedRepositoryKey // ""' /tmp/component-change.json)" >> "$GITHUB_OUTPUT"
+          echo "repository_key_count=$(jq -r '.repositoryKeyCount' /tmp/component-change.json)" >> "$GITHUB_OUTPUT"
+          echo "mixed_change=$(jq -r '.mixedChange' /tmp/component-change.json)" >> "$GITHUB_OUTPUT"
+      - name: Enforce exactly one changed component
+        run: |
+          count="${{ steps.changes.outputs.repository_key_count }}"
+          key="${{ steps.changes.outputs.repository_key }}"
+          if [ "$count" -ne 1 ] || [ -z "$key" ]; then
+            echo "One component PR must touch exactly one valid components/<repository-key>/ tree; current diff touches $count components." >&2
             exit 1
           fi
-          for file in "${changed[@]}"; do
-            case "$file" in
-              "${roots[0]}"/*) ;;
-              *) echo "Disallowed component PR path: $file" >&2; exit 1 ;;
-            esac
-          done
-          echo "directory=${roots[0]}" >> "$GITHUB_OUTPUT"
+      - name: Reject invalid component paths
+        run: |
+          test "$(jq '.invalidPaths | length' /tmp/component-change.json)" = "0"
       - name: Validate repository source contract
-        run: node scripts/validate-repository-components.mjs
+        run: node scripts/validate-repository-components.mjs --repository-key "${{ steps.changes.outputs.repository_key }}"
       - name: Install isolated dependencies
-        working-directory: ${{ steps.component.outputs.directory }}
+        working-directory: components/${{ steps.changes.outputs.repository_key }}
         run: pnpm install --ignore-workspace --frozen-lockfile --ignore-scripts
       - name: Lint
-        working-directory: ${{ steps.component.outputs.directory }}
+        working-directory: components/${{ steps.changes.outputs.repository_key }}
         run: pnpm lint
       - name: Typecheck
-        working-directory: ${{ steps.component.outputs.directory }}
+        working-directory: components/${{ steps.changes.outputs.repository_key }}
         run: pnpm typecheck
       - name: Unit tests
-        working-directory: ${{ steps.component.outputs.directory }}
+        working-directory: components/${{ steps.changes.outputs.repository_key }}
         run: pnpm test
       - name: Build
-        working-directory: ${{ steps.component.outputs.directory }}
+        working-directory: components/${{ steps.changes.outputs.repository_key }}
         run: pnpm build
       - name: KCML invoke contract
-        run: node scripts/onboarding/contract-test.mjs "${{ steps.component.outputs.directory }}"
+        run: node scripts/onboarding/contract-test.mjs "components/${{ steps.changes.outputs.repository_key }}"
       - name: Dependency audit
-        working-directory: ${{ steps.component.outputs.directory }}
+        working-directory: components/${{ steps.changes.outputs.repository_key }}
         run: pnpm --ignore-workspace audit --prod --audit-level high
       - name: Reproducible build
-        working-directory: ${{ steps.component.outputs.directory }}
+        working-directory: components/${{ steps.changes.outputs.repository_key }}
         run: |
           rm -rf dist
           pnpm build

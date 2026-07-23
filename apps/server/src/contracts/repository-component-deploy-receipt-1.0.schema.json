@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kajovocml.invalid/contracts/repository-component-deploy-receipt-1.0.schema.json",
+  "title": "Repository component deploy receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "repositoryKey",
+    "requestedGitRef",
+    "sourceCommit",
+    "imageReference",
+    "imageDigest",
+    "componentVersion",
+    "buildRunId",
+    "deployRunId",
+    "deployRunAttempt",
+    "workflow",
+    "runtimeKind",
+    "runtimeLocation",
+    "runtimeIdentifier",
+    "previousImageDigest",
+    "deployedAt",
+    "health"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.0" },
+    "repositoryKey": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{2,62}$" },
+    "requestedGitRef": { "type": ["string", "null"], "minLength": 1, "maxLength": 255 },
+    "sourceCommit": { "type": "string", "pattern": "^[a-f0-9]{40}$" },
+    "imageReference": {
+      "type": "string",
+      "pattern": "^ghcr\\.io/[a-z0-9._-]+/kajovocml-components/[a-z0-9][a-z0-9-]{2,62}@sha256:[a-f0-9]{64}$"
+    },
+    "imageDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" },
+    "componentVersion": { "type": "string", "minLength": 1, "maxLength": 255 },
+    "buildRunId": { "type": "string", "pattern": "^[0-9]+$" },
+    "deployRunId": { "type": "string", "pattern": "^[0-9]+$" },
+    "deployRunAttempt": { "type": "string", "pattern": "^[0-9]+$" },
+    "workflow": { "const": ".github/workflows/repository-component-deploy.yml" },
+    "runtimeKind": { "enum": ["UDS", "HTTPS"] },
+    "runtimeLocation": { "type": "string", "minLength": 1, "maxLength": 2048 },
+    "runtimeIdentifier": { "type": "string", "minLength": 1, "maxLength": 255 },
+    "previousImageDigest": { "type": ["string", "null"], "pattern": "^sha256:[a-f0-9]{64}$" },
+    "deployedAt": { "type": "string", "format": "date-time" },
+    "health": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "checkedAt", "evidenceDigest"],
+      "properties": {
+        "status": { "const": "PASS" },
+        "checkedAt": { "type": "string", "format": "date-time" },
+        "evidenceDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+      }
+    }
+  }
+}

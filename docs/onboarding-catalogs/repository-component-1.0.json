@@ -49,30 +49,74 @@
         "registration"
       ],
       "properties": {
-        "catalogVersion": { "const": "1.0" },
-        "repositoryKey": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{2,62}$" },
-        "kind": { "enum": ["AI_AGENT", "MCP_COMPONENT", "MICROSTEP", "API_COMPONENT", "EVENT_PROCESSOR"] },
-        "displayName": { "type": "string", "minLength": 2, "maxLength": 200 },
-        "businessPurpose": { "type": "string", "minLength": 20, "maxLength": 4000 },
+        "catalogVersion": {
+          "const": "1.0"
+        },
+        "repositoryKey": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{2,62}$"
+        },
+        "kind": {
+          "enum": [
+            "AI_AGENT",
+            "MCP_COMPONENT",
+            "MICROSTEP",
+            "API_COMPONENT",
+            "EVENT_PROCESSOR"
+          ]
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 200
+        },
+        "businessPurpose": {
+          "type": "string",
+          "minLength": 20,
+          "maxLength": 4000
+        },
         "owners": {
           "type": "object",
-          "required": ["service", "technical"],
+          "required": [
+            "service",
+            "technical"
+          ],
           "additionalProperties": false,
           "properties": {
-            "service": { "type": "string", "minLength": 2 },
-            "technical": { "type": "string", "minLength": 2 }
+            "service": {
+              "type": "string",
+              "minLength": 2
+            },
+            "technical": {
+              "type": "string",
+              "minLength": 2
+            }
           }
         },
-        "runtime": { "const": "nodejs24-typescript" },
-        "entrypoint": { "const": "src/index.ts" },
+        "runtime": {
+          "const": "nodejs24-typescript"
+        },
+        "entrypoint": {
+          "const": "src/index.ts"
+        },
         "registration": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["manifest", "intake", "identityAssignedBy"],
+          "required": [
+            "manifest",
+            "intake",
+            "identityAssignedBy"
+          ],
           "properties": {
-            "manifest": { "const": "manifest.kcml.json" },
-            "intake": { "const": "/v2/component-onboardings" },
-            "identityAssignedBy": { "const": "KCML" }
+            "manifest": {
+              "const": "manifest.kcml.json"
+            },
+            "intake": {
+              "const": "/v2/component-onboardings"
+            },
+            "identityAssignedBy": {
+              "const": "KCML"
+            }
           }
         }
       }
@@ -83,10 +127,28 @@
     "nodeMajor": 24,
     "moduleType": "module",
     "exactDependencyVersions": true,
-    "requiredScripts": ["lint", "typecheck", "test", "build"],
-    "forbiddenLifecycleScripts": ["preinstall", "install", "postinstall", "prepare"],
-    "allowedRuntimeDependencies": ["@kcml/handler-sdk", "zod"],
-    "allowedDevelopmentDependencies": ["@types/node", "eslint", "typescript", "vitest"]
+    "requiredScripts": [
+      "lint",
+      "typecheck",
+      "test",
+      "build"
+    ],
+    "forbiddenLifecycleScripts": [
+      "preinstall",
+      "install",
+      "postinstall",
+      "prepare"
+    ],
+    "allowedRuntimeDependencies": [
+      "@kcml/handler-sdk",
+      "zod"
+    ],
+    "allowedDevelopmentDependencies": [
+      "@types/node",
+      "eslint",
+      "typescript",
+      "vitest"
+    ]
   },
   "sourceContract": {
     "export": "async function invoke(input, context)",
@@ -98,12 +160,36 @@
   "deliveryPipeline": {
     "sourcePullRequest": {
       "scope": "exactly one components/<repository-key>/ directory",
-      "requiredChecks": ["descriptor-schema", "manifest-schema", "lint", "typecheck", "unit-tests", "invoke-contract", "secret-scan", "dependency-audit", "reproducible-build"]
+      "requiredChecks": [
+        "descriptor-schema",
+        "manifest-schema",
+        "lint",
+        "typecheck",
+        "unit-tests",
+        "invoke-contract",
+        "secret-scan",
+        "dependency-audit",
+        "reproducible-build"
+      ]
     },
     "build": {
       "output": "immutable OCI image",
       "registryPath": "ghcr.io/<owner>/kajovocml-components/<repository-key>:<commit-sha>",
-      "requirements": ["SBOM", "keyless signature", "SLSA-style provenance"]
+      "requirements": [
+        "SBOM",
+        "keyless signature",
+        "SLSA-style provenance"
+      ]
+    },
+    "deployment": {
+      "workflow": ".github/workflows/repository-component-deploy.yml",
+      "receiptSchema": "apps/server/src/contracts/repository-component-deploy-receipt-1.0.schema.json",
+      "runtimeVerification": [
+        "immutable digest",
+        "health endpoint",
+        "runtime identity",
+        "previous runtime preservation"
+      ]
     },
     "registration": {
       "authorization": "short-lived integration token",
@@ -116,7 +202,13 @@
     }
   },
   "separationOfAuthorities": {
-    "integrationTokenDoesNotAuthorize": ["GitHub write", "pull request merge", "deployment", "administrator activation", "secret access without grant"],
+    "integrationTokenDoesNotAuthorize": [
+      "GitHub write",
+      "pull request merge",
+      "deployment",
+      "administrator activation",
+      "secret access without grant"
+    ],
     "sourceMergeIsNotRegistration": true,
     "signedImageIsNotRegistration": true,
     "registrationIsNotActivation": true
@@ -132,5 +224,5 @@
     "binary executables",
     "direct production configuration outside KCML GUI"
   ],
-  "canonicalDigest": "sha256:d91d89a23d8f6f9583268412d9faa530217eb048c2c05410e22263a61b6206ba"
+  "canonicalDigest": "sha256:aebfd11c7b26a758971d9c28c8a0623b8c72b7832e08c858be600b91c0ca98c3"
 }
