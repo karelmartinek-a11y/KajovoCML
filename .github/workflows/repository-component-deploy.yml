@@ -147,6 +147,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+      - name: Install root validator dependencies
+        run: pnpm install --frozen-lockfile
       - name: Validate repository component
         run: node scripts/validate-repository-components.mjs --repository-key "${{ needs.discover.outputs.repository_key }}"
       - name: Install isolated dependencies
