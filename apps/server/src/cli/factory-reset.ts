@@ -129,7 +129,7 @@ export async function runFactoryReset(): Promise<void> {
   const password = requireDeploymentManagedAdminPassword(process.env.PASS);
 
   try {
-    const { summary, accountId, mfaEnabled } = await tx(db, async (client) => {
+    const { summary, accountId, mfaEnabled, passwordMatchesInput, recoveryCodeCount } = await tx(db, async (client) => {
       await client.query("select pg_advisory_xact_lock(hashtextextended('kcml-factory-reset', 0))");
       await ensureArchiveMetadata(client);
 
@@ -138,18 +138,29 @@ export async function runFactoryReset(): Promise<void> {
       const tablesToTruncate = allTables;
       const archiveSummaries: ArchiveSummary[] = [];
       const preservedOwnerResult = await client.query(
-        "select id,mfa_enabled,mfa_secret from admin_account where username=$1",
+        "select id,password_hash,mfa_enabled,mfa_secret from admin_account where username=$1",
         [runtimeConfig.ADMIN_BOOTSTRAP_USERNAME]
       );
       const preservedOwner: PreservedDeploymentManagedAdmin | null = preservedOwnerResult.rowCount
         ? {
             accountId: String(preservedOwnerResult.rows[0].id),
+            passwordHash: typeof preservedOwnerResult.rows[0].password_hash === "string"
+              ? preservedOwnerResult.rows[0].password_hash
+              : null,
             mfaEnabled: Boolean(preservedOwnerResult.rows[0].mfa_enabled),
             mfaSecret: typeof preservedOwnerResult.rows[0].mfa_secret === "string"
               ? preservedOwnerResult.rows[0].mfa_secret
               : null
           }
         : null;
+
+      await client.query(
+        `create temp table kcml_keep_owner_recovery as
+         select recovery.*
+           from public.admin_recovery_code recovery
+          where recovery.account_id=$1`,
+        [preservedOwner?.accountId ?? randomUUID()]
+      );
 
       await snapshotPreservedTables(client);
       for (const tableName of preservedTables) {
@@ -186,18 +197,28 @@ export async function runFactoryReset(): Promise<void> {
         eventType: "admin.factory_reset.restored",
         correlationId: randomUUID()
       });
-      await verifyDeploymentManagedAdminPassword(client, restoredOwner.accountId, password, "factory-reset", randomUUID());
+      if (restoredOwner.passwordMatchesInput) {
+        await verifyDeploymentManagedAdminPassword(client, restoredOwner.accountId, password, "factory-reset", randomUUID());
+      }
+      const restoredRecovery = await client.query(
+        `insert into public.admin_recovery_code
+         select preserved.* from kcml_keep_owner_recovery preserved
+         on conflict (id) do nothing
+         returning id`
+      );
 
       return {
         summary: archiveSummaries,
         accountId: restoredOwner.accountId,
-        mfaEnabled: restoredOwner.mfaEnabled
+        mfaEnabled: restoredOwner.mfaEnabled,
+        passwordMatchesInput: restoredOwner.passwordMatchesInput,
+        recoveryCodeCount: restoredRecovery.rowCount
       };
     });
 
     const totalRows = summary.reduce((count, item) => count + item.rowCount, 0);
     process.stderr.write(
-      `Factory reset completed. Archived ${summary.length} tables and ${totalRows} rows under schema ${ARCHIVE_SCHEMA} with run id ${runId}. Restored deployment-managed owner ${runtimeConfig.ADMIN_BOOTSTRAP_USERNAME} (${accountId}); MFA ${mfaEnabled ? "enabled" : "disabled"}.\n`
+      `Factory reset completed. Archived ${summary.length} tables and ${totalRows} rows under schema ${ARCHIVE_SCHEMA} with run id ${runId}. Restored deployment-managed owner ${runtimeConfig.ADMIN_BOOTSTRAP_USERNAME} (${accountId}); MFA ${mfaEnabled ? "enabled" : "disabled"}; password matches PASS=${passwordMatchesInput}; recovery codes restored=${recoveryCodeCount}.\n`
     );
   } finally {
     await db.end();

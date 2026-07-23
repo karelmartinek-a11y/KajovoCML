@@ -13,6 +13,7 @@ const bootstrapConfig = loadBootstrapConfig();
 const db = createDb(bootstrapConfig);
 const config = await loadConfigFromDb(db, bootstrapConfig);
 const pass = process.env.PASS;
+const rotatePassword = process.env.KCML_ADMIN_PASSWORD_ROTATION_CONFIRM === "ROTATE_KCML_OWNER_PASSWORD";
 
 try {
   const password = requireDeploymentManagedAdminPassword(pass);
@@ -22,17 +23,22 @@ try {
       password,
       mfaEncryptionKey: config.MFA_ENCRYPTION_KEY_BASE64,
       configuredTotpSecret: config.ADMIN_TOTP_SECRET,
+      rotatePassword,
       actorType: "deployment",
-      eventType: "admin.password.synced",
+      eventType: "admin.password.reconciled",
       correlationId: randomUUID()
     });
   });
-  await tx(db, async (client) => {
-    await verifyDeploymentManagedAdminPassword(client, syncResult.accountId, password, "deployment", randomUUID());
-  });
+  if (syncResult.passwordMatchesInput) {
+    await tx(db, async (client) => {
+      await verifyDeploymentManagedAdminPassword(client, syncResult.accountId, password, "deployment", randomUUID());
+    });
+  }
+  process.stdout.write(`${JSON.stringify(syncResult)}\n`);
   process.stderr.write(
-    `Admin password synchronized from PASS; MFA ${syncResult.mfaEnabled ? "enabled" : "disabled"} ` +
-    `(source=${syncResult.mfaSource}); sessions and trusted devices are invalidated.\n`
+    `Deployment-managed admin reconciled; password source=${syncResult.passwordSource}; ` +
+    `password matches PASS=${syncResult.passwordMatchesInput}; MFA ${syncResult.mfaEnabled ? "enabled" : "disabled"} ` +
+    `(source=${syncResult.mfaSource}).\n`
   );
 } finally {
   await db.end();

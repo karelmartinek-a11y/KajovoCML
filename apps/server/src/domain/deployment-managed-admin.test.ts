@@ -1,4 +1,5 @@
 import type pg from "pg";
+import argon2 from "argon2";
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -36,12 +37,14 @@ describe("deployment managed admin password handling", () => {
   it("preserves enrolled MFA when deployment has no configured TOTP secret", async () => {
     const accountId = randomUUID();
     const encryptedMfaSecret = "enc:v1:existing-secret";
+    const passwordHash = await argon2.hash("deployment-password");
+    const sessionEpoch = randomUUID();
     const query = vi.fn(async (sql: string, _params?: unknown[]) => {
       void _params;
-      if (sql.startsWith("select id,mfa_enabled,mfa_secret")) {
+      if (sql.startsWith("select id,password_hash,mfa_enabled,mfa_secret,session_epoch")) {
         return {
           rowCount: 1,
-          rows: [{ id: accountId, mfa_enabled: true, mfa_secret: encryptedMfaSecret }]
+          rows: [{ id: accountId, password_hash: passwordHash, mfa_enabled: true, mfa_secret: encryptedMfaSecret, session_epoch: sessionEpoch }]
         };
       }
       return { rowCount: 1, rows: [] };
@@ -60,6 +63,49 @@ describe("deployment managed admin password handling", () => {
     const accountUpdate = query.mock.calls.find(([sql]) => sql.includes("set password_hash=$2"));
     expect(accountUpdate?.[1]?.[2]).toBe(true);
     expect(accountUpdate?.[1]?.[3]).toBe(encryptedMfaSecret);
-    expect(result).toMatchObject({ accountId, mfaEnabled: true, mfaSource: "preserved" });
+    expect(query.mock.calls.some(([sql]) => sql.startsWith("update admin_session"))).toBe(false);
+    expect(result).toMatchObject({
+      accountId,
+      mfaEnabled: true,
+      mfaSource: "preserved",
+      passwordMatchesInput: true,
+      passwordSource: "existing",
+      sessionEpoch
+    });
+  });
+
+  it("preserves a working owner credential instead of overwriting a PASS divergence", async () => {
+    const accountId = randomUUID();
+    const passwordHash = await argon2.hash("working-owner-password");
+    const sessionEpoch = randomUUID();
+    const query = vi.fn(async (sql: string, _params?: unknown[]) => {
+      void _params;
+      if (sql.startsWith("select id,password_hash,mfa_enabled,mfa_secret,session_epoch")) {
+        return {
+          rowCount: 1,
+          rows: [{ id: accountId, password_hash: passwordHash, mfa_enabled: false, mfa_secret: null, session_epoch: sessionEpoch }]
+        };
+      }
+      return { rowCount: 1, rows: [] };
+    });
+
+    const result = await syncDeploymentManagedAdmin({ query } as unknown as pg.PoolClient, {
+      username: "karmar78",
+      password: "divergent-deployment-pass",
+      mfaEncryptionKey: Buffer.alloc(32),
+      actorType: "deployment",
+      eventType: "admin.password.reconciled",
+      correlationId: randomUUID()
+    });
+
+    const accountUpdate = query.mock.calls.find(([sql]) => sql.includes("set password_hash=$2"));
+    expect(accountUpdate?.[1]?.[1]).toBe(passwordHash);
+    expect(accountUpdate?.[1]?.[5]).toBe(false);
+    expect(query.mock.calls.some(([sql]) => sql.startsWith("update admin_session"))).toBe(false);
+    expect(result).toMatchObject({
+      passwordMatchesInput: false,
+      passwordSource: "existing",
+      sessionEpoch
+    });
   });
 });

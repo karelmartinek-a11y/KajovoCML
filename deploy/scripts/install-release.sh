@@ -276,13 +276,16 @@ BUILD_ID="$release_id" \
   node "$source_dir/apps/server/dist/cli/admin-credential-forensics.js"
 
 step sync-admin-password
-PASS="$PASS" \
+admin_sync_result="$(PASS="$PASS" \
+KCML_ADMIN_PASSWORD_ROTATION_CONFIRM="${KCML_ADMIN_PASSWORD_ROTATION_CONFIRM:-}" \
 KCML_PROCESS_ROLE=admin-sync \
 DATABASE_URL_FILE=/etc/kcml/credentials/admin-sync/database_url \
 CONFIG_VAULT_MASTER_KEY_BASE64_FILE=/etc/kcml/credentials/config_vault_master_key \
 NODE_ENV=production \
 BUILD_ID="$release_id" \
-  node "$source_dir/apps/server/dist/cli/sync-admin-password.js"
+  node "$source_dir/apps/server/dist/cli/sync-admin-password.js")"
+printf '%s\n' "$admin_sync_result"
+admin_password_matches_pass="$(jq -er '.passwordMatchesInput | tostring' <<<"$admin_sync_result")"
 
 step ensure-platform-worker-access
 KCML_PROCESS_ROLE=admin-sync \
@@ -377,6 +380,7 @@ done < <(psql "$app_database_url" --no-psqlrc --tuples-only --no-align --quiet -
 admin_username="$(effective_admin_username)"
 export ADMIN_BOOTSTRAP_USERNAME="$admin_username"
 step verify-core-hosts
+if [ "$admin_password_matches_pass" = "true" ]; then
 PASS="$PASS" \
 KCML_PROCESS_ROLE=admin-sync \
 DATABASE_URL_FILE=/etc/kcml/credentials/admin-sync/database_url \
@@ -395,6 +399,9 @@ BUILD_ID="$release_id" \
 KCML_LOGIN_SMOKE_BASE_URL="https://${admin_host}" \
 KCML_LOGIN_SMOKE_HOST="$admin_host" \
   node "$release_dir/apps/server/dist/cli/admin-login-smoke.js" | jq -e '.ok == true' >/dev/null
+else
+  echo "admin-login-smoke:SKIPPED preserved_owner_credential_diverges_from_pass"
+fi
 curl -fsS -H "Host: ${AUTH_HOST:?AUTH_HOST is required}" \
   "http://127.0.0.1:${PORT:-3010}/.well-known/oauth-authorization-server" \
   | jq -e --arg issuer "https://${AUTH_HOST}" '.issuer == $issuer' >/dev/null
@@ -412,7 +419,11 @@ curl -fsS "https://secrets.${PUBLIC_BASE_DOMAIN}/health" \
 test "$(curl -sS -o /dev/null -w '%{http_code}' -H 'Host: unknown.invalid' \
   "http://127.0.0.1:${PORT:-3010}/health")" = "404"
 step smoke-reference-external-api
-bash "$release_dir/deploy/scripts/smoke-reference-external-api.sh" "$release_dir"
+if [ "$admin_password_matches_pass" = "true" ]; then
+  bash "$release_dir/deploy/scripts/smoke-reference-external-api.sh" "$release_dir"
+else
+  echo "reference-smoke:SKIPPED preserved_owner_credential_diverges_from_pass"
+fi
 
 step finalize-webhook-smoke
 psql "$app_database_url" --no-psqlrc --quiet --set ON_ERROR_STOP=1 \

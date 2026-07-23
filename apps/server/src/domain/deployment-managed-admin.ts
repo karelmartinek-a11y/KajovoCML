@@ -6,6 +6,7 @@ import { appendAudit } from "./audit.js";
 
 export type PreservedDeploymentManagedAdmin = {
   accountId: string;
+  passwordHash: string | null;
   mfaEnabled: boolean;
   mfaSecret: string | null;
 };
@@ -16,6 +17,7 @@ export type DeploymentManagedAdminSyncInput = {
   mfaEncryptionKey: Buffer;
   configuredTotpSecret?: string | undefined;
   preserved?: PreservedDeploymentManagedAdmin | null;
+  rotatePassword?: boolean;
   actorType: "deployment" | "factory-reset";
   eventType: string;
   correlationId: string;
@@ -25,6 +27,8 @@ export type DeploymentManagedAdminSyncResult = {
   accountId: string;
   mfaEnabled: boolean;
   mfaSource: "configured" | "preserved" | "disabled";
+  passwordMatchesInput: boolean;
+  passwordSource: "input" | "existing" | "preserved";
   sessionEpoch: string;
 };
 
@@ -109,9 +113,8 @@ export async function syncDeploymentManagedAdmin(
   client: pg.PoolClient,
   input: DeploymentManagedAdminSyncInput
 ): Promise<DeploymentManagedAdminSyncResult> {
-  const passwordHash = await hashAdminPassword(input.password);
   const existing = await client.query(
-    "select id,mfa_enabled,mfa_secret from admin_account where username=$1 for update",
+    "select id,password_hash,mfa_enabled,mfa_secret,session_epoch from admin_account where username=$1 for update",
     [input.username]
   );
   const accountId = existing.rowCount
@@ -128,16 +131,35 @@ export async function syncDeploymentManagedAdmin(
   const preserved = existing.rowCount
     ? {
         accountId,
+        passwordHash: typeof existing.rows[0].password_hash === "string" ? existing.rows[0].password_hash : null,
         mfaEnabled: Boolean(existing.rows[0].mfa_enabled),
         mfaSecret: typeof existing.rows[0].mfa_secret === "string" ? existing.rows[0].mfa_secret : null
       }
     : input.preserved ?? null;
   const resolvedMfa = resolveManagedAdminMfa(accountId, input.configuredTotpSecret, input.mfaEncryptionKey, preserved);
-  const nextSessionEpoch = randomUUID();
+  const existingPasswordHash = existing.rowCount && typeof existing.rows[0].password_hash === "string"
+    ? existing.rows[0].password_hash
+    : null;
+  const preservedPasswordHash = input.preserved?.passwordHash ?? null;
+  const passwordSource = input.rotatePassword || (!existingPasswordHash && !preservedPasswordHash)
+    ? "input"
+    : existingPasswordHash
+      ? "existing"
+      : "preserved";
+  const passwordHash = passwordSource === "input"
+    ? await hashAdminPassword(input.password)
+    : passwordSource === "existing"
+      ? existingPasswordHash as string
+      : preservedPasswordHash as string;
+  const passwordMatchesInput = await argon2.verify(passwordHash, input.password);
+  const rotateSessionEpoch = input.actorType === "factory-reset" || passwordSource === "input";
+  const nextSessionEpoch = rotateSessionEpoch
+    ? randomUUID()
+    : String(existing.rows[0].session_epoch);
   await client.query(
     `update admin_account
         set password_hash=$2,
-            password_changed_at=now(),
+            password_changed_at=case when $6 or password_changed_at is null then now() else password_changed_at end,
             mfa_enabled=$3,
             mfa_secret=$4,
             active=true,
@@ -146,9 +168,11 @@ export async function syncDeploymentManagedAdmin(
             role='OWNER',
             session_epoch=$5
       where id=$1`,
-    [accountId, passwordHash, resolvedMfa.enabled, resolvedMfa.secret, nextSessionEpoch]
+    [accountId, passwordHash, resolvedMfa.enabled, resolvedMfa.secret, nextSessionEpoch, passwordSource === "input"]
   );
-  await client.query("update admin_session set revoked_at=now() where account_id=$1 and revoked_at is null", [accountId]);
+  if (rotateSessionEpoch) {
+    await client.query("update admin_session set revoked_at=now() where account_id=$1 and revoked_at is null", [accountId]);
+  }
   await appendAudit(client, {
     eventType: input.eventType,
     actorType: input.actorType,
@@ -158,8 +182,10 @@ export async function syncDeploymentManagedAdmin(
       username: input.username,
       mfaEnabled: resolvedMfa.enabled,
       mfaSource: resolvedMfa.source,
-      sessionsRevoked: true,
-      sessionEpochRotated: true
+      passwordMatchesInput,
+      passwordSource,
+      sessionsRevoked: rotateSessionEpoch,
+      sessionEpochRotated: rotateSessionEpoch
     },
     correlationId: input.correlationId
   });
@@ -167,6 +193,8 @@ export async function syncDeploymentManagedAdmin(
     accountId,
     mfaEnabled: resolvedMfa.enabled,
     mfaSource: resolvedMfa.source,
+    passwordMatchesInput,
+    passwordSource,
     sessionEpoch: nextSessionEpoch
   };
 }

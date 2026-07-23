@@ -91,13 +91,15 @@ try {
   }
 
   const currentMatches = observations.some((item) => item.source === "current" && item.passwordMatchesPass === true);
+  const currentHasPasswordHash = current.rowCount === 1 && typeof current.rows[0]?.password_hash === "string";
   process.stdout.write(`${JSON.stringify({
     username: config.ADMIN_BOOTSTRAP_USERNAME,
     currentAccountCount: current.rowCount,
     currentMatchesPass: currentMatches,
+    currentHasPasswordHash,
     observations
   })}\n`);
-  if (current.rowCount !== 1 || !currentMatches) throw new Error("deployment_managed_admin_current_password_mismatch");
+  if (current.rowCount !== 1 || !currentHasPasswordHash) throw new Error("deployment_managed_admin_current_credential_missing");
 } finally {
   await db.end();
 }
