@@ -266,6 +266,15 @@ NODE_ENV=production \
 BUILD_ID="$release_id" \
   node "$source_dir/apps/server/dist/cli/migrate-mfa-secrets.js"
 
+step forensic-admin-credentials
+PASS="$PASS" \
+KCML_PROCESS_ROLE=migrate \
+DATABASE_URL_FILE=/etc/kcml/credentials/migrator/database_url \
+CONFIG_VAULT_MASTER_KEY_BASE64_FILE=/etc/kcml/credentials/config_vault_master_key \
+NODE_ENV=production \
+BUILD_ID="$release_id" \
+  node "$source_dir/apps/server/dist/cli/admin-credential-forensics.js"
+
 step sync-admin-password
 PASS="$PASS" \
 KCML_PROCESS_ROLE=admin-sync \

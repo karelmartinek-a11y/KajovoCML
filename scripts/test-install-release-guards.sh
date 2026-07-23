@@ -16,6 +16,7 @@ grep -Fq 'ReadWritePaths=/var/lib/kcml/runtime /var/lib/kcml/podman /var/lib/kcm
 grep -Fq "where key='adminBootstrapUsername'" "$install_script"
 grep -Fq 'admin_username="$(effective_admin_username)"' "$install_script"
 grep -Fq 'export ADMIN_BOOTSTRAP_USERNAME="$admin_username"' "$install_script"
+grep -Fq 'step forensic-admin-credentials' "$install_script"
 if grep -Fq 'resumeJobId' deploy/scripts/smoke-reference-external-api.sh; then
   echo "reference smoke must not use resumeJobId" >&2
   exit 1
