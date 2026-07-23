@@ -31,12 +31,19 @@ run_migrations
 
 psql "$KCML_UPGRADE_DATABASE_URL" --no-psqlrc --set ON_ERROR_STOP=1 --tuples-only --no-align <<SQL | grep -Fx 'baseline-clean-install-ok'
 select case when
-  (select count(*) from schema_migration) = 1
+  (select count(*) from schema_migration) = 2
   and exists (
     select 1
       from schema_migration
      where version='001_pre_production_baseline.sql'
        and sequence_number=1
+       and checksum_sha256 ~ '^[0-9a-f]{64}$'
+  )
+  and exists (
+    select 1
+      from schema_migration
+     where version='002_secret_broker_process_role.sql'
+       and sequence_number=2
        and checksum_sha256 ~ '^[0-9a-f]{64}$'
   )
   and (select count(*) from release_epoch) = 1
@@ -105,12 +112,19 @@ run_migrations
 
 psql "$KCML_UPGRADE_DATABASE_URL" --no-psqlrc --set ON_ERROR_STOP=1 --tuples-only --no-align <<SQL | grep -Fx 'baseline-compaction-ok'
 select case when
-  (select count(*) from schema_migration) = 1
+  (select count(*) from schema_migration) = 2
   and exists (
     select 1
       from schema_migration
      where version='001_pre_production_baseline.sql'
        and sequence_number=1
+       and checksum_sha256 ~ '^[0-9a-f]{64}$'
+  )
+  and exists (
+    select 1
+      from schema_migration
+     where version='002_secret_broker_process_role.sql'
+       and sequence_number=2
        and checksum_sha256 ~ '^[0-9a-f]{64}$'
   )
   and (select count(*) from release_epoch) = 1
