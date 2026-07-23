@@ -203,6 +203,14 @@ ln -sfn /etc/nginx/sites-available/kcml.conf /etc/nginx/sites-enabled/kcml.conf
 install -m 0755 "$source_dir/deploy/scripts/kcml-deploy-wrapper.sh" /usr/local/sbin/kcml-deploy-wrapper
 install -m 0755 "$source_dir/deploy/scripts/kcml-repository-component-deploy-wrapper.sh" /usr/local/sbin/kcml-repository-component-deploy-wrapper
 install -m 0755 "$source_dir/deploy/scripts/kcml-handler-preload-wrapper.sh" /usr/local/sbin/kcml-handler-preload-wrapper
+cat >/etc/sudoers.d/kcml-deploy-wrappers <<'EOF'
+Defaults:kcml-deploy !requiretty
+kcml-deploy ALL=(root) NOPASSWD: /usr/local/sbin/kcml-deploy-wrapper
+kcml-deploy ALL=(root) NOPASSWD: /usr/local/sbin/kcml-repository-component-deploy-wrapper
+kcml-deploy ALL=(root) NOPASSWD: /usr/local/sbin/kcml-handler-preload-wrapper
+EOF
+chmod 0440 /etc/sudoers.d/kcml-deploy-wrappers
+visudo -cf /etc/sudoers.d/kcml-deploy-wrappers
 install -d -m 0755 /usr/local/libexec
 install -m 0755 "$source_dir/deploy/scripts/install-repository-component.sh" /usr/local/libexec/kcml-install-repository-component
 for unit in kcml.service kcml-onboarding-worker.service kcml-component-control-worker.service kcml-component-e2e-worker.service kcml-monitor.service kcml-egress-proxy.service kcml-alert-primary.service kcml-alert-backup.service; do

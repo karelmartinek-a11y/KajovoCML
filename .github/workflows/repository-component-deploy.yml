@@ -243,7 +243,7 @@ jobs:
           RECEIPT_PATH: ${{ runner.temp }}/repository-component-receipt.json
         run: |
           set -euo pipefail
-          sudo /usr/local/sbin/kcml-repository-component-deploy-wrapper \
+          sudo -n /usr/local/sbin/kcml-repository-component-deploy-wrapper \
             "${{ github.repository }}" \
             "${{ needs.discover.outputs.repository_key }}" \
             "${{ needs.discover.outputs.source_sha }}" \
