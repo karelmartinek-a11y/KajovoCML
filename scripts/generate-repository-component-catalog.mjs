@@ -31,6 +31,44 @@ const contentSchema = {
     }
   ]
 };
+const runtimeSecretGrantSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["name"],
+  properties: {
+    name: { type: "string", pattern: "^[A-Z][A-Z0-9_]{2,127}$" },
+    required: { type: "boolean", default: true }
+  }
+};
+const runtimeEgressGrantSchema = {
+  oneOf: [
+    {
+      type: "object",
+      additionalProperties: false,
+      required: ["type", "targetHost", "port", "pathPrefix", "scope"],
+      properties: {
+        type: { const: "HTTPS_FETCH" },
+        targetHost: { type: "string", minLength: 3, maxLength: 255, pattern: "^[A-Za-z0-9.-]+$" },
+        port: { type: "integer", minimum: 1, maximum: 65535 },
+        pathPrefix: { type: "string", pattern: "^/" },
+        scope: { type: "string", minLength: 2, maxLength: 160 }
+      }
+    },
+    {
+      type: "object",
+      additionalProperties: false,
+      required: ["type", "targetHost", "port", "servername", "scope", "protocol"],
+      properties: {
+        type: { const: "TCP_TLS" },
+        targetHost: { type: "string", minLength: 3, maxLength: 255, pattern: "^[A-Za-z0-9.-]+$" },
+        port: { type: "integer", minimum: 1, maximum: 65535 },
+        servername: { type: "string", minLength: 3, maxLength: 255, pattern: "^[A-Za-z0-9.-]+$" },
+        scope: { type: "string", minLength: 2, maxLength: 160 },
+        protocol: { const: "TCP_TLS" }
+      }
+    }
+  ]
+};
 
 function canonical(value) {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
@@ -126,9 +164,35 @@ function sourceManifestSchema() {
       runtime: {
         type: "object",
         additionalProperties: false,
-        required: ["transport", "resources"],
+        required: ["transport", "executionMode", "resources", "lifecycle", "readinessMode", "persistentState", "secretGrants", "egressGrants"],
         properties: {
           transport: { const: "UDS" },
+          executionMode: { enum: ["REQUEST_RESPONSE", "LONG_RUNNING"] },
+          lifecycle: {
+            type: "object",
+            additionalProperties: false,
+            required: ["prepareRequired", "gracefulShutdownSeconds", "singleActiveWorker"],
+            properties: {
+              prepareRequired: { type: "boolean" },
+              gracefulShutdownSeconds: { type: "integer", minimum: 1, maximum: 600 },
+              singleActiveWorker: { type: "boolean" }
+            }
+          },
+          readinessMode: { const: "DEPENDENCY_AWARE" },
+          persistentState: {
+            type: "object",
+            additionalProperties: false,
+            required: ["required", "mountPath", "survivesRestart", "survivesUpgrade", "survivesRollback"],
+            properties: {
+              required: { type: "boolean" },
+              mountPath: { type: "string", pattern: "^/" },
+              survivesRestart: { const: true },
+              survivesUpgrade: { const: true },
+              survivesRollback: { const: true }
+            }
+          },
+          secretGrants: { type: "array", items: runtimeSecretGrantSchema },
+          egressGrants: { type: "array", items: runtimeEgressGrantSchema },
           resources: {
             type: "object",
             required: ["cpuMillis", "memoryMiB", "maxConcurrency"],
@@ -280,12 +344,7 @@ function sourceManifestSchema() {
       },
       outboundPolicies: {
         type: "array",
-        items: {
-          type: "object",
-          required: ["target", "pathPrefix", "scope"],
-          additionalProperties: false,
-          properties: { target: { type: "string", minLength: 2 }, pathPrefix: { type: "string", pattern: "^/" }, scope: { type: "string", minLength: 2 } }
-        }
+        items: runtimeEgressGrantSchema
       },
       monitoring: {
         type: "object",
@@ -414,11 +473,11 @@ function repositoryCatalog() {
       exactDependencyVersions: true,
       requiredScripts: ["lint", "typecheck", "test", "build"],
       forbiddenLifecycleScripts: ["preinstall", "install", "postinstall", "prepare"],
-      allowedRuntimeDependencies: ["@kcml/handler-sdk", "zod"],
+      allowedRuntimeDependencies: ["@kcml/handler-sdk", "html-to-text", "imapflow", "mailparser", "zod"],
       allowedDevelopmentDependencies: ["@types/node", "eslint", "typescript", "vitest"]
     },
     sourceContract: {
-      export: "async function invoke(input, context)",
+      export: "async function invoke(input, context); LONG_RUNNING components must also export async function start(context) and async function stop(context).",
       network: "All outbound traffic must use the KCML egress capability.",
       secrets: "All secrets require an explicit KCML grant and must never be committed.",
       database: "Direct database access is forbidden unless represented by a separately authorized KCML capability.",
@@ -437,7 +496,7 @@ function repositoryCatalog() {
       deployment: {
         workflow: ".github/workflows/repository-component-deploy.yml",
         receiptSchema: "apps/server/src/contracts/repository-component-deploy-receipt-1.0.schema.json",
-        runtimeVerification: ["immutable digest", "health endpoint", "runtime identity", "stable live runtime location", "previous runtime preservation"]
+        runtimeVerification: ["immutable digest", "health endpoint", "readiness endpoint", "state endpoint", "runtime identity", "stable live runtime location", "persistent data root", "previous runtime preservation"]
       },
       registration: {
         authorization: "short-lived integration token",

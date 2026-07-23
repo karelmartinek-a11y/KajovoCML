@@ -3,6 +3,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  REPOSITORY_COMPONENT_CATALOG_PATH,
+  REPOSITORY_COMPONENT_SOURCE_MANIFEST_SCHEMA_PATH
+} from "./repository-component-contract.mjs";
 import { validateRepositoryComponents } from "./validate-repository-components.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -20,8 +24,8 @@ function writeText(file, value, mode = 0o644) {
 
 function copySupportFiles(targetRoot) {
   for (const relative of [
-    "docs/onboarding-catalogs/repository-component-1.1.json",
-    "apps/server/src/contracts/repository-component-source-manifest-1.1.schema.json",
+    REPOSITORY_COMPONENT_CATALOG_PATH,
+    REPOSITORY_COMPONENT_SOURCE_MANIFEST_SCHEMA_PATH,
     "apps/server/src/contracts/component-manifest-2026.07.22-compliance.1.schema.json"
   ]) {
     const target = path.join(targetRoot, relative);
@@ -64,7 +68,16 @@ function baseSourceManifest() {
         finalizeWithReceipt: "apps/server/src/contracts/repository-component-deploy-receipt-1.0.schema.json"
       }
     },
-    runtime: { transport: "UDS", resources: { cpuMillis: 200, memoryMiB: 128, maxConcurrency: 8 } },
+    runtime: {
+      transport: "UDS",
+      executionMode: "LONG_RUNNING",
+      lifecycle: { prepareRequired: true, gracefulShutdownSeconds: 30, singleActiveWorker: true },
+      readinessMode: "DEPENDENCY_AWARE",
+      persistentState: { required: true, mountPath: "/var/lib/kcml-data", survivesRestart: true, survivesUpgrade: true, survivesRollback: true },
+      secretGrants: [{ name: "MAIL_RECEPCE_PASS" }, { name: "API_KEY_VECTOR" }],
+      egressGrants: [{ type: "TCP_TLS", targetHost: "imap.example.com", port: 993, servername: "imap.example.com", scope: "mail.sync", protocol: "TCP_TLS" }],
+      resources: { cpuMillis: 200, memoryMiB: 128, maxConcurrency: 8 }
+    },
     capabilities: ["mcp.tools.call"],
     tools: [{
       name: "inventory.lookup",
@@ -102,7 +115,7 @@ function baseSourceManifest() {
       content: { mediaType: "text/markdown", base64: "IyBSdW5ib29r" }
     }],
     secretPolicy: { authorizationAuthority: "KCML", allSecretsRequireGrant: true, auditLevel: "FULL" },
-    outboundPolicies: [],
+    outboundPolicies: [{ type: "TCP_TLS", targetHost: "imap.example.com", port: 993, servername: "imap.example.com", scope: "mail.sync", protocol: "TCP_TLS" }],
     monitoring: { probes: [{ kind: "runtime", intervalSeconds: 60 }], staleAfterSeconds: 180, disableAfterSeconds: 600 },
     auditPolicy: { technicalAudit: "PLATFORM", payloadProtection: "ENCRYPTED", retentionDays: 365 }
   };
@@ -119,8 +132,14 @@ function baseFinalManifest() {
     },
     runtime: {
       transport: "UDS",
+      executionMode: "LONG_RUNNING",
       runtimeDigest: `sha256:${"b".repeat(64)}`,
       socketPath: "/var/lib/kcml/repository-components/alpha-service/live/worker.sock",
+      lifecycle: { prepareRequired: true, gracefulShutdownSeconds: 30, singleActiveWorker: true },
+      readinessMode: "DEPENDENCY_AWARE",
+      persistentState: { required: true, mountPath: "/var/lib/kcml-data", survivesRestart: true, survivesUpgrade: true, survivesRollback: true },
+      secretGrants: [{ name: "MAIL_RECEPCE_PASS" }, { name: "API_KEY_VECTOR" }],
+      egressGrants: [{ type: "TCP_TLS", targetHost: "imap.example.com", port: 993, servername: "imap.example.com", scope: "mail.sync", protocol: "TCP_TLS" }],
       resources: { cpuMillis: 200, memoryMiB: 128, maxConcurrency: 8 }
     }
   };
@@ -142,7 +161,7 @@ function createValidComponent(targetRoot, key, manifest = baseSourceManifest()) 
   });
   writeText(path.join(dir, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
   writeText(path.join(dir, "tsconfig.json"), JSON.stringify({ compilerOptions: { target: "ES2022", module: "NodeNext" } }));
-  writeText(path.join(dir, "src/index.ts"), "export async function invoke(input, context) { return { ok: true, input, context }; }\n");
+  writeText(path.join(dir, "src/index.ts"), "export async function start(context) { await context.runtime.reportReady({ ready: true, status: \"PREPARED\", dependencySummary: { phase: \"start\" } }); }\nexport async function stop() { return undefined; }\nexport async function invoke(input, context) { return { ok: true, input, context }; }\n");
   writeText(path.join(dir, "src/invoke.test.ts"), "import { describe, it, expect } from \"vitest\";\ndescribe(\"invoke\", () => it(\"works\", () => expect(true).toBe(true)));\n");
   writeText(path.join(dir, "evidence/architecture.md"), "# Architecture\n");
   writeText(path.join(dir, "evidence/threat-model.md"), "# Threat model\n");
@@ -161,6 +180,16 @@ copySupportFiles(tempRoot);
   copySupportFiles(scenario);
   createValidComponent(scenario, "alpha-service");
   assert.deepEqual(validateRepositoryComponents({ rootDir: scenario }), []);
+}
+
+{
+  const scenario = path.join(tempRoot, "missing-long-running-hooks");
+  copySupportFiles(scenario);
+  const dir = createValidComponent(scenario, "alpha-service");
+  writeText(path.join(dir, "src/index.ts"), "export async function invoke(input, context) { return { ok: true, input, context }; }\n");
+  const failures = validateRepositoryComponents({ rootDir: scenario });
+  expectFailure("missing-long-running-hooks", failures, "LONG_RUNNING component missing export start(context)");
+  expectFailure("missing-long-running-hooks", failures, "LONG_RUNNING component missing export stop(context)");
 }
 
 {

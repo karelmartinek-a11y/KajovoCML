@@ -5,6 +5,9 @@ export const MCP_CATALOG_VERSION = KCML_RELEASE.catalogVersion;
 export const MCP_MANIFEST_SCHEMA_VERSION = KCML_RELEASE.manifestSchemaVersion;
 export const MCP_CATALOG_PATH = `docs/onboarding-catalogs/component-${MCP_CATALOG_VERSION}.json`;
 export const MCP_CONNECT_FILE = `component-${MCP_CATALOG_VERSION}.json`;
+export const REPOSITORY_COMPONENT_CATALOG_VERSION = "1.1";
+export const REPOSITORY_COMPONENT_CATALOG_PATH = `docs/onboarding-catalogs/repository-component-${REPOSITORY_COMPONENT_CATALOG_VERSION}.json`;
+export const REPOSITORY_COMPONENT_CATALOG_FILE = `repository-component-${REPOSITORY_COMPONENT_CATALOG_VERSION}.json`;
 
 function canonicalize(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalize);

@@ -1,0 +1,19 @@
+{
+  "catalogVersion": "1.1",
+  "repositoryKey": "mail-vectorizace",
+  "kind": "MCP_COMPONENT",
+  "displayName": "Mail Vectorizace",
+  "businessPurpose": "Prubezne nacita zpravy z recepce@hotelchodovas.cz, uklada jejich metadata do lokalniho stavu a pripravuje je pro vektorove uloziste OpenAI.",
+  "owners": {
+    "service": "KM",
+    "technical": "KM"
+  },
+  "runtime": "nodejs24-typescript",
+  "entrypoint": "src/index.ts",
+  "maintenanceMode": "IN_REPOSITORY",
+  "registration": {
+    "manifest": "manifest.kcml.json",
+    "intake": "/v2/component-onboardings",
+    "identityAssignedBy": "KCML"
+  }
+}

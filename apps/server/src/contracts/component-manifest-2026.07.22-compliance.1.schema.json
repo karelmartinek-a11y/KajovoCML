@@ -159,8 +159,14 @@
       "type": "object",
       "required": [
         "transport",
+        "executionMode",
         "runtimeDigest",
-        "resources"
+        "resources",
+        "lifecycle",
+        "readinessMode",
+        "persistentState",
+        "secretGrants",
+        "egressGrants"
       ],
       "additionalProperties": false,
       "properties": {
@@ -168,6 +174,12 @@
           "enum": [
             "UDS",
             "HTTPS"
+          ]
+        },
+        "executionMode": {
+          "enum": [
+            "REQUEST_RESPONSE",
+            "LONG_RUNNING"
           ]
         },
         "runtimeDigest": {
@@ -187,6 +199,164 @@
         },
         "container": {
           "type": "object"
+        },
+        "lifecycle": {
+          "type": "object",
+          "required": [
+            "prepareRequired",
+            "gracefulShutdownSeconds",
+            "singleActiveWorker"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "prepareRequired": {
+              "type": "boolean"
+            },
+            "gracefulShutdownSeconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 600
+            },
+            "singleActiveWorker": {
+              "type": "boolean"
+            }
+          }
+        },
+        "readinessMode": {
+          "const": "DEPENDENCY_AWARE"
+        },
+        "persistentState": {
+          "type": "object",
+          "required": [
+            "required",
+            "mountPath",
+            "survivesRestart",
+            "survivesUpgrade",
+            "survivesRollback"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "required": {
+              "type": "boolean"
+            },
+            "mountPath": {
+              "type": "string",
+              "pattern": "^/"
+            },
+            "survivesRestart": {
+              "const": true
+            },
+            "survivesUpgrade": {
+              "const": true
+            },
+            "survivesRollback": {
+              "const": true
+            }
+          }
+        },
+        "secretGrants": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "name"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "^[A-Z][A-Z0-9_]{2,127}$"
+              },
+              "required": {
+                "type": "boolean"
+              }
+            }
+          }
+        },
+        "egressGrants": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "type": "object",
+                "required": [
+                  "type",
+                  "targetHost",
+                  "port",
+                  "pathPrefix",
+                  "scope"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "type": {
+                    "const": "HTTPS_FETCH"
+                  },
+                  "targetHost": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 255,
+                    "pattern": "^[A-Za-z0-9.-]+$"
+                  },
+                  "port": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 65535
+                  },
+                  "pathPrefix": {
+                    "type": "string",
+                    "pattern": "^/"
+                  },
+                  "scope": {
+                    "type": "string",
+                    "minLength": 2,
+                    "maxLength": 160
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "required": [
+                  "type",
+                  "targetHost",
+                  "port",
+                  "servername",
+                  "scope",
+                  "protocol"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "type": {
+                    "const": "TCP_TLS"
+                  },
+                  "targetHost": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 255,
+                    "pattern": "^[A-Za-z0-9.-]+$"
+                  },
+                  "port": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 65535
+                  },
+                  "servername": {
+                    "type": "string",
+                    "minLength": 3,
+                    "maxLength": 255,
+                    "pattern": "^[A-Za-z0-9.-]+$"
+                  },
+                  "scope": {
+                    "type": "string",
+                    "minLength": 2,
+                    "maxLength": 160
+                  },
+                  "protocol": {
+                    "const": "TCP_TLS"
+                  }
+                }
+              }
+            ]
+          }
         },
         "resources": {
           "type": "object",
@@ -760,27 +930,86 @@
     "outboundPolicies": {
       "type": "array",
       "items": {
-        "type": "object",
-        "required": [
-          "target",
-          "pathPrefix",
-          "scope"
-        ],
-        "additionalProperties": false,
-        "properties": {
-          "target": {
-            "type": "string",
-            "minLength": 2
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "targetHost",
+              "port",
+              "pathPrefix",
+              "scope"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "type": {
+                "const": "HTTPS_FETCH"
+              },
+              "targetHost": {
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 255,
+                "pattern": "^[A-Za-z0-9.-]+$"
+              },
+              "port": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 65535
+              },
+              "pathPrefix": {
+                "type": "string",
+                "pattern": "^/"
+              },
+              "scope": {
+                "type": "string",
+                "minLength": 2,
+                "maxLength": 160
+              }
+            }
           },
-          "pathPrefix": {
-            "type": "string",
-            "pattern": "^/"
-          },
-          "scope": {
-            "type": "string",
-            "minLength": 2
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "targetHost",
+              "port",
+              "servername",
+              "scope",
+              "protocol"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "type": {
+                "const": "TCP_TLS"
+              },
+              "targetHost": {
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 255,
+                "pattern": "^[A-Za-z0-9.-]+$"
+              },
+              "port": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 65535
+              },
+              "servername": {
+                "type": "string",
+                "minLength": 3,
+                "maxLength": 255,
+                "pattern": "^[A-Za-z0-9.-]+$"
+              },
+              "scope": {
+                "type": "string",
+                "minLength": 2,
+                "maxLength": 160
+              },
+              "protocol": {
+                "const": "TCP_TLS"
+              }
+            }
           }
-        }
+        ]
       }
     },
     "monitoring": {

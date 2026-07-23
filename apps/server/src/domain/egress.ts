@@ -11,6 +11,7 @@ export type ValidatedEgressCapability = {
   serverId: string | null;
   managedServiceId: string | null;
   allowlist: string[];
+  tcpTlsAllowlist: Array<{ targetHost: string; port: number; servername: string; protocol: "TCP_TLS" }>;
   purpose: string;
   correlationId: string | null;
 };
@@ -43,6 +44,7 @@ export async function revokeEgressCapabilities(db: Queryable, jobId: string): Pr
 
 export function createEphemeralEgressCapability(config: EgressClientConfig, params: {
   allowlist: string[];
+  tcpTlsAllowlist?: Array<{ targetHost: string; port: number; servername: string; protocol: "TCP_TLS" }>;
   managedServiceId?: string | null;
   correlationId?: string | null;
   purpose: string;
@@ -51,6 +53,7 @@ export function createEphemeralEgressCapability(config: EgressClientConfig, para
   const payload = Buffer.from(JSON.stringify({
     v: 1,
     allowlist: params.allowlist,
+    tcpTlsAllowlist: params.tcpTlsAllowlist ?? [],
     managedServiceId: params.managedServiceId ?? null,
     correlationId: params.correlationId ?? null,
     purpose: params.purpose,
@@ -75,6 +78,7 @@ function validateEphemeralEgressCapability(config: EgressClientConfig, token: st
   const parsed = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as {
     v?: number;
     allowlist?: unknown;
+    tcpTlsAllowlist?: unknown;
     managedServiceId?: unknown;
     correlationId?: unknown;
     purpose?: unknown;
@@ -88,6 +92,19 @@ function validateEphemeralEgressCapability(config: EgressClientConfig, token: st
     serverId: null,
     managedServiceId: typeof parsed.managedServiceId === "string" ? parsed.managedServiceId : null,
     allowlist: parsed.allowlist.filter((entry): entry is string => typeof entry === "string"),
+    tcpTlsAllowlist: Array.isArray(parsed.tcpTlsAllowlist)
+      ? parsed.tcpTlsAllowlist.flatMap((entry) => {
+          if (!entry || typeof entry !== "object") return [];
+          const record = entry as Record<string, unknown>;
+          const targetHost = typeof record.targetHost === "string" ? record.targetHost : "";
+          const servername = typeof record.servername === "string" ? record.servername : "";
+          const port = Number(record.port);
+          const protocol = record.protocol === "TCP_TLS" ? "TCP_TLS" : null;
+          return targetHost && servername && Number.isInteger(port) && protocol
+            ? [{ targetHost, servername, port, protocol }]
+            : [];
+        })
+      : [],
     purpose: parsed.purpose,
     correlationId: typeof parsed.correlationId === "string" ? parsed.correlationId : null
   };
@@ -112,6 +129,7 @@ export async function validateEgressCapability(db: Queryable, config: EgressClie
     serverId: result.rows[0].server_id ? String(result.rows[0].server_id) : null,
     managedServiceId: null,
     allowlist: result.rows[0].allowlist as string[],
+    tcpTlsAllowlist: [],
     purpose: "legacy.onboarding",
     correlationId: null
   };

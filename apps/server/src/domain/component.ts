@@ -52,6 +52,12 @@ export const ACTIVATION_GATES = [
   "E2E_ALL_SCENARIOS",
   "SECRET_ALLOWED",
   "SECRET_DENIED",
+  "WORKER_SINGLE_ACTIVE",
+  "PERSISTENT_STORAGE_MOUNT",
+  "SECRET_ALLOWED_RUNTIME",
+  "TCP_TLS_EGRESS_ALLOWED",
+  "DEPENDENCY_READY",
+  "DRAIN_HANDOFF",
   "AUDIT_CONTINUITY",
   "AUDIT_PAYLOAD_INTEGRITY",
   "OPERATION_LEASE_ENFORCEMENT",
@@ -211,6 +217,58 @@ function rejectIncompleteContract(manifest: ComponentManifest): void {
   }
   if (fakeDigest(manifest.artifact.digest) || fakeDigest(manifest.runtime.runtimeDigest)) {
     throw Object.assign(new Error("integrity_digest_invalid"), { statusCode: 400 });
+  }
+  const executionMode = text(manifest.runtime.executionMode);
+  const lifecycle = record(manifest.runtime.lifecycle);
+  const persistentState = record(manifest.runtime.persistentState);
+  const secretGrants = Array.isArray(manifest.runtime.secretGrants) ? manifest.runtime.secretGrants : null;
+  const egressGrants = Array.isArray(manifest.runtime.egressGrants) ? manifest.runtime.egressGrants : null;
+  if (!["REQUEST_RESPONSE", "LONG_RUNNING"].includes(executionMode)) {
+    throw Object.assign(new Error("runtime_execution_mode_invalid"), { statusCode: 400 });
+  }
+  if (!lifecycle || typeof lifecycle.prepareRequired !== "boolean" || !Number.isInteger(lifecycle.gracefulShutdownSeconds) || typeof lifecycle.singleActiveWorker !== "boolean") {
+    throw Object.assign(new Error("runtime_lifecycle_invalid"), { statusCode: 400 });
+  }
+  if (text(manifest.runtime.readinessMode) !== "DEPENDENCY_AWARE") {
+    throw Object.assign(new Error("runtime_readiness_mode_invalid"), { statusCode: 400 });
+  }
+  if (!persistentState
+    || typeof persistentState.required !== "boolean"
+    || !optionalText(persistentState.mountPath)
+    || persistentState.survivesRestart !== true
+    || persistentState.survivesUpgrade !== true
+    || persistentState.survivesRollback !== true) {
+    throw Object.assign(new Error("runtime_persistent_state_invalid"), { statusCode: 400 });
+  }
+  if (!secretGrants) throw Object.assign(new Error("runtime_secret_grants_required"), { statusCode: 400 });
+  if (!egressGrants) throw Object.assign(new Error("runtime_egress_grants_required"), { statusCode: 400 });
+  for (const grant of secretGrants) {
+    const secretGrant = record(grant);
+    if (!secretGrant || !/^[A-Z][A-Z0-9_]{2,127}$/.test(text(secretGrant.name))) {
+      throw Object.assign(new Error("runtime_secret_grant_invalid"), { statusCode: 400 });
+    }
+  }
+  for (const grant of egressGrants) {
+    const egressGrant = record(grant);
+    const type = text(egressGrant?.type);
+    if (type === "HTTPS_FETCH") {
+      if (!optionalText(egressGrant?.targetHost) || !Number.isInteger(egressGrant?.port) || !text(egressGrant?.pathPrefix).startsWith("/") || !optionalText(egressGrant?.scope)) {
+        throw Object.assign(new Error("runtime_egress_grant_invalid"), { statusCode: 400 });
+      }
+    } else if (type === "TCP_TLS") {
+      if (!optionalText(egressGrant?.targetHost) || !Number.isInteger(egressGrant?.port) || !optionalText(egressGrant?.servername)
+        || !optionalText(egressGrant?.scope) || text(egressGrant?.protocol) !== "TCP_TLS") {
+        throw Object.assign(new Error("runtime_egress_grant_invalid"), { statusCode: 400 });
+      }
+    } else {
+      throw Object.assign(new Error("runtime_egress_grant_invalid"), { statusCode: 400 });
+    }
+  }
+  if (executionMode === "LONG_RUNNING") {
+    if (persistentState.required !== true) throw Object.assign(new Error("long_running_persistent_state_required"), { statusCode: 400 });
+    if (lifecycle.prepareRequired !== true || lifecycle.singleActiveWorker !== true) {
+      throw Object.assign(new Error("long_running_lifecycle_invalid"), { statusCode: 400 });
+    }
   }
   rejectPlaceholderSchemas(manifest);
 }

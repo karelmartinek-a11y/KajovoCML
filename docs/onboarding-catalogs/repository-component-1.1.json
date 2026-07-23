@@ -179,6 +179,9 @@
     ],
     "allowedRuntimeDependencies": [
       "@kcml/handler-sdk",
+      "html-to-text",
+      "imapflow",
+      "mailparser",
       "zod"
     ],
     "allowedDevelopmentDependencies": [
@@ -189,7 +192,7 @@
     ]
   },
   "sourceContract": {
-    "export": "async function invoke(input, context)",
+    "export": "async function invoke(input, context); LONG_RUNNING components must also export async function start(context) and async function stop(context).",
     "network": "All outbound traffic must use the KCML egress capability.",
     "secrets": "All secrets require an explicit KCML grant and must never be committed.",
     "database": "Direct database access is forbidden unless represented by a separately authorized KCML capability.",
@@ -225,8 +228,11 @@
       "runtimeVerification": [
         "immutable digest",
         "health endpoint",
+        "readiness endpoint",
+        "state endpoint",
         "runtime identity",
         "stable live runtime location",
+        "persistent data root",
         "previous runtime preservation"
       ]
     },
@@ -263,5 +269,5 @@
     "binary executables",
     "direct production configuration outside KCML GUI"
   ],
-  "canonicalDigest": "sha256:328add45194424db2cb503c520d41899401c771dbf55388c3d214b44f1473435"
+  "canonicalDigest": "sha256:59892006d32d7681a502bfa6eb6ead69aabbae44a42ce648c77bc3c50c13ff59"
 }

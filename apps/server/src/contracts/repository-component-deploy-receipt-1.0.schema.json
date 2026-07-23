@@ -16,11 +16,16 @@
     "deployRunId",
     "deployRunAttempt",
     "workflow",
+    "executionMode",
+    "lifecycleMode",
     "runtimeKind",
     "runtimeLocation",
     "runtimeIdentifier",
+    "dataLocation",
+    "leaseStatus",
     "previousImageDigest",
     "deployedAt",
+    "readiness",
     "health"
   ],
   "properties": {
@@ -38,11 +43,25 @@
     "deployRunId": { "type": "string", "pattern": "^[0-9]+$" },
     "deployRunAttempt": { "type": "string", "pattern": "^[0-9]+$" },
     "workflow": { "const": ".github/workflows/repository-component-deploy.yml" },
+    "executionMode": { "enum": ["REQUEST_RESPONSE", "LONG_RUNNING"] },
+    "lifecycleMode": { "enum": ["PREPARE", "ACTIVE", "DRAINING", "STOPPED"] },
     "runtimeKind": { "enum": ["UDS", "HTTPS"] },
     "runtimeLocation": { "type": "string", "minLength": 1, "maxLength": 2048 },
     "runtimeIdentifier": { "type": "string", "minLength": 1, "maxLength": 255 },
+    "dataLocation": { "type": "string", "pattern": "^/" },
+    "leaseStatus": { "enum": ["NOT_REQUIRED", "SINGLE_ACTIVE_ACQUIRED", "SINGLE_ACTIVE_UNAVAILABLE"] },
     "previousImageDigest": { "type": ["string", "null"], "pattern": "^sha256:[a-f0-9]{64}$" },
     "deployedAt": { "type": "string", "format": "date-time" },
+    "readiness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "checkedAt", "evidenceDigest"],
+      "properties": {
+        "status": { "enum": ["READY", "PREPARED", "DRAINING"] },
+        "checkedAt": { "type": "string", "format": "date-time" },
+        "evidenceDigest": { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+      }
+    },
     "health": {
       "type": "object",
       "additionalProperties": false,

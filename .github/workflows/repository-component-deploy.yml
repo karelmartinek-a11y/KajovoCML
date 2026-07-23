@@ -31,6 +31,9 @@ jobs:
       repository_key: ${{ steps.resolve.outputs.repository_key }}
       source_sha: ${{ steps.resolve.outputs.source_sha }}
       requested_git_ref: ${{ steps.resolve.outputs.requested_git_ref }}
+      execution_mode: ${{ steps.resolve.outputs.execution_mode }}
+      single_active_worker: ${{ steps.resolve.outputs.single_active_worker }}
+      graceful_shutdown_seconds: ${{ steps.resolve.outputs.graceful_shutdown_seconds }}
       should_build: ${{ steps.resolve.outputs.should_build }}
       mode: ${{ steps.resolve.outputs.mode }}
     steps:
@@ -102,6 +105,9 @@ jobs:
             echo "repository_key=$repository_key" >> "$GITHUB_OUTPUT"
             echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
             echo "requested_git_ref=$requested_git_ref" >> "$GITHUB_OUTPUT"
+            echo "execution_mode=" >> "$GITHUB_OUTPUT"
+            echo "single_active_worker=" >> "$GITHUB_OUTPUT"
+            echo "graceful_shutdown_seconds=" >> "$GITHUB_OUTPUT"
             echo "should_build=false" >> "$GITHUB_OUTPUT"
             echo "mode=$mode" >> "$GITHUB_OUTPUT"
             exit 0
@@ -110,9 +116,16 @@ jobs:
             echo "Component deployment requires exactly one repository component in scope." >&2
             exit 1
           fi
+          manifest_path="components/${repository_key}/manifest.kcml.json"
+          execution_mode="$(jq -r '.runtime.executionMode // "REQUEST_RESPONSE"' "$manifest_path")"
+          single_active_worker="$(jq -r '.runtime.lifecycle.singleActiveWorker // false' "$manifest_path")"
+          graceful_shutdown_seconds="$(jq -r '.runtime.lifecycle.gracefulShutdownSeconds // 30' "$manifest_path")"
           echo "repository_key=$repository_key" >> "$GITHUB_OUTPUT"
           echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
           echo "requested_git_ref=$requested_git_ref" >> "$GITHUB_OUTPUT"
+          echo "execution_mode=$execution_mode" >> "$GITHUB_OUTPUT"
+          echo "single_active_worker=$single_active_worker" >> "$GITHUB_OUTPUT"
+          echo "graceful_shutdown_seconds=$graceful_shutdown_seconds" >> "$GITHUB_OUTPUT"
           echo "should_build=$should_build" >> "$GITHUB_OUTPUT"
           echo "mode=$mode" >> "$GITHUB_OUTPUT"
 
@@ -238,6 +251,9 @@ jobs:
             "${{ github.run_id }}" \
             "${{ github.run_attempt }}" \
             "${{ needs.discover.outputs.requested_git_ref }}" \
+            "${{ needs.discover.outputs.execution_mode }}" \
+            "${{ needs.discover.outputs.single_active_worker }}" \
+            "${{ needs.discover.outputs.graceful_shutdown_seconds }}" \
             "$RECEIPT_PATH"
       - uses: actions/upload-artifact@v4
         with:

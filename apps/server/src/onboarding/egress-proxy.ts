@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import http from "node:http";
 import https from "node:https";
 import net from "node:net";
+import tls from "node:tls";
 import path from "node:path";
 import type { EgressProxyConfig } from "../config.js";
 import type { Db } from "../db.js";
@@ -50,6 +51,19 @@ export function isAllowedDestination(url: URL, allowlist: string[]): boolean {
 export function tlsServername(hostname: string): string | undefined {
   const normalized = hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
   return net.isIP(normalized) ? undefined : normalized;
+}
+
+export function isAllowedTcpTlsDestination(
+  target: { hostname: string; port: number; servername: string; protocol: string },
+  allowlist: ReadonlyArray<{ targetHost: string; port: number; servername: string; protocol: "TCP_TLS" }>
+): boolean {
+  if (target.protocol !== "TCP_TLS") return false;
+  const hostname = target.hostname.toLowerCase().replace(/\.$/, "");
+  const servername = target.servername.toLowerCase().replace(/\.$/, "");
+  return allowlist.some((entry) => entry.targetHost.toLowerCase() === hostname
+    && entry.servername.toLowerCase() === servername
+    && entry.port === target.port
+    && entry.protocol === "TCP_TLS");
 }
 
 function canUseLoopbackForTests(config: EgressProxyConfig, hostname: string): boolean {
@@ -113,7 +127,7 @@ function upstream(input: {
 }
 
 export async function buildEgressProxy(db: Db, config: EgressProxyConfig): Promise<http.Server> {
-  return http.createServer((request, reply) => {
+  const server = http.createServer((request, reply) => {
     void (async () => {
       if (request.method !== "POST" || request.url !== "/fetch") {
         reply.writeHead(404).end();
@@ -183,6 +197,47 @@ export async function buildEgressProxy(db: Db, config: EgressProxyConfig): Promi
       reply.end(body);
     });
   });
+  server.on("connect", (request, clientSocket, head) => {
+    void (async () => {
+      if (request.url == null || !request.url.startsWith("/tcp-tls")) {
+        clientSocket.end("HTTP/1.1 404 Not Found\r\n\r\n");
+        return;
+      }
+      const authorization = request.headers.authorization;
+      if (!authorization?.startsWith("Bearer ")) {
+        clientSocket.end("HTTP/1.1 401 Unauthorized\r\n\r\n");
+        return;
+      }
+      const capability = await validateEgressCapability(db, config, authorization.slice("Bearer ".length));
+      const url = new URL(`http://localhost${request.url}`);
+      const hostname = String(url.searchParams.get("host") ?? "");
+      const servername = String(url.searchParams.get("servername") ?? "");
+      const protocol = String(url.searchParams.get("protocol") ?? "");
+      const port = Number(url.searchParams.get("port") ?? "0");
+      if (!hostname || !servername || !Number.isInteger(port) || !isAllowedTcpTlsDestination({ hostname, port, servername, protocol }, capability.tcpTlsAllowlist)) {
+        clientSocket.end("HTTP/1.1 403 Forbidden\r\n\r\n");
+        return;
+      }
+      const addresses = await publicAddresses(config, hostname);
+      const remote = tls.connect({
+        host: addresses[0]!.address,
+        port,
+        servername,
+        rejectUnauthorized: !(config.NODE_ENV === "test" && ["127.0.0.1", "::1"].includes(addresses[0]!.address))
+      });
+      remote.once("secureConnect", () => {
+        clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+        if (head.length) remote.write(head);
+        clientSocket.pipe(remote);
+        remote.pipe(clientSocket);
+      });
+      remote.once("error", () => clientSocket.end("HTTP/1.1 502 Bad Gateway\r\n\r\n"));
+      clientSocket.once("error", () => remote.destroy());
+    })().catch(() => {
+      clientSocket.end("HTTP/1.1 500 Internal Server Error\r\n\r\n");
+    });
+  });
+  return server;
 }
 
 export async function listenEgressProxy(server: http.Server, socketPath: string): Promise<void> {

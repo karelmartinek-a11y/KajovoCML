@@ -3,12 +3,16 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { Ajv2020 } from "ajv/dist/2020.js";
+import {
+  REPOSITORY_COMPONENT_CATALOG_PATH,
+  REPOSITORY_COMPONENT_CATALOG_VERSION,
+  REPOSITORY_COMPONENT_SOURCE_MANIFEST_SCHEMA_PATH
+} from "./repository-component-contract.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const repositoryCatalogVersion = "1.1";
 const componentCatalogVersion = "2026.07.22-compliance.1";
-const repositoryCatalogPath = path.join(root, `docs/onboarding-catalogs/repository-component-${repositoryCatalogVersion}.json`);
-const sourceManifestSchemaPath = path.join(root, `apps/server/src/contracts/repository-component-source-manifest-${repositoryCatalogVersion}.schema.json`);
+const repositoryCatalogPath = path.join(root, REPOSITORY_COMPONENT_CATALOG_PATH);
+const sourceManifestSchemaPath = path.join(root, REPOSITORY_COMPONENT_SOURCE_MANIFEST_SCHEMA_PATH);
 const finalManifestSchemaPath = path.join(root, `apps/server/src/contracts/component-manifest-${componentCatalogVersion}.schema.json`);
 
 const exactVersion = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?$/;
@@ -113,6 +117,15 @@ function importSpecifiers(text) {
   return specifiers;
 }
 
+function longRunningRuntime(manifest) {
+  return manifest?.runtime?.executionMode === "LONG_RUNNING";
+}
+
+function hasNamedExport(sourceText, exportName) {
+  return new RegExp(`export\\s+async\\s+function\\s+${exportName}\\s*\\(`).test(sourceText)
+    || new RegExp(`export\\s+function\\s+${exportName}\\s*\\(`).test(sourceText);
+}
+
 export function validateRepositoryComponents({ rootDir = root, repositoryKey = null } = {}) {
   const { catalog, componentsRoot, descriptorValidate, sourceManifestValidate, finalManifestValidate } = loadContracts(rootDir);
   const failures = [];
@@ -157,6 +170,12 @@ export function validateRepositoryComponents({ rootDir = root, repositoryKey = n
       } else if (!finalManifestValidate(manifest)) {
         failures.push(`${key}: final manifest schema failed ${JSON.stringify(finalManifestValidate.errors)}`);
       }
+      if (longRunningRuntime(manifest)) {
+        const indexPath = path.join(dir, "src/index.ts");
+        const indexText = fs.existsSync(indexPath) ? fs.readFileSync(indexPath, "utf8") : "";
+        if (!hasNamedExport(indexText, "start")) failures.push(`${key}: LONG_RUNNING component missing export start(context)`);
+        if (!hasNamedExport(indexText, "stop")) failures.push(`${key}: LONG_RUNNING component missing export stop(context)`);
+      }
     }
 
     let pkg = null;
@@ -192,6 +211,7 @@ export function validateRepositoryComponents({ rootDir = root, repositoryKey = n
       for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
         const absolute = path.join(current, entry.name);
         const relative = relativeFrom(dir, absolute);
+        if (entry.name.startsWith("._") || entry.name === ".DS_Store") continue;
         if (entry.isSymbolicLink()) {
           failures.push(`${key}: symlink forbidden ${relative}`);
           continue;

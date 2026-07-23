@@ -312,6 +312,9 @@ export type IntegrationSecret = IntegrationToken & {
     recommendedIntakeUrl: string;
     nativeComponentIntakeUrl: string;
     componentCatalogUrl: string;
+    repositoryComponentCatalogVersion: string;
+    repositoryComponentCatalogPath: string;
+    repositoryComponentCatalogFileName: string;
   };
 };
 export type OnboardingGate = { gate_name: string; stage: string; status: string; evidence: Record<string, unknown>; correlation_id: string; started_at: string | null; completed_at: string | null };

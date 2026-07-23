@@ -28,6 +28,9 @@ import {
   MCP_CATALOG_PATH,
   MCP_CATALOG_VERSION,
   MCP_CONNECT_FILE,
+  REPOSITORY_COMPONENT_CATALOG_FILE,
+  REPOSITORY_COMPONENT_CATALOG_PATH,
+  REPOSITORY_COMPONENT_CATALOG_VERSION,
   verifyMcpOnboardingCatalog
 } from "../domain/onboarding-catalog.js";
 import { KCML_RELEASE } from "../domain/release.js";
@@ -172,6 +175,9 @@ function onboardingHandoffUrls(registerHost: string) {
     nativeComponentIntakeUrl,
     externalApiIntakeUrl,
     componentCatalogUrl: `https://${registerHost}/api/onboarding-catalogs/component/${MCP_CATALOG_VERSION}`,
+    repositoryComponentCatalogVersion: REPOSITORY_COMPONENT_CATALOG_VERSION,
+    repositoryComponentCatalogPath: REPOSITORY_COMPONENT_CATALOG_PATH,
+    repositoryComponentCatalogFileName: REPOSITORY_COMPONENT_CATALOG_FILE,
     externalApiCatalogUrl: `https://${registerHost}/api/onboarding-catalogs/external-api/1.0`
   };
 }

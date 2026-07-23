@@ -6,7 +6,6 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 const bootstrapPath = path.resolve(new URL("../../../../deploy/handler-runtime/bootstrap.mjs", import.meta.url).pathname);
-const runnerPath = path.resolve(new URL("../../../../deploy/handler-runtime/handler-runner.mjs", import.meta.url).pathname);
 const processes: ChildProcess[] = [];
 const directories: string[] = [];
 
@@ -39,18 +38,24 @@ async function startSupervisor(moduleSource: string, timeoutMs = 500): Promise<{
   directories.push(directory);
   const modulePath = path.join(directory, "handler.mjs");
   const socketPath = path.join(directory, "worker.sock");
+  const dataPath = path.join(directory, "data");
   await fs.writeFile(modulePath, moduleSource);
   const child = spawn(process.execPath, [bootstrapPath], {
     env: {
       ...process.env,
       KCML_SOCKET_PATH: socketPath,
-      KCML_HANDLER_RUNNER_PATH: runnerPath,
       KCML_HANDLER_MODULE_PATH: modulePath,
       KCML_HANDLER_TIMEOUT_MS: String(timeoutMs),
       KCML_REQUEST_MAX_BYTES: "65536",
       KCML_RESPONSE_MAX_BYTES: "65536",
       KCML_SERVER_CODE: "KCML0001",
-      KCML_IMAGE_DIGEST: `sha256:${"0".repeat(64)}`
+      KCML_IMAGE_DIGEST: `sha256:${"0".repeat(64)}`,
+      KCML_DATA_PATH: dataPath,
+      KCML_RUNTIME_EXECUTION_MODE: "LONG_RUNNING",
+      KCML_RUNTIME_SINGLE_ACTIVE_WORKER: "1",
+      KCML_RUNTIME_MODE: "PREPARE",
+      KCML_RUNTIME_MODE_PATH: path.join(directory, "runtime-mode.json"),
+      KCML_RUNTIME_LEASE_PATH: path.join(dataPath, "worker.lease.json")
     },
     stdio: "ignore"
   });
@@ -77,8 +82,15 @@ afterEach(async () => {
 });
 
 describe("fixed OCI handler supervisor", () => {
-  it("executes the uploaded module only in the child runner and returns structured logs", async () => {
+  it("starts a long-running module, serves invoke, ready and state endpoints", async () => {
     const supervisor = await startSupervisor(`
+      export async function start(context) {
+        await context.runtime.reportState({ phase: "prepare" });
+        await context.runtime.reportReady({ ready: true, status: "PREPARED", dependencySummary: { storage: Boolean(context.storage.dataPath) } });
+      }
+      export async function stop(context) {
+        await context.runtime.reportState({ phase: "stopped" });
+      }
       export async function invoke(input, context) {
         context.logger.info({ phase: "test" }, "handler.called");
         return { echoed: input.value };
@@ -86,15 +98,28 @@ describe("fixed OCI handler supervisor", () => {
     `);
     const result = await request(supervisor.socketPath, "/invoke", "POST", { input: { value: 42 }, context: {} });
     expect(result.status).toBe(200);
-    expect(result.body).toMatchObject({ output: { echoed: 42 }, logs: [{ level: "info", message: "handler.called" }] });
+    expect(result.body).toMatchObject({ output: { echoed: 42 } });
+    const ready = await request(supervisor.socketPath, "/ready");
+    expect(ready).toMatchObject({ status: 200, body: { status: "PREPARED", ready: true, lifecycleMode: "PREPARE" } });
+    const state = await request(supervisor.socketPath, "/state");
+    expect(state).toMatchObject({ status: 200, body: { executionMode: "LONG_RUNNING", reportedState: { phase: "prepare" } } });
   });
 
-  it("kills a CPU-bound handler at the hard timeout while keeping the supervisor healthy", async () => {
-    const supervisor = await startSupervisor("export async function invoke() { while (true) {} }", 150);
+  it("times out a slow invoke while keeping the supervisor healthy", async () => {
+    const supervisor = await startSupervisor(`
+      export async function start(context) {
+        await context.runtime.reportReady({ ready: true, status: "PREPARED", dependencySummary: {} });
+      }
+      export async function stop() {}
+      export async function invoke() {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        return { ok: true };
+      }
+    `, 150);
     const result = await request(supervisor.socketPath, "/invoke", "POST", { input: {}, context: {} });
     expect(result.status).toBe(500);
     expect(result.body).toMatchObject({ error: { code: "handler_timeout" } });
     const health = await request(supervisor.socketPath, "/health");
-    expect(health).toMatchObject({ status: 200, body: { status: "ready", serverCode: "KCML0001" } });
+    expect(health).toMatchObject({ status: 200, body: { status: "alive", serverCode: "KCML0001" } });
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isAllowedDestination, isForbiddenAddress, tlsServername } from "./egress-proxy.js";
+import { isAllowedDestination, isAllowedTcpTlsDestination, isForbiddenAddress, tlsServername } from "./egress-proxy.js";
 
 describe("egress SSRF policy", () => {
   it("blocks loopback, private, link-local, metadata and mapped addresses", () => {
@@ -23,5 +23,12 @@ describe("egress SSRF policy", () => {
     expect(tlsServername("api.example.com")).toBe("api.example.com");
     expect(tlsServername("127.0.0.1")).toBeUndefined();
     expect(tlsServername("[::1]")).toBeUndefined();
+  });
+
+  it("allows only exact TCP/TLS host, port and SNI grants", () => {
+    const allowlist = [{ targetHost: "imap.example.com", port: 993, servername: "imap.example.com", protocol: "TCP_TLS" }] as const;
+    expect(isAllowedTcpTlsDestination({ hostname: "imap.example.com", port: 993, servername: "imap.example.com", protocol: "TCP_TLS" }, allowlist)).toBe(true);
+    expect(isAllowedTcpTlsDestination({ hostname: "imap.example.com", port: 993, servername: "imap-alt.example.com", protocol: "TCP_TLS" }, allowlist)).toBe(false);
+    expect(isAllowedTcpTlsDestination({ hostname: "imap.example.com", port: 143, servername: "imap.example.com", protocol: "TCP_TLS" }, allowlist)).toBe(false);
   });
 });

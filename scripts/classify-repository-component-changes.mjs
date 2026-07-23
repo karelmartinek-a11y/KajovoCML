@@ -3,9 +3,10 @@ import path from "node:path";
 import process from "node:process";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { REPOSITORY_COMPONENT_CATALOG_PATH } from "./repository-component-contract.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const catalogPath = path.join(root, "docs/onboarding-catalogs/repository-component-1.1.json");
+const catalogPath = path.join(root, REPOSITORY_COMPONENT_CATALOG_PATH);
 const catalog = JSON.parse(fs.readFileSync(catalogPath, "utf8"));
 const repositoryKeyPattern = new RegExp(catalog.componentDescriptor.schema.properties.repositoryKey.pattern);
 

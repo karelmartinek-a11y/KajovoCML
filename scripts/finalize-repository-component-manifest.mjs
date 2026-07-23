@@ -3,14 +3,17 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { Ajv2020 } from "ajv/dist/2020.js";
+import {
+  REPOSITORY_COMPONENT_CATALOG_PATH,
+  REPOSITORY_COMPONENT_SOURCE_MANIFEST_SCHEMA_PATH
+} from "./repository-component-contract.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const repositoryCatalogVersion = "1.1";
 const componentCatalogVersion = "2026.07.22-compliance.1";
-const sourceManifestSchemaPath = path.join(root, `apps/server/src/contracts/repository-component-source-manifest-${repositoryCatalogVersion}.schema.json`);
+const sourceManifestSchemaPath = path.join(root, REPOSITORY_COMPONENT_SOURCE_MANIFEST_SCHEMA_PATH);
 const componentManifestSchemaPath = path.join(root, `apps/server/src/contracts/component-manifest-${componentCatalogVersion}.schema.json`);
 const receiptSchemaPath = path.join(root, "apps/server/src/contracts/repository-component-deploy-receipt-1.0.schema.json");
-const repositoryCatalogPath = path.join(root, `docs/onboarding-catalogs/repository-component-${repositoryCatalogVersion}.json`);
+const repositoryCatalogPath = path.join(root, REPOSITORY_COMPONENT_CATALOG_PATH);
 
 function parseArgs(argv) {
   const args = { repositoryKey: null, sourceManifest: null, receipt: null, output: null };

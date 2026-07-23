@@ -14,7 +14,8 @@ These rules apply to every path below `components/` and strengthen the repositor
 
 ## Required contract
 
-- Follow the active repository-component catalog, the active source manifest schema and the current companion component catalog without reducing any of those contracts. `repository-component-1.1.json` is only a historical expectation; use a newer active version when present in `main`.
+- Follow the active repository-component catalog, the active source manifest schema and the current companion component catalog without reducing any of those contracts. The current active test source contract is `repository-component-1.1.json`.
+- When the onboarding handoff or programmer API provides an explicit repository-component catalog path or version, treat that value as the authoritative in-repository source contract and verify it matches the active artifact present under `docs/onboarding-catalogs/`.
 - Keep `component.kcml.json`, the source-phase `manifest.kcml.json`, package metadata, tests and evidence synchronized with executable behavior.
 - Use the Node.js, ESM and pnpm versions required by the active catalog, an isolated lockfile and exact dependency versions.
 - Export asynchronous `invoke(input, context)` from `src/index.ts` and provide complete lint, typecheck, test and build scripts.

@@ -18,7 +18,10 @@ describe("onboarding handoff", () => {
       intakeUrls: {
         recommendedIntakeUrl: "https://register.hcasc.cz/v2/component-onboardings",
         nativeComponentIntakeUrl: "https://register.hcasc.cz/v2/component-onboardings",
-        componentCatalogUrl: "https://register.hcasc.cz/api/onboarding-catalogs/component/2026.07.22-compliance.1"
+        componentCatalogUrl: "https://register.hcasc.cz/api/onboarding-catalogs/component/2026.07.22-compliance.1",
+        repositoryComponentCatalogVersion: "1.1",
+        repositoryComponentCatalogPath: "docs/onboarding-catalogs/repository-component-1.1.json",
+        repositoryComponentCatalogFileName: "repository-component-1.1.json"
       },
       catalogVersion: "2026.07.22-compliance.1"
     });

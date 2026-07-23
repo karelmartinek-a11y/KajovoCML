@@ -254,7 +254,10 @@ describe("machine-readable onboarding catalogs", () => {
       registration: { componentKind: "GENERIC", identityAssignedBy: "KCML" },
       intakeUrl: `https://${config.REGISTER_HOST}/v2/component-onboardings`,
       intakeUrls: {
-        recommendedIntakeUrl: `https://${config.REGISTER_HOST}/v2/component-onboardings`
+        recommendedIntakeUrl: `https://${config.REGISTER_HOST}/v2/component-onboardings`,
+        repositoryComponentCatalogVersion: "1.1",
+        repositoryComponentCatalogPath: "docs/onboarding-catalogs/repository-component-1.1.json",
+        repositoryComponentCatalogFileName: "repository-component-1.1.json"
       }
     });
   });

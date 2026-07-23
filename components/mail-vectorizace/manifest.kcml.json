@@ -1,0 +1,324 @@
+{
+  "schemaVersion": "2026.07.22-compliance.1",
+  "registrationRevision": "1.0.0",
+  "displayName": "Mail Vectorizace",
+  "businessPurpose": "MCP prvek, ktery prubezne zpracovava zpravy z recepce@hotelchodovas.cz, uklada checkpointy a metadata lokalne a pripravuje obsah pro vektorove uloziste OpenAI.",
+  "kind": "mail-vectorization",
+  "owners": [
+    {
+      "name": "KM",
+      "team": "KM"
+    }
+  ],
+  "contacts": [
+    {
+      "type": "EMAIL",
+      "value": "recepce@hotelchodovas.cz"
+    }
+  ],
+  "criticality": {
+    "level": "CRITICAL",
+    "reviewIntervalDays": 30
+  },
+  "artifact": {
+    "type": "OCI_IMAGE",
+    "provenance": {
+      "issuer": "https://github.com/karelmartinek-a11y/KajovoCML"
+    },
+    "buildContract": {
+      "workflow": ".github/workflows/repository-component-deploy.yml",
+      "registryPathTemplate": "ghcr.io/<owner>/kajovocml-components/<repository-key>:<commit-sha>",
+      "finalizeWithReceipt": "apps/server/src/contracts/repository-component-deploy-receipt-1.0.schema.json"
+    }
+  },
+  "runtime": {
+    "transport": "UDS",
+    "executionMode": "LONG_RUNNING",
+    "lifecycle": {
+      "prepareRequired": true,
+      "gracefulShutdownSeconds": 45,
+      "singleActiveWorker": true
+    },
+    "readinessMode": "DEPENDENCY_AWARE",
+    "persistentState": {
+      "required": true,
+      "mountPath": "/var/lib/kcml-data",
+      "survivesRestart": true,
+      "survivesUpgrade": true,
+      "survivesRollback": true
+    },
+    "secretGrants": [
+      {
+        "name": "MAIL_RECEPCE_PASS"
+      },
+      {
+        "name": "API_KEY_VECTOR"
+      }
+    ],
+    "egressGrants": [
+      {
+        "type": "TCP_TLS",
+        "targetHost": "imap.hotelchodovas.cz",
+        "port": 993,
+        "servername": "imap.hotelchodovas.cz",
+        "scope": "mail.sync",
+        "protocol": "TCP_TLS"
+      },
+      {
+        "type": "HTTPS_FETCH",
+        "targetHost": "api.openai.com",
+        "port": 443,
+        "pathPrefix": "/v1/",
+        "scope": "vector.store"
+      }
+    ],
+    "resources": {
+      "cpuMillis": 500,
+      "memoryMiB": 512,
+      "maxConcurrency": 4
+    }
+  },
+  "capabilities": [
+    "mcp.initialize",
+    "mcp.notifications.initialized",
+    "mcp.tools.list",
+    "mcp.tools.call",
+    "component.control.ack",
+    "component.state.query",
+    "component.heartbeat",
+    "component.audit.write"
+  ],
+  "tools": [
+    {
+      "name": "mail_vectorizace.listStoredMailMetadata",
+      "title": "List stored mail metadata",
+      "description": "Vraci metadata z naposledy ulozenych emailu pripravena pro dalsi audit nebo indexing.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "messageId",
+                "subject",
+                "receivedAt",
+                "normalizedText"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "messageId": {
+                  "type": "string"
+                },
+                "subject": {
+                  "type": "string"
+                },
+                "receivedAt": {
+                  "type": "string"
+                },
+                "normalizedText": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "scope": "mail.metadata.read",
+      "timeoutMs": 5000,
+      "limits": {
+        "requestMaxBytes": 4096,
+        "responseMaxBytes": 262144
+      }
+    }
+  ],
+  "endpoints": [],
+  "pulses": {
+    "incoming": [],
+    "outgoing": []
+  },
+  "states": {
+    "states": [
+      {
+        "key": "LIFECYCLE",
+        "category": "OPERATIONAL",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "mode": {
+              "type": "string"
+            },
+            "leaseHeld": {
+              "type": "boolean"
+            }
+          }
+        }
+      },
+      {
+        "key": "SYNC_STATUS",
+        "category": "DATA",
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "lastCheckpointUid": {
+              "type": "integer"
+            },
+            "lastStoredMessageId": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    ],
+    "transitions": []
+  },
+  "controlPlane": {
+    "enable": {
+      "path": "/v1/kcml/control/enable",
+      "requestSchema": {
+        "type": "object"
+      },
+      "responseSchema": {
+        "type": "object"
+      }
+    },
+    "disable": {
+      "path": "/v1/kcml/control/disable",
+      "requestSchema": {
+        "type": "object"
+      },
+      "responseSchema": {
+        "type": "object"
+      }
+    },
+    "state": {
+      "path": "/v1/kcml/control/state",
+      "requestSchema": {
+        "type": "object"
+      },
+      "responseSchema": {
+        "type": "object"
+      }
+    },
+    "heartbeat": {
+      "path": "/v1/kcml/control/heartbeat",
+      "requestSchema": {
+        "type": "object"
+      },
+      "responseSchema": {
+        "type": "object"
+      }
+    }
+  },
+  "e2eScenarios": [
+    {
+      "scenarioKey": "list-stored-mail-metadata",
+      "variantKey": "empty-store",
+      "invocation": {
+        "kind": "TOOL",
+        "name": "mail_vectorizace.listStoredMailMetadata"
+      },
+      "input": {
+        "mediaType": "application/json",
+        "json": {
+          "limit": 10
+        }
+      },
+      "expected": {
+        "mediaType": "application/json",
+        "json": {
+          "items": []
+        }
+      },
+      "timeoutMs": 5000,
+      "deterministic": true,
+      "cleanup": {
+        "required": false
+      }
+    }
+  ],
+  "documentationEvidence": [
+    {
+      "key": "architecture",
+      "path": "evidence/architecture.md",
+      "digest": "sha256:16ae3db6b6c3e54cf77c7c57e53ff1ccfd523b6e4ae84791c7444a7c6f8f1d23",
+      "content": {
+        "mediaType": "text/markdown",
+        "base64": "IyBBcmNoaXRlY3R1cmUK"
+      }
+    },
+    {
+      "key": "threat-model",
+      "path": "evidence/threat-model.md",
+      "digest": "sha256:36e7907a0df244fb6f837dba5cb63fb368b8f72f9290e4c83e99f4e5f2d0a4dc",
+      "content": {
+        "mediaType": "text/markdown",
+        "base64": "IyBUaHJlYXQgbW9kZWwK"
+      }
+    },
+    {
+      "key": "runbook",
+      "path": "evidence/runbook.md",
+      "digest": "sha256:85cb2f0ce4b42979d8ca78d4d73f5d7ec0c48d7d846cb0d85a60c66f37297d76",
+      "content": {
+        "mediaType": "text/markdown",
+        "base64": "IyBSdW5ib29rCg=="
+      }
+    }
+  ],
+  "secretPolicy": {
+    "authorizationAuthority": "KCML",
+    "allSecretsRequireGrant": true,
+    "auditLevel": "FULL"
+  },
+  "outboundPolicies": [
+    {
+      "type": "TCP_TLS",
+      "targetHost": "imap.hotelchodovas.cz",
+      "port": 993,
+      "servername": "imap.hotelchodovas.cz",
+      "scope": "mail.sync",
+      "protocol": "TCP_TLS"
+    },
+    {
+      "type": "HTTPS_FETCH",
+      "targetHost": "api.openai.com",
+      "port": 443,
+      "pathPrefix": "/v1/",
+      "scope": "vector.store"
+    }
+  ],
+  "monitoring": {
+    "probes": [
+      {
+        "kind": "runtime",
+        "intervalSeconds": 60
+      }
+    ],
+    "staleAfterSeconds": 180,
+    "disableAfterSeconds": 600
+  },
+  "auditPolicy": {
+    "technicalAudit": "PLATFORM",
+    "payloadProtection": "ENCRYPTED",
+    "retentionDays": 365
+  }
+}

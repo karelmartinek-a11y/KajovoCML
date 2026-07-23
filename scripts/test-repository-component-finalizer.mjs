@@ -30,6 +30,12 @@ const sourceManifest = {
   },
   runtime: {
     transport: "UDS",
+    executionMode: "LONG_RUNNING",
+    lifecycle: { prepareRequired: true, gracefulShutdownSeconds: 30, singleActiveWorker: true },
+    readinessMode: "DEPENDENCY_AWARE",
+    persistentState: { required: true, mountPath: "/var/lib/kcml-data", survivesRestart: true, survivesUpgrade: true, survivesRollback: true },
+    secretGrants: [{ name: "MAIL_RECEPCE_PASS" }, { name: "API_KEY_VECTOR" }],
+    egressGrants: [{ type: "TCP_TLS", targetHost: "imap.example.com", port: 993, servername: "imap.example.com", scope: "mail.sync", protocol: "TCP_TLS" }],
     resources: { cpuMillis: 200, memoryMiB: 128, maxConcurrency: 8 }
   },
   capabilities: ["mcp.tools.call"],
@@ -69,7 +75,7 @@ const sourceManifest = {
     content: { mediaType: "text/markdown", base64: "IyBSdW5ib29r" }
   }],
   secretPolicy: { authorizationAuthority: "KCML", allSecretsRequireGrant: true, auditLevel: "FULL" },
-  outboundPolicies: [],
+  outboundPolicies: [{ type: "TCP_TLS", targetHost: "imap.example.com", port: 993, servername: "imap.example.com", scope: "mail.sync", protocol: "TCP_TLS" }],
   monitoring: { probes: [{ kind: "runtime", intervalSeconds: 60 }], staleAfterSeconds: 180, disableAfterSeconds: 600 },
   auditPolicy: { technicalAudit: "PLATFORM", payloadProtection: "ENCRYPTED", retentionDays: 365 }
 };
@@ -86,11 +92,16 @@ const receipt = {
   deployRunId: "202",
   deployRunAttempt: "1",
   workflow: ".github/workflows/repository-component-deploy.yml",
+  executionMode: "LONG_RUNNING",
+  lifecycleMode: "ACTIVE",
   runtimeKind: "UDS",
   runtimeLocation: "/var/lib/kcml/repository-components/inventory-agent/live/worker.sock",
   runtimeIdentifier: "kcml-repository-component-inventory-agent",
+  dataLocation: "/var/lib/kcml/repository-components/inventory-agent/data",
+  leaseStatus: "SINGLE_ACTIVE_ACQUIRED",
   previousImageDigest: null,
   deployedAt: "2026-07-23T09:00:00Z",
+  readiness: { status: "READY", checkedAt: "2026-07-23T09:00:01Z", evidenceDigest: `sha256:${"d".repeat(64)}` },
   health: { status: "PASS", checkedAt: "2026-07-23T09:00:01Z", evidenceDigest: `sha256:${"c".repeat(64)}` }
 };
 

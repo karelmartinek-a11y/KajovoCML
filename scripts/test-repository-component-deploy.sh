@@ -53,6 +53,12 @@ socket_ok() {
   esac
 }
 
+ready_ok() {
+  local name="$1"
+  local image="$2"
+  socket_ok "$name" "$image"
+}
+
 cmd="${1:?}"
 shift
 case "$cmd" in
@@ -69,6 +75,7 @@ case "$cmd" in
     mkdir -p "$mount_source"
     : > "${mount_source}/worker.sock"
     printf '{"status":"ok","container":"%s"}\n' "$name" > "${mount_source}/health.json"
+    printf '{"status":"READY","ready":true,"leaseHeld":true}\n' > "${mount_source}/ready.json"
     exit 0
     ;;
   rm)
@@ -76,7 +83,7 @@ case "$cmd" in
     file="$(state_file "$name")"
     if [ -f "$file" ]; then
       mount_source="$(jq -r '.mountSource' "$file")"
-      rm -f "${mount_source}/worker.sock" "${mount_source}/health.json"
+      rm -f "${mount_source}/worker.sock" "${mount_source}/health.json" "${mount_source}/ready.json"
       rm -f "$file"
     fi
     exit 0
@@ -113,6 +120,7 @@ case "$cmd" in
   run)
     name=""
     mount_source=""
+    data_source=""
     image_digest=""
     image=""
     while (($#)); do
@@ -122,7 +130,11 @@ case "$cmd" in
           shift 2
           ;;
         --volume)
-          mount_source="${2%%:*}"
+          if [ -z "$mount_source" ]; then
+            mount_source="${2%%:*}"
+          else
+            data_source="${2%%:*}"
+          fi
           shift 2
           ;;
         --label)
@@ -145,13 +157,16 @@ case "$cmd" in
       esac
     done
     mkdir -p "$mount_source"
-    jq -n --arg imageName "$image" --arg imageDigest "$image_digest" --arg mountSource "$mount_source" \
-      '{imageName:$imageName,imageDigest:$imageDigest,mountSource:$mountSource}' > "$(state_file "$name")"
+    jq -n --arg imageName "$image" --arg imageDigest "$image_digest" --arg mountSource "$mount_source" --arg dataSource "$data_source" \
+      '{imageName:$imageName,imageDigest:$imageDigest,mountSource:$mountSource,dataSource:$dataSource}' > "$(state_file "$name")"
     if socket_ok "$name" "$image"; then
       : > "${mount_source}/worker.sock"
       printf '{"status":"ok","container":"%s"}\n' "$name" > "${mount_source}/health.json"
+      if ready_ok "$name" "$image"; then
+        printf '{"status":"READY","ready":true,"leaseHeld":true}\n' > "${mount_source}/ready.json"
+      fi
     else
-      rm -f "${mount_source}/worker.sock" "${mount_source}/health.json"
+      rm -f "${mount_source}/worker.sock" "${mount_source}/health.json" "${mount_source}/ready.json"
     fi
     printf 'fake-container-id\n'
     ;;
@@ -178,8 +193,14 @@ while (($#)); do
   esac
 done
 health_file="$(dirname "$socket")/health.json"
-[ -f "$health_file" ] || exit 22
-cat "$health_file"
+ready_file="$(dirname "$socket")/ready.json"
+if printf '%s\n' "$*" | grep -q '/ready'; then
+  [ -f "$ready_file" ] || exit 22
+  cat "$ready_file"
+else
+  [ -f "$health_file" ] || exit 22
+  cat "$health_file"
+fi
 EOF
 chmod +x "$bin_dir/curl"
 
@@ -201,6 +222,7 @@ seed_previous_runtime() {
   mkdir -p "$release_dir"
   : > "${release_dir}/worker.sock"
   printf '{"status":"ok","container":"kcml-repository-component-alpha-service"}\n' > "${release_dir}/health.json"
+  printf '{"status":"READY","ready":true,"leaseHeld":true}\n' > "${release_dir}/ready.json"
   ln -sfn "$release_dir" "${runtime_root}/live"
   jq -n --arg imageName "$image" --arg imageDigest "$digest" --arg mountSource "${runtime_root}/live" \
     '{imageName:$imageName,imageDigest:$imageDigest,mountSource:$mountSource}' > "${state_dir}/kcml-repository-component-alpha-service.json"
@@ -225,12 +247,13 @@ run_install() {
   CURL_BINARY="$bin_dir/curl" \
   JQ_BINARY="$(command -v jq)" \
   KCML_TEST_SCENARIO="$scenario" \
-  bash "$script" alpha-service "$(printf 'a%.0s' {1..40})" "ghcr.io/example/kajovocml-components/alpha-service:$(printf 'a%.0s' {1..40})" "sha256:$(printf 'b%.0s' {1..64})" 100 200 1 refs/heads/main "$receipt_path"
+  bash "$script" alpha-service "$(printf 'a%.0s' {1..40})" "ghcr.io/example/kajovocml-components/alpha-service:$(printf 'a%.0s' {1..40})" "sha256:$(printf 'b%.0s' {1..64})" 100 200 1 refs/heads/main LONG_RUNNING true 45 "$receipt_path"
 }
 
 setup_case first
 run_install "$tmp_root/first" success
-jq -e '.health.status == "PASS" and .runtimeLocation == "'"$tmp_root"'/first/runtime/alpha-service/live/worker.sock"' "$tmp_root/first/receipt.json" >/dev/null
+jq -e '.health.status == "PASS" and .readiness.status == "READY" and .runtimeLocation == "'"$tmp_root"'/first/runtime/alpha-service/live/worker.sock"' "$tmp_root/first/receipt.json" >/dev/null
+jq -e '.dataLocation == "'"$tmp_root"'/first/runtime/alpha-service/data"' "$tmp_root/first/receipt.json" >/dev/null
 jq -e '.mountSource == "'"$tmp_root"'/first/runtime/alpha-service/live"' "${state_dir}/kcml-repository-component-alpha-service.json" >/dev/null
 
 STATE_DIR="$state_dir" "$bin_dir/podman" restart kcml-repository-component-alpha-service
@@ -241,6 +264,7 @@ seed_previous_runtime "$tmp_root/update/runtime/alpha-service" "sha256:$(printf 
 run_install "$tmp_root/update" success
 jq -e '.previousImageDigest == "sha256:'"$(printf 'c%.0s' {1..64})"'"' "$tmp_root/update/receipt.json" >/dev/null
 test -d "$tmp_root/update/runtime/alpha-service/previous-runtime"
+test -d "$tmp_root/update/runtime/alpha-service/data"
 test "$(jq -r '.imageDigest' "$tmp_root/update/receipt.json")" = "$(jq -r '.imageDigest' "${state_dir}/kcml-repository-component-alpha-service.json")"
 
 setup_case candidate-fail

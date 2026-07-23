@@ -23,11 +23,20 @@ const validReceipt = {
   deployRunId: "67890",
   deployRunAttempt: "2",
   workflow: ".github/workflows/repository-component-deploy.yml",
+  executionMode: "LONG_RUNNING",
+  lifecycleMode: "ACTIVE",
   runtimeKind: "UDS",
   runtimeLocation: "/var/lib/kcml/repository-components/alpha-service/live/worker.sock",
   runtimeIdentifier: "kcml-repository-component-alpha-service",
+  dataLocation: "/var/lib/kcml/repository-components/alpha-service/data",
+  leaseStatus: "SINGLE_ACTIVE_ACQUIRED",
   previousImageDigest: `sha256:${"c".repeat(64)}`,
   deployedAt: "2026-07-23T08:00:00Z",
+  readiness: {
+    status: "READY",
+    checkedAt: "2026-07-23T08:00:01Z",
+    evidenceDigest: `sha256:${"e".repeat(64)}`
+  },
   health: {
     status: "PASS",
     checkedAt: "2026-07-23T08:00:01Z",

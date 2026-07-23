@@ -29,9 +29,33 @@
   },
   "runtime": {
     "transport": "HTTPS",
+    "executionMode": "REQUEST_RESPONSE",
     "runtimeDigest": "sha256:6e0631b89fe50fdbc5d3479192e1f58d7f79b7e9532f09c92764cee2d730092e",
     "upstream": "https://inventory-runtime.example.com",
     "tlsIdentity": "inventory-runtime.example.com",
+    "lifecycle": {
+      "prepareRequired": false,
+      "gracefulShutdownSeconds": 30,
+      "singleActiveWorker": false
+    },
+    "readinessMode": "DEPENDENCY_AWARE",
+    "persistentState": {
+      "required": false,
+      "mountPath": "/var/lib/kcml-data",
+      "survivesRestart": true,
+      "survivesUpgrade": true,
+      "survivesRollback": true
+    },
+    "secretGrants": [],
+    "egressGrants": [
+      {
+        "type": "HTTPS_FETCH",
+        "targetHost": "inventory-runtime.example.com",
+        "port": 443,
+        "pathPrefix": "/",
+        "scope": "inventory.lookup"
+      }
+    ],
     "resources": {
       "cpuMillis": 500,
       "memoryMiB": 256,
@@ -268,7 +292,15 @@
     "allSecretsRequireGrant": true,
     "auditLevel": "FULL"
   },
-  "outboundPolicies": [],
+  "outboundPolicies": [
+    {
+      "type": "HTTPS_FETCH",
+      "targetHost": "inventory-runtime.example.com",
+      "port": 443,
+      "pathPrefix": "/",
+      "scope": "inventory.lookup"
+    }
+  ],
   "monitoring": {
     "probes": [
       {
