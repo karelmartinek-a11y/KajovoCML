@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://kajovocml.invalid/contracts/repository-component-deploy-receipt-1.0.schema.json",
+  "$id": "https://kajovocml.hcasc.cz/contracts/repository-component-deploy-receipt-1.0.schema.json",
   "title": "Repository component deploy receipt",
   "type": "object",
   "additionalProperties": false,

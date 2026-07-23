@@ -43,6 +43,8 @@ jobs:
       - name: Reject invalid component paths
         run: |
           test "$(jq '.invalidPaths | length' /tmp/component-change.json)" = "0"
+      - name: Check active repository component catalog
+        run: node scripts/generate-repository-component-catalog.mjs --check
       - name: Validate repository source contract
         run: node scripts/validate-repository-components.mjs --repository-key "${{ steps.changes.outputs.repository_key }}"
       - name: Install isolated dependencies

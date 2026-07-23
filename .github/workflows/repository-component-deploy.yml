@@ -139,13 +139,28 @@ jobs:
       - name: Install isolated dependencies
         working-directory: components/${{ needs.discover.outputs.repository_key }}
         run: pnpm install --ignore-workspace --frozen-lockfile --ignore-scripts
-      - name: Lint, test and build
+      - name: Lint, typecheck, test and build
         working-directory: components/${{ needs.discover.outputs.repository_key }}
         run: |
           pnpm lint
           pnpm typecheck
           pnpm test
           pnpm build
+      - name: KCML invoke contract
+        run: node scripts/onboarding/contract-test.mjs "components/${{ needs.discover.outputs.repository_key }}"
+      - name: Dependency audit
+        working-directory: components/${{ needs.discover.outputs.repository_key }}
+        run: pnpm --ignore-workspace audit --prod --audit-level high
+      - name: Reproducible build
+        working-directory: components/${{ needs.discover.outputs.repository_key }}
+        run: |
+          rm -rf dist
+          pnpm build
+          find dist -type f -print0 | sort -z | xargs -0 sha256sum > /tmp/repository-component-build-1
+          rm -rf dist
+          pnpm build
+          find dist -type f -print0 | sort -z | xargs -0 sha256sum > /tmp/repository-component-build-2
+          diff -u /tmp/repository-component-build-1 /tmp/repository-component-build-2
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
@@ -185,7 +200,7 @@ jobs:
             --arg source "git+https://github.com/${GITHUB_REPOSITORY}@${{ needs.discover.outputs.source_sha }}" \
             --arg component "${{ needs.discover.outputs.repository_key }}" \
             --arg digest "$IMAGE_DIGEST" \
-            '{builder:{id:$builder},buildType:"https://kajovocml.invalid/repository-component-deploy/v1",invocation:{configSource:{uri:$source,digest:{sha1:$commit},entryPoint:".github/workflows/repository-component-deploy.yml"},parameters:{repository_key:$component},environment:{}},metadata:{buildInvocationID:env.GITHUB_RUN_ID,reproducible:true},materials:[{uri:$source,digest:{sha1:$commit}}],subject:[{name:$component,digest:{sha256:($digest|sub("^sha256:";""))}}]}' \
+            '{builder:{id:$builder},buildType:"https://kajovocml.hcasc.cz/contracts/repository-component-deploy/v1",invocation:{configSource:{uri:$source,digest:{sha1:$commit},entryPoint:".github/workflows/repository-component-deploy.yml"},parameters:{repository_key:$component},environment:{}},metadata:{buildInvocationID:env.GITHUB_RUN_ID,reproducible:true},materials:[{uri:$source,digest:{sha1:$commit}}],subject:[{name:$component,digest:{sha256:($digest|sub("^sha256:";""))}}]}' \
             > /tmp/provenance.json
       - name: Keyless-sign image, SBOM and provenance
         env:

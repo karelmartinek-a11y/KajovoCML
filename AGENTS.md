@@ -54,6 +54,8 @@ For the active one-time reset, perform enough intake to execute safely and deriv
 
 Never invent filenames, modules, commands, architectural layers or completed verification.
 
+Repository components may be maintained either outside KajovoCML or inside this repository. When a component is maintained in KajovoCML, it must live exclusively in `components/<repository-key>/`; do not generalize that storage rule to externally maintained components.
+
 ## Non-negotiable implementation rules
 
 - Solve the root cause. No mocks, placeholders, hidden workarounds, status hacks or reduced-scope substitutes may be presented as completion.
