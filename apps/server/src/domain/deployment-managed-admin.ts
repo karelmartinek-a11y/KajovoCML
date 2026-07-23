@@ -43,6 +43,28 @@ export function requireDeploymentManagedAdminPassword(pass: string | undefined):
   return password;
 }
 
+export function forensicAdminPasswordVariants(value: string): Array<{ label: string; value: string }> {
+  const variants = new Map<string, string>();
+  const add = (label: string, candidate: string): void => {
+    if (candidate !== value && ![...variants.values()].includes(candidate)) variants.set(label, candidate);
+  };
+  add("canonical-line-endings", canonicalAdminPassword(value));
+  add("trim", value.trim());
+  add("trim-start", value.trimStart());
+  add("trim-end", value.trimEnd());
+  add("unicode-nfc", value.normalize("NFC"));
+  add("unicode-nfd", value.normalize("NFD"));
+  add("unicode-nfkc", value.normalize("NFKC"));
+  add("unicode-nfkd", value.normalize("NFKD"));
+  add("remove-leading-bom", value.startsWith("\uFEFF") ? value.slice(1) : value);
+  add("remove-zero-width", value.replace(/[\u200B-\u200D\u2060\uFEFF]/gu, ""));
+  add("nbsp-to-space", value.replace(/\u00A0/gu, " "));
+  add("normalize-internal-line-endings", value.replace(/\r\n?/gu, "\n"));
+  if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) add("remove-double-quotes", value.slice(1, -1));
+  if (value.length >= 2 && value.startsWith("'") && value.endsWith("'")) add("remove-single-quotes", value.slice(1, -1));
+  return [...variants].map(([label, candidate]) => ({ label, value: candidate }));
+}
+
 async function hashAdminPassword(password: string): Promise<string> {
   return argon2.hash(password, {
     type: argon2.argon2id,

@@ -1,7 +1,10 @@
 import argon2 from "argon2";
 import { loadBootstrapConfig } from "../config.js";
 import { createDb } from "../db.js";
-import { requireDeploymentManagedAdminPassword } from "../domain/deployment-managed-admin.js";
+import {
+  forensicAdminPasswordVariants,
+  requireDeploymentManagedAdminPassword
+} from "../domain/deployment-managed-admin.js";
 import { loadConfigFromDb } from "../domain/operational-config.js";
 
 type CredentialRow = {
@@ -25,12 +28,21 @@ async function passwordMatches(hash: string | null, password: string): Promise<b
   }
 }
 
+async function matchingVariantLabels(hash: string | null, rawPassword: string): Promise<string[]> {
+  const labels: string[] = [];
+  for (const variant of forensicAdminPasswordVariants(rawPassword)) {
+    if (await passwordMatches(hash, variant.value)) labels.push(variant.label);
+  }
+  return labels;
+}
+
 const bootstrap = loadBootstrapConfig();
 const db = createDb(bootstrap);
 
 try {
   const config = await loadConfigFromDb(db, bootstrap);
-  const password = requireDeploymentManagedAdminPassword(process.env.PASS);
+  const rawPassword = process.env.PASS;
+  const password = requireDeploymentManagedAdminPassword(rawPassword);
   const current = await db.query<CredentialRow>(
     `select id,password_hash,password_changed_at,mfa_enabled,mfa_secret
        from public.admin_account
@@ -50,6 +62,8 @@ try {
     observations.push({
       source: "current",
       passwordMatchesPass: await passwordMatches(row.password_hash, password),
+      passwordMatchesRawPass: await passwordMatches(row.password_hash, rawPassword ?? ""),
+      matchingRawPassVariants: await matchingVariantLabels(row.password_hash, rawPassword ?? ""),
       passwordChangedAt: row.password_changed_at ? new Date(row.password_changed_at).toISOString() : null,
       mfaEnabled: Boolean(row.mfa_enabled),
       mfaSecretPresent: Boolean(row.mfa_secret)
@@ -67,6 +81,8 @@ try {
       observations.push({
         source: tableName,
         passwordMatchesPass: await passwordMatches(row.password_hash, password),
+        passwordMatchesRawPass: await passwordMatches(row.password_hash, rawPassword ?? ""),
+        matchingRawPassVariants: await matchingVariantLabels(row.password_hash, rawPassword ?? ""),
         passwordChangedAt: row.password_changed_at ? new Date(row.password_changed_at).toISOString() : null,
         mfaEnabled: Boolean(row.mfa_enabled),
         mfaSecretPresent: Boolean(row.mfa_secret)
