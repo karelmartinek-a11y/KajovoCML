@@ -16,8 +16,8 @@ const pass = process.env.PASS;
 
 try {
   const password = requireDeploymentManagedAdminPassword(pass);
-  const accountId = await tx(db, async (client) => {
-    const result = await syncDeploymentManagedAdmin(client, {
+  const syncResult = await tx(db, async (client) => {
+    return syncDeploymentManagedAdmin(client, {
       username: config.ADMIN_BOOTSTRAP_USERNAME,
       password,
       mfaEncryptionKey: config.MFA_ENCRYPTION_KEY_BASE64,
@@ -26,16 +26,14 @@ try {
       eventType: "admin.password.synced",
       correlationId: randomUUID()
     });
-    return result.accountId;
   });
   await tx(db, async (client) => {
-    await verifyDeploymentManagedAdminPassword(client, accountId, password, "deployment", randomUUID());
+    await verifyDeploymentManagedAdminPassword(client, syncResult.accountId, password, "deployment", randomUUID());
   });
-  if (config.ADMIN_TOTP_SECRET) {
-    process.stderr.write("Admin password synchronized from PASS; MFA is configured; sessions and trusted devices are invalidated.\n");
-  } else {
-    process.stderr.write("Admin password synchronized from PASS; sessions and trusted devices are invalidated.\n");
-  }
+  process.stderr.write(
+    `Admin password synchronized from PASS; MFA ${syncResult.mfaEnabled ? "enabled" : "disabled"} ` +
+    `(source=${syncResult.mfaSource}); sessions and trusted devices are invalidated.\n`
+  );
 } finally {
   await db.end();
 }
