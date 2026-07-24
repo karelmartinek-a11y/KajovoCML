@@ -5,9 +5,7 @@ umask 022
 destination="${1:?release destination required}"
 build_id="${BUILD_ID:-$(git rev-parse HEAD)}"
 source_commit="${GITHUB_SHA:-$(git rev-parse HEAD)}"
-application_version="$(node --input-type=module -e "import('./apps/server/dist/domain/release.js').then(({KCML_RELEASE}) => process.stdout.write(KCML_RELEASE.applicationVersion))")"
-manifest_version="$(node --input-type=module -e "import('./apps/server/dist/domain/release.js').then(({KCML_RELEASE}) => process.stdout.write(KCML_RELEASE.manifestSchemaVersion))")"
-onboarding_catalog_version="$(node --input-type=module -e "import('./apps/server/dist/domain/release.js').then(({KCML_RELEASE}) => process.stdout.write(KCML_RELEASE.onboardingCatalogVersion))")"
+catalog_version="$(node --input-type=module -e "import('./apps/server/dist/domain/release.js').then(({KCML_RELEASE}) => process.stdout.write(KCML_RELEASE.catalogVersion))")"
 workspace_restore_required=false
 
 restore_workspace_dependencies() {
@@ -19,7 +17,7 @@ restore_workspace_dependencies() {
 trap restore_workspace_dependencies EXIT
 
 rm -rf "$destination"
-install -d -m 0755 "$destination/apps" "$destination/deploy" "$destination/docs" "$destination/docs/dashboard" "$destination/docs/onboarding-catalogs" "$destination/scripts"
+install -d -m 0755 "$destination/apps" "$destination/deploy" "$destination/docs" "$destination/docs/onboarding-catalogs" "$destination/scripts"
 pnpm_major="$(pnpm --version | cut -d. -f1)"
 workspace_restore_required=true
 if [ "$pnpm_major" -ge 10 ]; then
@@ -36,13 +34,12 @@ install -d -m 0755 "$destination/apps/server/dist/migrations"
 cp apps/server/src/migrations/*.sql "$destination/apps/server/dist/migrations/"
 cp -R deploy/alert-sink deploy/nginx deploy/scripts deploy/systemd "$destination/deploy/"
 cp scripts/verify-repository-component-attestations.mjs "$destination/scripts/"
-cp "docs/onboarding-catalogs/onboarding-${onboarding_catalog_version}.json" "$destination/docs/"
-cp "docs/onboarding-manifest-${manifest_version}.example.json" "$destination/docs/"
-cp "apps/server/src/contracts/component-manifest-${manifest_version}.schema.json" "$destination/docs/"
+cp "docs/onboarding-catalogs/onboarding-1.1.json" "$destination/docs/"
+cp "docs/onboarding-manifest-${catalog_version}.example.json" "$destination/docs/"
+cp "apps/server/src/contracts/component-manifest-${catalog_version}.schema.json" "$destination/docs/"
 cp docs/service-manifest-external-api-v1.0.example.json "$destination/docs/"
 cp docs/onboarding-catalogs/*.json "$destination/docs/onboarding-catalogs/"
 cp -R docs/releases "$destination/docs/releases"
-cp docs/dashboard/evidence-manifest.json docs/dashboard/evidence-manifest.md docs/dashboard/acceptance-status.md docs/dashboard/motion-review.md "$destination/docs/dashboard/"
 find "$destination" -type f -name '._*' -delete
 
 jq -n \

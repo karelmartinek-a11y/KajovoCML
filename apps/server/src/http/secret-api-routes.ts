@@ -12,7 +12,6 @@ import {
   type SecretPrincipal
 } from "../domain/secret-manager.js";
 import { hostOf, sendError } from "./errors.js";
-import { MCP_CATALOG_VERSION } from "../domain/onboarding-catalog.js";
 
 const resolveSchema = z.object({
   name: z.string().trim().min(3).max(128)
@@ -56,7 +55,7 @@ export function registerSecretApiRoutes(app: FastifyInstance, db: Db, config: Ap
       discoveryEndpoint: `https://${secretHost(config)}/.well-known/kcml-secret-api`,
       resolveEndpoint: `https://${secretHost(config)}/v1/secrets/resolve`,
       auth: ["integration_token_bearer", "access_token_bearer"],
-      catalogVersion: MCP_CATALOG_VERSION
+      catalogVersion: "1.1"
     });
   });
 

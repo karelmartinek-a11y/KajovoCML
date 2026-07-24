@@ -1,25 +1,32 @@
 # Stav akceptace revize Dashboard UI
 
-## Implementováno ve zdrojovém repozitáři
+## Implementováno v repozitáři
 
-- stabilní visual node od integračního tokenu po component principal a dopředné delete guardy;
+- stabilní visual node od integration tokenu po component principal;
 - atomický onboarding handoff včetně Secret grantů;
-- persistentní layout komponent i externích systémů;
-- persistentní PULSE edge, serverový compatibility evaluator a oddělený stav autorizace;
-- grant/revoke oprávnění bez disconnectu, samostatný disconnect a reverzibilní suspendace;
+- persistentní layout a PULSE edge;
+- serverový compatibility evaluator;
+- oddělené grant/revoke oprávnění a disconnect;
+- reverzibilní suspendace v autorizaci i Secret resolve;
 - Secret knihovna, drag grant, manuální výběr identity, bulk grant, revoke a MFA reveal;
-- externí boundary nodes, jejich permissions, circuit breaker a statistiky;
-- samostatný autoritativní detail vstupního i výstupního portu včetně revize, digestu, route, scope a JSON Schema;
-- pan/zoom plátna, uložené pozice komponent i externích uzlů a přístupná seznamová alternativa;
-- živý náhled taženého PULSE kabelu a serverově potvrzené compatibility zvýraznění cílové zásuvky;
-- přístupné potvrzovací dialogy pro suspendaci, lifecycle změny, bulk grant, connect/disconnect a výsledkové oznámení bez browserových `alert/confirm/prompt`;
-- persistovaný runtime stream se samostatnými fázemi STARTED, COMPLETED a BLOCKED pro PULSE, procesy a externí volání;
-- databázově vynucená idempotence PULSE lease a operation eventu podle komponenty a correlation ID, včetně bezpečného replay dokončeného výsledku;
-- více souběžných runtime indikátorů, výsledkové stavy, reduced-motion alternativa a zastavení při odpojení;
+- OWNER Dashboard, alarmy, runtime timeline, SSE replay a reduced motion;
 - impact preview a MFA deregistration;
-- samostatný přehled registrovaných prvků a redigovaný runtime log;
-- migrace 004–007, katalog 1.2, cílené unit/UI testy, parity checker a 49 scénářů fotografické evidence.
+- samostatný přehled registrovaných prvků s provozními metrikami a redigovaným per-prvek runtime logem;
+- dopředná migrace, cílené unit/UI testy a parity checker.
 
-## Zbývající ověření mimo ZIP prostředí
+## Částečně pokryto
 
-Plné `pnpm ci`, databázové integrační testy, produkční deploy, OWNER smoke test a fotografická evidence musejí proběhnout v prostředí s Node 24+, dostupným npm registry, disposable PostgreSQL, GitHub Actions a produkční session. Dokud tyto kroky neproběhnou, stav produkční akceptace zůstává `PENDING_DEPLOYMENT`.
+- Dashboard odkazuje na stávající přesné sekce, ale nepřenáší inline úplně všechny historické administrativní formuláře;
+- sekce „Tokeny a identity“ sjednocuje navigaci a lifecycle pomocí dvou přesných záložek, ale neslučuje bezpečnostně rozdílné databázové credential modely;
+- per-prvek debug log je dostupný v samostatném přehledu registrovaných prvků, ale zatím nemá plnou sadu filtrů subsystem/severity, explicitní retenční správu a dlouhodobý live-tail backend mimo persistované runtime události;
+- externí systémy nejsou zatím vykresleny jako boundary nodes;
+- detail portu obsahuje kontraktní metadata a compatibility evidence, nikoli úplný nový schema explorer všech historických kontraktů;
+- migrace automaticky nevytváří portové edges pro každé historické `component_permission`, aby bez jednoznačné vazby nevymýšlela kompatibilitu.
+
+## Externě blokováno
+
+- instalace balíčků v tomto prostředí byla blokována DNS přístupem k npm registry;
+- nebyla dostupná disposable PostgreSQL, GitHub Actions, produkční deploy ani OWNER produkční session;
+- proto nejsou deklarovány zelené úplné CI, databázové testy, release, deploy, post-deploy smoke test ani produkční screenshot evidence.
+
+Tato dodávka je implementační ZIP k dalšímu CI/deploy ověření, nikoli nepravdivé prohlášení úplného produkčního dokončení.

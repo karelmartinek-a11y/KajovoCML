@@ -7,8 +7,7 @@ import {
   loadDashboardDeregistrationPreview,
   loadDashboardTopology,
   previewBulkDashboardSecret,
-  saveDashboardLayout,
-  setDashboardNodeSuspension
+  saveDashboardLayout
 } from "./server-api.js";
 import type { DashboardTopology } from "./types.js";
 
@@ -92,38 +91,23 @@ const topology: DashboardTopology = {
     compatibilityStatus: "EXACT_MATCH", compatibilityEvidence: { checks: [] }, authorizationDesired: false, effectiveAuthorization: "DENIED", authorizationReason: "EDGE_PERMISSION_REVOKED",
     sourceCode: "KCML0001", targetCode: "KCML0002", createdAt: "2026-07-24T11:00:00.000Z", correlationId: "00000000-0000-0000-0000-000000000171"
   }],
-  externalNodes: [{ id: "00000000-0000-0000-0000-000000000181", targetKey: "OPENAI", displayName: "OpenAI API", baseUrl: "https://api.openai.com", status: "ACTIVE", circuitState: "CLOSED", circuitFailureCount: 0, circuitFailureThreshold: 5, allowedPathPrefixes: ["/v1/"], auditRequired: true, position: { x: 1180, y: 120 }, statistics: { period: "24h", callCount: 3, successCount: 3, failureCount: 0, blockedCount: 0, errorRate: 0, lastRunAt: "2026-07-24T11:59:30.000Z", lastFailureAt: null } }],
-  externalEdges: [{ id: "00000000-0000-0000-0000-000000000182", sourceComponentId: "00000000-0000-0000-0000-000000000121", externalTargetId: "00000000-0000-0000-0000-000000000181", route: "/v1/responses", scope: "ai.invoke", audience: "https://api.openai.com", effectiveAuthorization: "GRANTED", authorizationReason: "PERMISSION_ACTIVE", sourceCode: "KCML0001", targetKey: "OPENAI", targetDisplayName: "OpenAI API", targetStatus: "ACTIVE", circuitState: "CLOSED", createdAt: "2026-07-24T11:00:00.000Z" }],
-  activeProcesses: [],
   secrets: [{ id: "00000000-0000-0000-0000-000000000151", stableName: "OPENAI_API_KEY", displayName: "OpenAI", description: "Přístup pro AI", ownerKind: "SYSTEM", ownerId: null, status: "ACTIVE", version: 1, fingerprint: "sha256:secret", expiresAt: null, grantCount: 1, lockVersion: 1, deletedAt: null }],
   alarms: [],
   events: []
 };
 
 beforeEach(() => {
+  const firstSecret = topology.secrets[0];
+  const sourceNode = topology.nodes[1];
   vi.mocked(loadDashboardTopology).mockResolvedValue(structuredClone(topology));
   vi.mocked(saveDashboardLayout).mockResolvedValue({ lock_version: 2 });
-  vi.mocked(previewBulkDashboardSecret).mockResolvedValue({ secretId: topology.secrets[0]!.id, stableName: "OPENAI_API_KEY", secretStatus: "ACTIVE", eligibleCount: 2, alreadyGrantedCount: 1, createCount: 1, eligible: [], skipped: [] });
+  vi.mocked(previewBulkDashboardSecret).mockResolvedValue({ secretId: firstSecret?.id ?? "", stableName: "OPENAI_API_KEY", secretStatus: "ACTIVE", eligibleCount: 2, alreadyGrantedCount: 1, createCount: 1, eligible: [], skipped: [] });
   vi.mocked(loadDashboardDeregistrationPreview).mockResolvedValue({
-    node_id: topology.nodes[1]!.id, component_id: topology.nodes[1]!.componentId!, code: "KCML0001", display_name: "Zdroj",
+    node_id: sourceNode?.id ?? "", component_id: sourceNode?.componentId ?? "", code: "KCML0001", display_name: "Zdroj",
     token_count: 1, direct_secret_grant_count: 1, transferred_secret_grant_count: 0, connection_count: 1,
     requiresMfa: true, typedConfirmation: "KCML0001", requiresCompleteOnboarding: true
   });
   Object.defineProperty(globalThis, "EventSource", { configurable: true, value: EventSourceStub });
-  Object.defineProperty(window, "matchMedia", {
-    configurable: true,
-    writable: true,
-    value: vi.fn().mockImplementation((query: string) => ({
-      matches: false,
-      media: query,
-      onchange: null,
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-      addListener: vi.fn(),
-      removeListener: vi.fn(),
-      dispatchEvent: vi.fn()
-    }))
-  });
 });
 
 afterEach(() => {
@@ -141,18 +125,6 @@ describe("Aktivní Dashboard", () => {
     expect(container.querySelector(".dashboard-edge.denied")).toBeTruthy();
   });
 
-  it("zobrazuje autoritativní detail portu včetně schématu, route a digestu", async () => {
-    render(<DashboardPage releaseInfo={null} onOpenStandardPage={vi.fn()} />);
-    const port = await screen.findByRole("button", { name: /Odchozí konektor.*ORDER/ });
-    fireEvent.click(port);
-    expect(screen.getByRole("heading", { name: /Odchozí konektor: ORDER/ })).toBeTruthy();
-    expect(screen.getByText("/v1/order")).toBeTruthy();
-    expect(screen.getByText("order.write")).toBeTruthy();
-    expect(screen.getByText("sha256:out")).toBeTruthy();
-    expect(screen.getByText("Požadované schéma")).toBeTruthy();
-    expect(screen.getByText(/"type": "object"/)).toBeTruthy();
-  });
-
   it("nabízí oprávnění a rozpojení jako dvě oddělené operace", async () => {
     render(<DashboardPage releaseInfo={null} onOpenStandardPage={vi.fn()} />);
     const edge = await screen.findByRole("button", { name: /KCML0001 do KCML0002/ });
@@ -167,71 +139,20 @@ describe("Aktivní Dashboard", () => {
     EventSourceStub.latest?.emit("ready");
     EventSourceStub.latest?.emit("runtime", JSON.stringify({
       id: "00000000-0000-0000-0000-000000000191",
-      kind: "PULSE",
       componentId: "00000000-0000-0000-0000-000000000121",
       componentCode: "KCML0001",
-      targetComponentId: "00000000-0000-0000-0000-000000000122",
-      externalTargetId: null,
-      externalTargetKey: null,
       pulseType: "ORDER",
       direction: "OUTGOING",
       operationKey: "orders.dispatch",
-      subsystem: "PULSE",
-      severity: "INFO",
-      stage: "STARTED",
-      status: "RUNNING",
       success: true,
-      route: "/v1/order",
-      scope: "order.write",
-      audience: "https://kcml0002.example.test",
-      durationMs: null,
       correlationId: "00000000-0000-0000-0000-000000000192",
       traceId: null,
       occurredAt: "2026-07-24T12:00:01.000Z",
-      receivedAt: "2026-07-24T12:00:01.100Z",
-      evidence: {}
+      receivedAt: "2026-07-24T12:00:01.100Z"
     }));
     await waitFor(() => expect(container.querySelector(".dashboard-edge.runtime-active")).toBeTruthy());
     expect(screen.getByText("orders.dispatch")).toBeTruthy();
     expect(screen.getByText("Probíhá korelovaná operace")).toBeTruthy();
-  });
-
-  it("ukončí běžící impuls finální událostí stejné korelace", async () => {
-    const { container } = render(<DashboardPage releaseInfo={null} onOpenStandardPage={vi.fn()} />);
-    await screen.findByRole("heading", { name: "Aktivní Dashboard" });
-    EventSourceStub.latest?.emit("ready");
-    const base = {
-      kind: "PULSE", componentId: topology.nodes[1]!.componentId, componentCode: "KCML0001", targetComponentId: topology.nodes[2]!.componentId,
-      externalTargetId: null, externalTargetKey: null, pulseType: "ORDER", direction: "OUTGOING", operationKey: "orders.dispatch", subsystem: "PULSE",
-      route: "/v1/order", scope: "order.write", audience: "https://kcml0002.example.test", correlationId: "00000000-0000-0000-0000-000000000199", traceId: null,
-      occurredAt: "2026-07-24T12:00:01.000Z", receivedAt: "2026-07-24T12:00:01.100Z", evidence: {}
-    };
-    EventSourceStub.latest?.emit("runtime", JSON.stringify({ ...base, id: "00000000-0000-0000-0000-000000000191", stage: "STARTED", status: "RUNNING", success: true, severity: "INFO", durationMs: null }));
-    await waitFor(() => expect(container.querySelector(".dashboard-edge.runtime-active")).toBeTruthy());
-    EventSourceStub.latest?.emit("runtime", JSON.stringify({ ...base, id: "00000000-0000-0000-0000-000000000193", stage: "COMPLETED", status: "SUCCEEDED", success: true, severity: "INFO", durationMs: 120 }));
-    await waitFor(() => expect(container.querySelector(".dashboard-edge.runtime-active")).toBeFalsy());
-    expect(container.querySelector(".dashboard-edge.runtime-success")).toBeTruthy();
-  });
-
-  it("zobrazuje externí boundary node a jeho skutečné oprávnění", async () => {
-    render(<DashboardPage releaseInfo={null} onOpenStandardPage={vi.fn()} />);
-    expect(await screen.findByText("OpenAI API")).toBeTruthy();
-    fireEvent.click(screen.getByText("OpenAI API").closest("article")!);
-    expect(screen.getByText("Jistič CLOSED")).toBeTruthy();
-    expect(screen.getByRole("button", { name: /Přesná správa externích stran/ })).toBeTruthy();
-  });
-
-
-  it("používá přístupný dialog pro suspendaci namísto browser promptu", async () => {
-    render(<DashboardPage releaseInfo={null} onOpenStandardPage={vi.fn()} />);
-    const code = await screen.findByText("KCML0001");
-    fireEvent.click(code.closest("article")!);
-    fireEvent.click(screen.getByRole("button", { name: /Suspendovat oprávnění/ }));
-    expect(screen.getByRole("dialog", { name: /Suspendovat oprávnění KCML0001/ })).toBeTruthy();
-    const reason = screen.getByLabelText("Důvod suspendace");
-    fireEvent.change(reason, { target: { value: "Bezpečnostní prověření komponenty." } });
-    fireEvent.click(screen.getByRole("button", { name: "Suspendovat identitu" }));
-    await waitFor(() => expect(vi.mocked(setDashboardNodeSuspension)).toHaveBeenCalledWith(topology.nodes[1]!.id, true, "Bezpečnostní prověření komponenty."));
   });
 
   it("zobrazuje impact preview před destruktivní odregistrací", async () => {

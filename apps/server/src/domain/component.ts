@@ -13,7 +13,7 @@ import { transferIntegrationTokenSecretGrants } from "./onboarding.js";
 import { KCML_RELEASE } from "./release.js";
 import { resolveSecret, type SecretPrincipal } from "./secret-manager.js";
 
-export const COMPONENT_CATALOG_VERSION = KCML_RELEASE.manifestSchemaVersion;
+export const COMPONENT_CATALOG_VERSION = KCML_RELEASE.catalogVersion;
 export const MCP_REQUIRED_CAPABILITIES = [
   "mcp.initialize",
   "mcp.notifications.initialized",
@@ -1660,7 +1660,7 @@ async function validateComponentPulse(
   return {
     sourcePrincipalId: String(sourcePrincipal.rows[0].id),
     processTrace: {
-      ...(record(envelope.process) ?? {}),
+      ...record(envelope.process),
       direction: envelope.direction,
       sourceComponentCode: sourceCode,
       targetComponentCode: targetCode,
@@ -1674,50 +1674,18 @@ export async function beginComponentPulseLease(
   componentId: string,
   envelope: ComponentPulseEnvelope,
   authorization: PulseAuthorizationContext
-): Promise<{ leaseId: string; correlationId: string; replayed: boolean; success: boolean | null }> {
+): Promise<{ leaseId: string; correlationId: string }> {
   return tx(db, async (client) => {
     const validated = await validateComponentPulse(client, componentId, envelope, authorization);
-    const existing = await client.query(
-      `select id,finished_at,success
-         from component_operation_lease
-        where target_component_id=$1 and correlation_id=$2 and operation_kind='PULSE'
-        for update`,
-      [componentId, envelope.correlationId]
-    );
-    if (existing.rowCount) {
-      if (!existing.rows[0].finished_at) throw Object.assign(new Error("component_pulse_in_progress"), { statusCode: 409 });
-      return {
-        leaseId: String(existing.rows[0].id),
-        correlationId: envelope.correlationId,
-        replayed: true,
-        success: Boolean(existing.rows[0].success)
-      };
-    }
     const lease = await client.query(
       `insert into component_operation_lease(source_principal_id,target_component_id,operation_kind,operation_name,input_payload,input_digest,
         process_trace,expires_at,correlation_id,causation_id,trace_id,token_fingerprint,permission_epoch)
        values ($1,$2,'PULSE',$3,$4::jsonb,'sha256:'||encode(sha256(convert_to(($4::jsonb)::text,'utf8')),'hex'),
         $5::jsonb,now()+interval '1 minute',$6,$7,$8,$9,$10)
-       on conflict (target_component_id,correlation_id,operation_kind) where operation_kind='PULSE' do nothing
        returning id`,
       [validated.sourcePrincipalId, componentId, envelope.pulseType, JSON.stringify(envelope.input), JSON.stringify(validated.processTrace),
         envelope.correlationId, envelope.causationId ?? null, envelope.traceId ?? null, authorization.tokenFingerprint, authorization.permissionEpoch]
     );
-    if (!lease.rowCount) {
-      const concurrent = await client.query(
-        `select id,finished_at,success
-           from component_operation_lease
-          where target_component_id=$1 and correlation_id=$2 and operation_kind='PULSE'`,
-        [componentId, envelope.correlationId]
-      );
-      if (!concurrent.rowCount || !concurrent.rows[0].finished_at) throw Object.assign(new Error("component_pulse_in_progress"), { statusCode: 409 });
-      return {
-        leaseId: String(concurrent.rows[0].id),
-        correlationId: envelope.correlationId,
-        replayed: true,
-        success: Boolean(concurrent.rows[0].success)
-      };
-    }
     await appendAudit(client, {
       eventType: "component.pulse.started",
       actorType: "component",
@@ -1727,7 +1695,7 @@ export async function beginComponentPulseLease(
       after: { pulseType: envelope.pulseType, direction: envelope.direction, targetComponentId: authorization.runtimeContext?.targetComponentId ?? null },
       correlationId: envelope.correlationId
     });
-    return { leaseId: String(lease.rows[0].id), correlationId: envelope.correlationId, replayed: false, success: null };
+    return { leaseId: String(lease.rows[0].id), correlationId: envelope.correlationId };
   });
 }
 
@@ -1770,25 +1738,12 @@ export async function failComponentPulseLease(
       after: { pulseType: envelope.pulseType, direction: envelope.direction, success: false, output },
       correlationId: envelope.correlationId
     });
-    await client.query(
-      "update component set operational_state='UNHEALTHY',monitoring_state='FAILED',updated_at=now() where id=$1",
-      [componentId]
-    );
   });
 }
 
 export async function ingestComponentPulse(db: Db, componentId: string, envelope: ComponentPulseEnvelope, authorization: PulseAuthorizationContext): Promise<{ accepted: true; correlationId: string }> {
   return tx(db, async (client) => {
     const validated = await validateComponentPulse(client, componentId, envelope, authorization);
-    const operationKey = text(envelope.operation.operationKey) || envelope.pulseType;
-    const priorEvent = await client.query(
-      `select id,success
-         from component_operation_event
-        where component_id=$1 and correlation_id=$2 and direction=$3 and operation_key=$4
-        limit 1`,
-      [componentId, envelope.correlationId, envelope.direction, operationKey]
-    );
-    if (priorEvent.rowCount) return { accepted: true, correlationId: envelope.correlationId };
     let leaseId = authorization.leaseId ?? null;
     if (leaseId) {
       const finalized = await client.query(
@@ -1807,39 +1762,23 @@ export async function ingestComponentPulse(db: Db, componentId: string, envelope
           output_payload,output_digest,process_trace,success,finished_at,expires_at,correlation_id,causation_id,trace_id,token_fingerprint,permission_epoch)
          values ($1,$2,'PULSE',$3,$4::jsonb,'sha256:'||encode(sha256(convert_to(($4::jsonb)::text,'utf8')),'hex'),
           $5::jsonb,'sha256:'||encode(sha256(convert_to(($5::jsonb)::text,'utf8')),'hex'),$6::jsonb,$7,now(),now()+interval '1 minute',$8,$9,$10,$11,$12)
-         on conflict (target_component_id,correlation_id,operation_kind) where operation_kind='PULSE' do nothing
          returning id`,
         [validated.sourcePrincipalId, componentId, envelope.pulseType, JSON.stringify(envelope.input), JSON.stringify(envelope.output),
           JSON.stringify(validated.processTrace), envelope.success, envelope.correlationId, envelope.causationId ?? null, envelope.traceId ?? null,
           authorization.tokenFingerprint, authorization.permissionEpoch]
       );
-      if (lease.rowCount) {
-        leaseId = String(lease.rows[0].id);
-      } else {
-        const concurrentLease = await client.query(
-          `select id from component_operation_lease
-            where target_component_id=$1 and correlation_id=$2 and operation_kind='PULSE'`,
-          [componentId, envelope.correlationId]
-        );
-        if (!concurrentLease.rowCount) throw Object.assign(new Error("component_pulse_idempotency_conflict"), { statusCode: 409 });
-        leaseId = String(concurrentLease.rows[0].id);
-      }
+      leaseId = String(lease.rows[0].id);
     }
-    const insertedEvent = await client.query(
+    await client.query(
       `insert into component_operation_event(
         component_id,pulse_type,direction,operation_key,input_digest,input_payload,process_trace,output_digest,output_payload,
         success,correlation_id,causation_id,trace_id,access_token_fingerprint,occurred_at
-      ) values ($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8,$9::jsonb,$10,$11,$12,$13,$14,$15)
-      on conflict (component_id,correlation_id,direction,operation_key)
-        where pulse_type is not null and direction is not null
-      do nothing
-      returning id`,
-      [componentId, envelope.pulseType, envelope.direction, operationKey,
+      ) values ($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8,$9::jsonb,$10,$11,$12,$13,$14,$15)`,
+      [componentId, envelope.pulseType, envelope.direction, text(envelope.operation.operationKey) || envelope.pulseType,
         `sha256:${digestPayload(envelope.input)}`, JSON.stringify(envelope.input), JSON.stringify(validated.processTrace),
         `sha256:${digestPayload(envelope.output)}`, JSON.stringify(envelope.output), envelope.success, envelope.correlationId,
         envelope.causationId ?? null, envelope.traceId ?? null, envelope.accessTokenFingerprint, envelope.occurredAt]
     );
-    if (!insertedEvent.rowCount) return { accepted: true, correlationId: envelope.correlationId };
     await appendAudit(client, {
       eventType: "component.pulse.finalized",
       actorType: "component",

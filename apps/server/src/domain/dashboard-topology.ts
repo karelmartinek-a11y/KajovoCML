@@ -61,239 +61,8 @@ function textArray(value: unknown): string[] {
   return Array.isArray(value) ? value.map(String).filter(Boolean) : [];
 }
 
-function objectValue(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
-}
-
-function firstString(source: Record<string, unknown>, keys: string[]): string | null {
-  for (const key of keys) {
-    const value = source[key];
-    if (typeof value === "string" && value.trim()) return value.trim();
-  }
-  return null;
-}
-
-function safeDurationMs(trace: Record<string, unknown>): number | null {
-  const direct = trace.durationMs ?? trace.duration_ms ?? trace.elapsedMs ?? trace.elapsed_ms;
-  if (typeof direct === "number" && Number.isFinite(direct) && direct >= 0 && direct <= 86_400_000) return Math.round(direct);
-  const started = firstString(trace, ["startedAt", "started_at"]);
-  const finished = firstString(trace, ["finishedAt", "finished_at", "completedAt", "completed_at"]);
-  if (!started || !finished) return null;
-  const duration = new Date(finished).getTime() - new Date(started).getTime();
-  return Number.isFinite(duration) && duration >= 0 && duration <= 86_400_000 ? duration : null;
-}
-
-export function dashboardRuntimeEventFromOperationRow(row: Record<string, unknown>) {
-  const trace = objectValue(row.process_trace);
-  const success = Boolean(row.success);
-  const targetComponentId = firstString(trace, ["targetComponentId", "target_component_id"]);
-  const route = firstString(trace, ["route", "routePath", "route_path", "targetRoute", "target_route"]);
-  const scope = firstString(trace, ["scope", "scopeName", "scope_name", "targetScope", "target_scope"]);
-  const audience = firstString(trace, ["audience", "targetAudience", "target_audience"]);
-  const subsystem = firstString(trace, ["subsystem", "operationKind", "operation_kind"]) ?? (firstString(row, ["pulse_type"]) ? "PULSE" : "COMPONENT");
-  const evidence: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries({
-    targetComponentId,
-    route,
-    scope,
-    audience,
-    processStep: firstString(trace, ["workflowStep", "workflow_step", "step", "stepKey", "step_key"])
-  })) if (value) evidence[key] = value;
-  return {
-    id: String(row.id),
-    kind: row.pulse_type ? "PULSE" as const : "PROCESS" as const,
-    componentId: String(row.component_id),
-    componentCode: String(row.code),
-    targetComponentId,
-    externalTargetId: null,
-    externalTargetKey: null,
-    pulseType: firstString(row, ["pulse_type"]),
-    direction: firstString(row, ["direction"]),
-    operationKey: String(row.operation_key),
-    subsystem,
-    severity: success ? "INFO" as const : "ERROR" as const,
-    stage: "COMPLETED" as const,
-    status: success ? "SUCCEEDED" : "FAILED",
-    success,
-    route,
-    scope,
-    audience,
-    durationMs: safeDurationMs(trace),
-    correlationId: String(row.correlation_id),
-    traceId: firstString(row, ["trace_id"]),
-    occurredAt: String(row.occurred_at),
-    receivedAt: String(row.received_at),
-    evidence
-  };
-}
-
-export function dashboardRuntimeEventFromLeaseRow(row: Record<string, unknown>) {
-  const trace = objectValue(row.process_trace);
-  const operationKind = String(row.operation_kind);
-  const kind = operationKind === "PULSE" ? "PULSE" as const : "PROCESS" as const;
-  const targetComponentId = firstString(trace, ["targetComponentId", "target_component_id"]);
-  const route = firstString(trace, ["route", "routePath", "route_path", "targetRoute", "target_route"]);
-  const scope = firstString(trace, ["scope", "scopeName", "scope_name", "targetScope", "target_scope"]);
-  const audience = firstString(trace, ["audience", "targetAudience", "target_audience"]);
-  const direction = firstString(trace, ["direction"]);
-  const evidence: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries({
-    targetComponentId,
-    route,
-    scope,
-    audience,
-        processStep: firstString(trace, ["workflowStep", "workflow_step", "step", "stepKey", "step_key"]),
-        expiresAt: firstString(row, ["expires_at"])
-  })) if (value) evidence[key] = value;
-  return {
-    id: String(row.id),
-    kind,
-    componentId: String(row.target_component_id),
-    componentCode: String(row.code),
-    targetComponentId,
-    externalTargetId: null,
-    externalTargetKey: null,
-    pulseType: kind === "PULSE" ? String(row.operation_name) : null,
-    direction,
-    operationKey: String(row.operation_name),
-    subsystem: operationKind,
-    severity: "INFO" as const,
-    stage: "STARTED" as const,
-    status: "RUNNING",
-    success: false,
-    route,
-    scope,
-    audience,
-    durationMs: Math.max(0, Date.now() - new Date(String(row.started_at)).getTime()),
-    correlationId: String(row.correlation_id),
-    traceId: firstString(row, ["trace_id"]),
-    occurredAt: String(row.started_at),
-    receivedAt: String(row.started_at),
-    evidence
-  };
-}
-
-export function dashboardRuntimeEventFromExternalRow(row: Record<string, unknown>) {
-  const status = String(row.status);
-  const completed = status !== "PENDING";
-  const success = status === "SUCCEEDED";
-  return {
-    id: String(row.id),
-    kind: "EXTERNAL" as const,
-    componentId: String(row.source_component_id),
-    componentCode: String(row.code),
-    targetComponentId: null,
-    externalTargetId: String(row.external_target_id),
-    externalTargetKey: String(row.target_key),
-    pulseType: null,
-    direction: "OUTGOING",
-    operationKey: `EXTERNAL ${String(row.scope_name)}`,
-    subsystem: "EXTERNAL_GATEWAY",
-    severity: success || !completed ? "INFO" as const : status === "BLOCKED" ? "WARNING" as const : "ERROR" as const,
-    stage: completed ? status === "BLOCKED" ? "BLOCKED" as const : "COMPLETED" as const : "STARTED" as const,
-    status,
-    success,
-    route: String(row.route_path),
-    scope: String(row.scope_name),
-    audience: String(row.base_url),
-    durationMs: firstString(row, ["completed_at"]) ? Math.max(0, new Date(String(row.completed_at)).getTime() - new Date(String(row.created_at)).getTime()) : null,
-    correlationId: String(row.correlation_id),
-    traceId: null,
-    occurredAt: row.completed_at ?? row.created_at,
-    receivedAt: row.completed_at ?? row.created_at,
-    evidence: { httpStatus: row.http_status ?? null, errorCode: row.error_code ?? null, attemptCount: Number(row.attempt_count ?? 0) }
-  };
-}
-
 function schemaType(schema: Record<string, unknown>): string | null {
   return typeof schema.type === "string" ? schema.type : null;
-}
-
-function schemaProperties(schema: Record<string, unknown>): Record<string, Record<string, unknown>> {
-  const raw = objectValue(schema.properties);
-  return Object.fromEntries(Object.entries(raw).filter((entry): entry is [string, Record<string, unknown>] => Boolean(entry[1]) && typeof entry[1] === "object" && !Array.isArray(entry[1])));
-}
-
-function schemaRequired(schema: Record<string, unknown>): string[] {
-  return textArray(schema.required);
-}
-
-function finiteNumber(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-function schemaCompatibilityChecks(
-  producer: Record<string, unknown>,
-  consumer: Record<string, unknown>,
-  fieldPrefix: string,
-  path = "$"
-): CompatibilityResult["checks"] {
-  const checks: CompatibilityResult["checks"] = [];
-  const producerType = schemaType(producer);
-  const consumerType = schemaType(consumer);
-  if (!producerType || !consumerType) {
-    checks.push({ field: `${fieldPrefix}:${path}:type`, result: "UNKNOWN", reason: `Schéma ${path} neobsahuje na obou stranách jednoznačný typ.` });
-    return checks;
-  }
-  if (producerType !== consumerType) {
-    checks.push({ field: `${fieldPrefix}:${path}:type`, result: "FAIL", reason: `Typ ${path} se liší (${producerType} / ${consumerType}).` });
-    return checks;
-  }
-  checks.push({ field: `${fieldPrefix}:${path}:type`, result: "PASS", reason: `Typ ${path} je shodný (${producerType}).` });
-
-  const producerEnum = textArray(producer.enum);
-  const consumerEnum = textArray(consumer.enum);
-  if (producerEnum.length && consumerEnum.length) {
-    const rejected = producerEnum.filter((value) => !consumerEnum.includes(value));
-    checks.push(rejected.length
-      ? { field: `${fieldPrefix}:${path}:enum`, result: "FAIL", reason: `Producent může odeslat hodnoty, které příjemce nepovoluje: ${rejected.join(", ")}.` }
-      : { field: `${fieldPrefix}:${path}:enum`, result: "PASS", reason: "Všechny deklarované hodnoty producenta přijímač podporuje." });
-  } else if (producerEnum.length !== consumerEnum.length) {
-    checks.push({ field: `${fieldPrefix}:${path}:enum`, result: "WARN", reason: "Enum je deklarován pouze na jedné straně; runtime validace zůstává rozhodující." });
-  }
-
-  for (const [minimumKey, maximumKey] of [["minimum", "maximum"], ["minLength", "maxLength"], ["minItems", "maxItems"]] as const) {
-    const producerMinimum = finiteNumber(producer[minimumKey]);
-    const consumerMinimum = finiteNumber(consumer[minimumKey]);
-    const producerMaximum = finiteNumber(producer[maximumKey]);
-    const consumerMaximum = finiteNumber(consumer[maximumKey]);
-    if (producerMinimum !== null && consumerMinimum !== null) checks.push(producerMinimum < consumerMinimum
-      ? { field: `${fieldPrefix}:${path}:${minimumKey}`, result: "FAIL", reason: `Producent připouští nižší hodnotu (${producerMinimum}) než příjemce (${consumerMinimum}).` }
-      : { field: `${fieldPrefix}:${path}:${minimumKey}`, result: "PASS", reason: `Dolní limit producenta je v limitu příjemce.` });
-    if (producerMaximum !== null && consumerMaximum !== null) checks.push(producerMaximum > consumerMaximum
-      ? { field: `${fieldPrefix}:${path}:${maximumKey}`, result: "FAIL", reason: `Producent připouští vyšší hodnotu (${producerMaximum}) než příjemce (${consumerMaximum}).` }
-      : { field: `${fieldPrefix}:${path}:${maximumKey}`, result: "PASS", reason: `Horní limit producenta je v limitu příjemce.` });
-  }
-
-  if (producerType === "object") {
-    const producerProperties = schemaProperties(producer);
-    const consumerProperties = schemaProperties(consumer);
-    const producerRequired = new Set(schemaRequired(producer));
-    const consumerRequired = schemaRequired(consumer);
-    for (const required of consumerRequired) {
-      if (!producerProperties[required]) {
-        checks.push({ field: `${fieldPrefix}:${path}.${required}:required`, result: "FAIL", reason: `Příjemce vyžaduje pole ${path}.${required}, které producent nedeklaruje.` });
-      } else if (!producerRequired.has(required)) {
-        checks.push({ field: `${fieldPrefix}:${path}.${required}:required`, result: "FAIL", reason: `Producent negarantuje povinné pole ${path}.${required}.` });
-      } else {
-        checks.push({ field: `${fieldPrefix}:${path}.${required}:required`, result: "PASS", reason: `Povinné pole ${path}.${required} je garantováno.` });
-      }
-    }
-    for (const [name, producerProperty] of Object.entries(producerProperties)) {
-      const consumerProperty = consumerProperties[name];
-      if (consumerProperty) checks.push(...schemaCompatibilityChecks(producerProperty, consumerProperty, fieldPrefix, `${path}.${name}`));
-      else if (consumer.additionalProperties === false) checks.push({ field: `${fieldPrefix}:${path}.${name}:additional`, result: "FAIL", reason: `Producent deklaruje pole ${path}.${name}, ale příjemce zakazuje dodatečné vlastnosti.` });
-      else checks.push({ field: `${fieldPrefix}:${path}.${name}:additional`, result: "WARN", reason: `Pole ${path}.${name} není v příjemcově schématu popsáno.` });
-    }
-  }
-
-  if (producerType === "array") {
-    const producerItems = objectValue(producer.items);
-    const consumerItems = objectValue(consumer.items);
-    if (Object.keys(producerItems).length && Object.keys(consumerItems).length) checks.push(...schemaCompatibilityChecks(producerItems, consumerItems, fieldPrefix, `${path}[]`));
-    else checks.push({ field: `${fieldPrefix}:${path}:items`, result: "UNKNOWN", reason: `Položkové schéma ${path} není úplně deklarováno.` });
-  }
-  return checks;
 }
 
 function routeMatches(left: string, right: string): boolean {
@@ -329,24 +98,24 @@ export function evaluateDashboardPortCompatibility(source: DashboardPort, target
     : scopeCompatible
       ? { field: "scope", result: "PASS", reason: "Rozsahy oprávnění mají společnou hodnotu." }
       : { field: "scope", result: "FAIL", reason: "Rozsahy oprávnění nemají společnou hodnotu." });
-  checks.push(...schemaCompatibilityChecks(source.requestSchema, target.requestSchema, "requestSchema"));
-  checks.push(digest(source.requestSchema) === digest(target.requestSchema)
-    ? { field: "requestSchemaDigest", result: "PASS", reason: "Schémata požadavku jsou kanonicky shodná." }
-    : { field: "requestSchemaDigest", result: "WARN", reason: "Schémata požadavku mají rozdílný canonical digest; položkové kontroly určují bezpečnost rozdílu." });
+  const sourceSchemaType = schemaType(source.requestSchema);
+  const targetSchemaType = schemaType(target.requestSchema);
+  checks.push(!sourceSchemaType || !targetSchemaType
+    ? { field: "requestSchema", result: "UNKNOWN", reason: "Schéma neobsahuje jednoznačný kořenový typ." }
+    : sourceSchemaType === targetSchemaType
+      ? { field: "requestSchema", result: "PASS", reason: `Kořenový typ požadavku je ${sourceSchemaType}.` }
+      : { field: "requestSchema", result: "FAIL", reason: `Kořenové typy požadavku se liší (${sourceSchemaType} / ${targetSchemaType}).` });
+  if (sourceSchemaType && targetSchemaType && sourceSchemaType === targetSchemaType) {
+    checks.push(digest(source.requestSchema) === digest(target.requestSchema)
+      ? { field: "requestSchemaShape", result: "PASS", reason: "Schémata požadavku jsou kanonicky shodná." }
+      : { field: "requestSchemaShape", result: "WARN", reason: "Kořenový typ je shodný, ale položková struktura schématu se liší a musí ji potvrdit runtime validace." });
+  }
   checks.push(source.protocol === target.protocol
     ? { field: "protocol", result: "PASS", reason: `Protokol ${source.protocol} je shodný.` }
     : { field: "protocol", result: "FAIL", reason: `Protokoly se liší (${source.protocol} / ${target.protocol}).` });
   checks.push(source.transport === target.transport
     ? { field: "transport", result: "PASS", reason: `Transport ${source.transport} je shodný.` }
     : { field: "transport", result: "FAIL", reason: `Transporty se liší (${source.transport} / ${target.transport}).` });
-  checks.push(source.authMode === target.authMode
-    ? { field: "authMode", result: "PASS", reason: `Autentizační režim ${source.authMode} je shodný.` }
-    : { field: "authMode", result: "FAIL", reason: `Autentizační režimy se liší (${source.authMode} / ${target.authMode}).` });
-  if (Object.keys(source.responseSchema).length || Object.keys(target.responseSchema).length) {
-    checks.push(...schemaCompatibilityChecks(target.responseSchema, source.responseSchema, "responseSchema"));
-  } else {
-    checks.push({ field: "responseSchema", result: "UNKNOWN", reason: "Odpovědní schéma není v kontraktech deklarováno." });
-  }
 
   const failed = checks.some((check) => check.result === "FAIL");
   const unknown = checks.some((check) => check.result === "UNKNOWN");
@@ -486,7 +255,7 @@ export async function handoffDashboardNode(
   return String(inserted.rows[0].id);
 }
 
-async function workspace(client: Queryable, adminId: string) {
+async function workspace(client: Queryable, adminId: string): Promise<Record<string, unknown>> {
   const result = await client.query(
     `insert into dashboard_workspace(owner_admin_id,workspace_key)
      values ($1,'DEFAULT')
@@ -502,10 +271,9 @@ export async function saveDashboardLayout(db: Db, input: {
   expectedVersion?: number;
   viewport: { x: number; y: number; zoom: number };
   positions: Array<{ nodeId: string; x: number; y: number }>;
-  externalPositions?: Array<{ externalTargetId: string; x: number; y: number }>;
   correlationId: string;
-}) {
-  return await tx(db, async (client) => {
+}): Promise<Record<string, unknown>> {
+  return tx<Record<string, unknown>>(db, async (client) => {
     const current = await workspace(client, input.actorId);
     if (input.expectedVersion !== undefined && Number(current.lock_version) !== input.expectedVersion) {
       throw Object.assign(new Error("dashboard_layout_version_conflict"), { statusCode: 409 });
@@ -518,26 +286,19 @@ export async function saveDashboardLayout(db: Db, input: {
         [current.id, position.nodeId, position.x, position.y]
       );
     }
-    for (const position of input.externalPositions ?? []) {
-      await client.query(
-        `insert into dashboard_external_target_position(workspace_id,external_target_id,x,y)
-         select $1,$2,$3,$4 where exists(select 1 from component_external_target where id=$2)
-         on conflict (workspace_id,external_target_id) do update set x=excluded.x,y=excluded.y,updated_at=now()`,
-        [current.id, position.externalTargetId, position.x, position.y]
-      );
-    }
-    const updated = await client.query(
+    const updated = await client.query<Record<string, unknown>>(
       `update dashboard_workspace set viewport=$2::jsonb,lock_version=lock_version+1,updated_at=now()
         where id=$1 returning id,viewport,lock_version,updated_at`,
       [current.id, JSON.stringify(input.viewport)]
     );
+    const updatedWorkspace = updated.rows[0] ?? {};
     await appendAudit(client, {
       eventType: "dashboard.layout.updated", actorType: "admin", actorId: input.actorId,
       objectType: "dashboard_workspace", objectId: String(current.id),
-      after: { nodeCount: input.positions.length, externalTargetCount: input.externalPositions?.length ?? 0, viewport: input.viewport, lockVersion: updated.rows[0].lock_version },
+      after: { nodeCount: input.positions.length, viewport: input.viewport, lockVersion: updatedWorkspace.lock_version },
       correlationId: input.correlationId
     });
-    return updated.rows[0] as Record<string, unknown>;
+    return updatedWorkspace;
   });
 }
 
@@ -584,8 +345,6 @@ async function reconcilePermission(client: pg.PoolClient, edge: Record<string, u
     [edge.source_component_id, edge.target_component_id, edge.target_route, edge.target_scope]
   );
   await client.query("update component set policy_epoch=policy_epoch+1,updated_at=now() where id = any($1::uuid[])", [[edge.source_component_id, edge.target_component_id]]);
-  const principal = await client.query("select principal_id from component where id=$1", [edge.source_component_id]);
-  if (principal.rowCount) await client.query("update principal set policy_epoch=policy_epoch+1,updated_at=now() where id=$1", [principal.rows[0].principal_id]);
   return revoked.rowCount ? String(revoked.rows[0].id) : null;
 }
 
@@ -973,8 +732,11 @@ export async function revokeDashboardSecretFromNode(db: Db, input: { secretId: s
   });
 }
 
-export async function dashboardDeregistrationPreview(db: Db, nodeId: string) {
-  const result = await db.query(
+export async function dashboardDeregistrationPreview(
+  db: Db,
+  nodeId: string
+): Promise<Record<string, unknown> & { requiresMfa: true; typedConfirmation: string; requiresCompleteOnboarding: true }> {
+  const result = await db.query<Record<string, unknown>>(
     `select node.id node_id,component.id component_id,component.code,component.display_name,
       (select count(*) from principal_access_token token where token.source_principal_id=component.principal_id and token.revoked_at is null)::int token_count,
       (select count(*) from secret_grant grant_row where grant_row.principal_kind='COMPONENT' and grant_row.principal_id=component.id and grant_row.revoked_at is null)::int direct_secret_grant_count,
@@ -985,8 +747,8 @@ export async function dashboardDeregistrationPreview(db: Db, nodeId: string) {
     [nodeId]
   );
   if (!result.rowCount) throw Object.assign(new Error("dashboard_registered_node_not_found"), { statusCode: 404 });
-  const row = result.rows[0];
-  return { ...(row as Record<string, unknown>), requiresMfa: true, typedConfirmation: String(row.code), requiresCompleteOnboarding: true };
+  const row = result.rows[0] ?? {};
+  return { ...row, requiresMfa: true, typedConfirmation: String(row.code), requiresCompleteOnboarding: true };
 }
 
 async function verifyDashboardDeregistrationReauthentication(
@@ -1209,20 +971,7 @@ export async function deregisterDashboardNode(
 
 export async function listDashboardTopology(db: Db, adminId: string) {
   const currentWorkspace = await workspace(db, adminId);
-  const [
-    nodesResult,
-    positionsResult,
-    ports,
-    edgeRows,
-    secretRows,
-    operationRows,
-    eventRows,
-    activeProcessRows,
-    externalPositionRows,
-    externalTargetRows,
-    externalPermissionRows,
-    externalEventRows
-  ] = await Promise.all([
+  const [nodesResult, positionsResult, ports, edgeRows, secretRows, operationRows, eventRows] = await Promise.all([
     db.query(
       `select node.*,token.expires_at integration_token_expires_at,token.revoked_at integration_token_revoked_at,token.deleted_at integration_token_deleted_at,
               component.code,component.display_name,component.description,component.category,component.component_role,component.lifecycle_state,
@@ -1285,66 +1034,13 @@ export async function listDashboardTopology(db: Db, adminId: string) {
     ),
     db.query(
       `select event.id,event.component_id,component.code,event.pulse_type,event.direction,event.operation_key,event.success,
-              event.process_trace,event.correlation_id,event.trace_id,event.occurred_at,event.received_at
+              event.correlation_id,event.trace_id,event.occurred_at,event.received_at
          from component_operation_event event join component on component.id=event.component_id
-        order by event.occurred_at desc limit 160`
-    ),
-    db.query(
-      `select lease.id,lease.target_component_id,component.code,lease.operation_kind,lease.operation_name,
-              lease.process_trace,lease.started_at,lease.expires_at,lease.correlation_id,lease.trace_id
-         from component_operation_lease lease
-         join component on component.id=lease.target_component_id
-        where lease.finished_at is null and lease.expires_at>now()
-        order by lease.started_at`
-    ),
-    db.query("select * from dashboard_external_target_position where workspace_id=$1", [currentWorkspace.id]),
-    db.query(
-      `select target.*,
-              count(call.id) filter(where call.created_at>=now()-interval '24 hours')::int call_count,
-              count(call.id) filter(where call.created_at>=now()-interval '24 hours' and call.status='SUCCEEDED')::int success_count,
-              count(call.id) filter(where call.created_at>=now()-interval '24 hours' and call.status='FAILED')::int failure_count,
-              count(call.id) filter(where call.created_at>=now()-interval '24 hours' and call.status='BLOCKED')::int blocked_count,
-              max(coalesce(call.completed_at,call.created_at)) last_run_at,
-              max(coalesce(call.completed_at,call.created_at)) filter(where call.status in ('FAILED','BLOCKED')) last_failure_at
-         from component_external_target target
-         left join component_external_gateway_call call on call.external_target_id=target.id
-        group by target.id
-        order by target.display_name,target.target_key`
-    ),
-    db.query(
-      `select permission.*,component.code source_code,target.target_key,target.display_name target_display_name,
-              target.base_url,target.status target_status,target.circuit_state,suspension.id suspension_id
-         from component_external_permission permission
-         join component on component.id=permission.component_id
-         join component_external_target target on target.id=permission.external_target_id
-         left join principal_permission_suspension suspension on suspension.principal_id=component.principal_id and suspension.resumed_at is null
-        where permission.component_id is not null
-        order by permission.granted_at,permission.id`
-    ),
-    db.query(
-      `select call.id,call.source_component_id,component.code,call.external_target_id,target.target_key,target.base_url,
-              call.route_path,call.scope_name,call.status,call.http_status,call.error_code,call.attempt_count,
-              call.correlation_id,call.created_at,call.completed_at
-         from component_external_gateway_call call
-         join component on component.id=call.source_component_id
-         join component_external_target target on target.id=call.external_target_id
-        order by coalesce(call.completed_at,call.created_at) desc limit 160`
+        order by event.occurred_at desc limit 100`
     )
   ]);
-
   const positionByNode = new Map(positionsResult.rows.map((row) => [String(row.node_id), { x: Number(row.x), y: Number(row.y) }]));
-  const externalPositionByTarget = new Map(externalPositionRows.rows.map((row) => [String(row.external_target_id), { x: Number(row.x), y: Number(row.y) }]));
-  type DashboardOperationStatsRow = {
-    component_id: string;
-    call_count: number | string;
-    success_count: number | string;
-    failure_count: number | string;
-    last_run_at: string | null;
-    last_failure_at: string | null;
-  };
-  const operationByComponent = new Map<string, DashboardOperationStatsRow>(
-    operationRows.rows.map((row) => [String(row.component_id), row as DashboardOperationStatsRow])
-  );
+  const operationByComponent = new Map(operationRows.rows.map((row) => [String(row.component_id), row]));
   const secretsByNode = new Map<string, Array<Record<string, unknown>>>();
   const grants = await db.query(
     `select node.id node_id,secret.id secret_id,secret.stable_name,secret.status,'DIRECT' source
@@ -1373,7 +1069,6 @@ export async function listDashboardTopology(db: Db, adminId: string) {
       secretsByNode.set(key, current);
     }
   }
-
   const nodes = nodesResult.rows.map((row, index) => {
     const componentId = row.component_id ? String(row.component_id) : null;
     const stats = componentId ? operationByComponent.get(componentId) : null;
@@ -1397,7 +1092,7 @@ export async function listDashboardTopology(db: Db, adminId: string) {
       tokenLastUsedAt: row.access_last_used_at ?? null,
       integrationTokenExpiresAt: row.integration_token_expires_at ?? null,
       critical,
-      position: positionByNode.get(String(row.id)) ?? { x: 60 + (index % 4) * 330, y: 80 + Math.floor(index / 4) * 300 },
+      position: positionByNode.get(String(row.id)) ?? { x: 60 + (index % 4) * 330, y: 80 + Math.floor(index / 4) * 280 },
       secrets: secretsByNode.get(String(row.id)) ?? [],
       statistics: {
         period: "24h", callCount: Number(stats?.call_count ?? 0), successCount: Number(stats?.success_count ?? 0),
@@ -1406,7 +1101,6 @@ export async function listDashboardTopology(db: Db, adminId: string) {
       }
     };
   });
-
   const edges = edgeRows.rows.map((row) => ({
     id: String(row.id), sourceComponentId: String(row.source_component_id), sourcePortKey: String(row.source_port_key),
     targetComponentId: String(row.target_component_id), targetPortKey: String(row.target_port_key),
@@ -1417,47 +1111,10 @@ export async function listDashboardTopology(db: Db, adminId: string) {
     authorizationReason: row.suspension_id ? "IDENTITY_SUSPENDED" : !row.authorization_desired ? "EDGE_PERMISSION_REVOKED" : row.permission_revoked_at ? "PERMISSION_REVOKED" : !row.token_envelope_id ? "TOKEN_SCOPE_OR_AUDIENCE_MISSING" : "PERMISSION_ACTIVE",
     sourceCode: String(row.source_code), targetCode: String(row.target_code), createdAt: row.created_at, correlationId: row.correlation_id
   }));
-
-  const externalNodes = externalTargetRows.rows.map((row, index) => {
-    const callCount = Number(row.call_count ?? 0);
-    const failureCount = Number(row.failure_count ?? 0) + Number(row.blocked_count ?? 0);
-    return {
-      id: String(row.id), targetKey: String(row.target_key), displayName: String(row.display_name), baseUrl: String(row.base_url),
-      status: String(row.status), circuitState: String(row.circuit_state), circuitFailureCount: Number(row.circuit_failure_count ?? 0),
-      circuitFailureThreshold: Number(row.circuit_failure_threshold ?? 0), allowedPathPrefixes: textArray(row.allowed_path_prefixes),
-      auditRequired: Boolean(row.audit_required),
-      position: externalPositionByTarget.get(String(row.id)) ?? { x: 1380 + (index % 2) * 310, y: 100 + Math.floor(index / 2) * 250 },
-      statistics: {
-        period: "24h", callCount, successCount: Number(row.success_count ?? 0), failureCount: Number(row.failure_count ?? 0),
-        blockedCount: Number(row.blocked_count ?? 0), errorRate: callCount ? failureCount / callCount : 0,
-        lastRunAt: row.last_run_at ?? null, lastFailureAt: row.last_failure_at ?? null
-      }
-    };
-  });
-
-  const externalEdges = externalPermissionRows.rows.map((row) => ({
-    id: String(row.id), sourceComponentId: String(row.component_id), externalTargetId: String(row.external_target_id),
-    route: String(row.route_pattern), scope: String(row.scope_name), audience: String(row.base_url),
-    effectiveAuthorization: row.revoked_at || row.suspension_id || row.target_status !== "ACTIVE" ? "DENIED" : "GRANTED",
-    authorizationReason: row.suspension_id ? "IDENTITY_SUSPENDED" : row.revoked_at ? "PERMISSION_REVOKED" : row.target_status !== "ACTIVE" ? "TARGET_NOT_ACTIVE" : "PERMISSION_ACTIVE",
-    sourceCode: String(row.source_code), targetKey: String(row.target_key), targetDisplayName: String(row.target_display_name),
-    targetStatus: String(row.target_status), circuitState: String(row.circuit_state), createdAt: row.granted_at
-  }));
-
-  const activeProcesses = activeProcessRows.rows.map((row) => ({
-    id: String(row.id), componentId: String(row.target_component_id), componentCode: String(row.code), kind: String(row.operation_kind),
-    name: String(row.operation_name), state: "RUNNING" as const, startedAt: row.started_at, expiresAt: row.expires_at,
-    correlationId: String(row.correlation_id), traceId: row.trace_id ? String(row.trace_id) : null
-  }));
-
-  const events = [
-    ...activeProcessRows.rows.map((row) => dashboardRuntimeEventFromLeaseRow(row as Record<string, unknown>)),
-    ...eventRows.rows.map((row) => dashboardRuntimeEventFromOperationRow(row as Record<string, unknown>)),
-    ...externalEventRows.rows.map((row) => dashboardRuntimeEventFromExternalRow(row as Record<string, unknown>))
-  ].sort((left, right) => new Date(String(right.occurredAt)).getTime() - new Date(String(left.occurredAt)).getTime()).slice(0, 240);
-
-  const nodeAlarms = nodes.filter((node) => node.critical || node.suspended || node.identityUnavailable).map((node) => ({
-    id: `node:${node.id}`, severity: node.critical ? "CRITICAL" as const : "HIGH" as const, objectKind: "NODE" as const, objectId: node.id,
+  const alarms = nodes.filter((node) => node.critical || node.suspended || node.identityUnavailable).map((node) => ({
+    id: `node:${node.id}`,
+    severity: node.critical ? "CRITICAL" : "HIGH",
+    objectId: node.id,
     title: node.critical
       ? `${node.code ?? node.label}: kritický provozní stav`
       : node.identityUnavailable
@@ -1471,27 +1128,22 @@ export async function listDashboardTopology(db: Db, adminId: string) {
     recommendedAction: "Otevřete detail prvku, ověřte audit a příčinu stavu.",
     occurredAt: node.statistics.lastFailureAt ?? null
   }));
-  const externalAlarms = externalNodes.filter((node) => node.status !== "ACTIVE" || node.circuitState !== "CLOSED").map((node) => ({
-    id: `external:${node.id}`, severity: node.circuitState === "OPEN" ? "CRITICAL" as const : "HIGH" as const,
-    objectKind: "EXTERNAL_TARGET" as const, objectId: node.id,
-    title: `${node.displayName}: externí služba vyžaduje zásah`,
-    impact: `Stav ${node.status}, circuit breaker ${node.circuitState}, selhání ${node.circuitFailureCount}/${node.circuitFailureThreshold}.`,
-    recommendedAction: "Otevřete detail externí služby a ověřte dostupnost, oprávnění a poslední gateway volání.",
-    occurredAt: node.statistics.lastFailureAt
-  }));
-
   return {
     generatedAt: new Date().toISOString(),
-    live: { source: "persisted_component_operation_lease+component_operation_event+component_external_gateway_call", connected: true, lastEventAt: events[0]?.occurredAt ?? null, stale: false },
+    live: { source: "persisted_component_operation_event", connected: true, lastEventAt: eventRows.rows[0]?.occurred_at ?? null, stale: false },
     workspace: { id: String(currentWorkspace.id), viewport: currentWorkspace.viewport, lockVersion: Number(currentWorkspace.lock_version) },
-    nodes, ports, edges, externalNodes, externalEdges, activeProcesses,
+    nodes, ports, edges,
     secrets: secretRows.rows.map((row) => ({
       id: String(row.id), stableName: String(row.stable_name), displayName: String(row.display_name), description: String(row.description),
       ownerKind: String(row.owner_kind), ownerId: row.owner_id ? String(row.owner_id) : null, status: String(row.status),
       version: row.version_number === null ? null : Number(row.version_number), fingerprint: row.fingerprint ?? null,
       expiresAt: null, grantCount: Number(row.grant_count ?? 0), lockVersion: Number(row.lock_version), deletedAt: row.deleted_at ?? null
     })),
-    alarms: [...nodeAlarms, ...externalAlarms],
-    events
+    alarms,
+    events: eventRows.rows.map((row) => ({
+      id: String(row.id), componentId: String(row.component_id), componentCode: String(row.code), pulseType: row.pulse_type,
+      direction: row.direction, operationKey: String(row.operation_key), success: Boolean(row.success),
+      correlationId: String(row.correlation_id), traceId: row.trace_id ?? null, occurredAt: row.occurred_at, receivedAt: row.received_at
+    }))
   };
 }

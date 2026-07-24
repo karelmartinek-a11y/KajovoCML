@@ -898,9 +898,7 @@ input[type="checkbox"] { width: 17px; height: 17px; min-height: 17px; padding: 0
 .dashboard-edge.denied path:not(.dashboard-edge-hit) { stroke: #d33b33; stroke-dasharray: 7 5; }
 .dashboard-edge-hit { fill: none; stroke: transparent; stroke-width: 18; }
 .dashboard-edge:focus path:not(.dashboard-edge-hit), .dashboard-edge:hover path:not(.dashboard-edge-hit) { stroke-width: 5; filter: drop-shadow(0 0 3px rgba(22, 38, 52, 0.25)); }
-.dashboard-runtime-pulse { opacity: 0; pointer-events: none; }
-.dashboard-runtime-pulse circle { fill: #fff; stroke: #166f69; stroke-width: 2; }
-.dashboard-runtime-pulse text { fill: #135f5b; stroke: none; font-size: 9px; font-weight: 900; }
+.dashboard-runtime-pulse { fill: #fff; stroke: #166f69; stroke-width: 2; opacity: 0; }
 .dashboard-edge.runtime-active .dashboard-runtime-pulse { opacity: 1; }
 .dashboard-node { position: absolute; width: 294px; min-height: 206px; z-index: 2; border: 2px solid #aeb8c3; border-radius: 8px; background: #fff; box-shadow: 0 7px 22px rgba(27, 41, 54, 0.11); overflow: visible; }
 .dashboard-node.selected { outline: 3px solid rgba(0, 127, 122, 0.22); outline-offset: 3px; }
@@ -1052,7 +1050,7 @@ input[type="checkbox"] { width: 17px; height: 17px; min-height: 17px; padding: 0
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .dashboard-runtime-pulse { transition: none; }
+  .dashboard-runtime-pulse { display: none; }
   .spin { animation: none; }
 }
 .secret-identity-grant-panel { display: grid; gap: 10px; margin-bottom: 12px; }
@@ -1122,69 +1120,4 @@ input[type="checkbox"] { width: 17px; height: 17px; min-height: 17px; padding: 0
   .dashboard-edge.runtime-active .dashboard-edge-flow { opacity: .75; }
   .dashboard-runtime-result { display: none; }
   .dashboard-node.dragging, .dashboard-port.drag-over { transform: none; }
-}
-
-
-/* Externí boundary nodes a pravdivé runtime indikátory. */
-.dashboard-external-node { position: absolute; width: 260px; min-height: 158px; z-index: 3; border: 2px solid #66778b; border-radius: 9px; background: #f8fafc; box-shadow: 0 8px 24px rgba(28,45,62,.12); overflow: hidden; }
-.dashboard-external-node.selected { outline: 3px solid rgba(50,105,155,.28); outline-offset: 3px; }
-.dashboard-external-node.dragging { cursor: grabbing; box-shadow: 0 18px 42px rgba(20,40,55,.24); }
-.dashboard-external-node > header { min-height: 64px; display: grid; grid-template-columns: 34px minmax(0,1fr) auto; align-items: center; gap: 8px; padding: 10px; background: linear-gradient(135deg,#eaf0f6,#f8fafc); cursor: grab; }
-.dashboard-external-node h3 { margin: 1px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
-.dashboard-external-node header code { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 8px; }
-.dashboard-external-icon { width: 32px; height: 32px; display: grid; place-items: center; border: 1px solid #9fb0c2; border-radius: 50%; background: #fff; color: #49657d; }
-.dashboard-external-url { margin: 7px 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font: 9px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace; }
-.dashboard-external-node footer { display: flex; align-items: center; justify-content: space-between; padding: 7px 10px; border-top: 1px solid var(--line); font-size: 9px; }
-.dashboard-external-node footer button { min-width: 30px; min-height: 30px; padding: 0; }
-.dashboard-edge.external .dashboard-edge-line { stroke-dasharray: 8 5; }
-.dashboard-minimap span.external { background: #65798d; border-radius: 50%; }
-.dashboard-event-result.running { background: #e8f4ff; color: #236699; }
-.dashboard-edge.runtime-success .dashboard-runtime-pulse circle { stroke: #1b9a56; }
-.dashboard-edge.runtime-failure .dashboard-runtime-pulse circle { stroke: #d33b33; }
-.dashboard-edge.runtime-failure .dashboard-runtime-pulse text { fill: #a12620; }
-@media (max-width: 800px) {
-  .dashboard-external-node { width: 240px; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .dashboard-edge.runtime-active .dashboard-runtime-pulse { opacity: 1; }
-  .dashboard-runtime-pulse text { font-size: 10px; }
-}
-
-/* Autoritativní detail portu a přístupné ovládání velkého plátna. */
-.dashboard-canvas-viewport { cursor: default; }
-.dashboard-canvas-viewport.panning { cursor: grabbing; user-select: none; }
-.dashboard-port-detail section { margin: 12px 0; }
-.dashboard-port-detail h4 { margin: 0 0 6px; font-size: 12px; }
-.dashboard-chip-list { display: flex; flex-wrap: wrap; gap: 6px; }
-.dashboard-chip-list code { max-width: 100%; overflow-wrap: anywhere; padding: 4px 7px; border: 1px solid var(--line); border-radius: 999px; background: #f4f6f8; }
-.dashboard-port-detail pre { max-height: 300px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
-
-/* Přístupné potvrzovací dialogy Dashboardu nahrazují browser confirm/prompt a zachovávají úplný dopad operace. */
-.dashboard-action-modal { width: min(680px, 100%); display: grid; gap: 13px; }
-.dashboard-action-modal > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
-.dashboard-action-modal h2 { margin: 2px 0 0; }
-.dashboard-action-modal > p { margin: 0; color: var(--muted); line-height: 1.55; }
-.dashboard-action-modal textarea { resize: vertical; }
-.dashboard-action-details { max-height: 280px; overflow: auto; display: grid; gap: 6px; margin: 0; padding: 10px 10px 10px 28px; border: 1px solid var(--line); border-radius: 6px; background: #f8fafb; color: #344150; font-size: 11px; line-height: 1.5; }
-.dashboard-action-details li::marker { color: var(--teal); }
-.notice.warning { color: #7b4f00; background: #fff9ea; border-color: #e7c979; align-items: flex-start; line-height: 1.45; }
-.dashboard-page > .notice .icon-only { margin-left: auto; flex: 0 0 auto; background: transparent; }
-
-/* Živý náhled taženého PULSE kabelu; barva a symbol nejsou zdrojem autorizace, pouze serverového compatibility preview. */
-.dashboard-port-drag-preview { pointer-events: none; }
-.dashboard-port-drag-preview path { fill: none; stroke: #667788; stroke-width: 3; stroke-dasharray: 7 5; animation: dashboard-drag-flow .65s linear infinite; }
-.dashboard-port-drag-preview circle { fill: #fff; stroke: #667788; stroke-width: 3; }
-.dashboard-port-drag-preview text { fill: #425164; font-size: 9px; font-weight: 900; }
-.dashboard-port-drag-preview.compatible path, .dashboard-port-drag-preview.compatible circle { stroke: #168454; }
-.dashboard-port-drag-preview.compatible text { fill: #11653f; }
-.dashboard-port-drag-preview.incompatible path, .dashboard-port-drag-preview.incompatible circle,
-.dashboard-port-drag-preview.forbidden path, .dashboard-port-drag-preview.forbidden circle { stroke: #c83a33; }
-.dashboard-port-drag-preview.incompatible text, .dashboard-port-drag-preview.forbidden text { fill: #9c2823; }
-.dashboard-port-drag-preview.loading path { stroke: #2b6d98; }
-.dashboard-port.drag-compatible { border-color: #168454; background: #edf9f2; }
-.dashboard-port.drag-incompatible, .dashboard-port.drag-forbidden { border-color: #c83a33; background: #fff1f0; }
-.dashboard-port.drag-loading { border-color: #2b6d98; background: #edf6fc; }
-@keyframes dashboard-drag-flow { to { stroke-dashoffset: -24; } }
-@media (prefers-reduced-motion: reduce) {
-  .dashboard-port-drag-preview path { animation: none; }
 }

@@ -36,10 +36,8 @@ describe("buildMetadata", () => {
 
 describe("release descriptor", () => {
   it("separates normative label, technical catalog version and MCP protocol", () => {
-    expect(KCML_RELEASE.normativeLabel).toBe("2026.07.24-DASHBOARD.1");
-    expect(KCML_RELEASE.catalogVersion).toBe("2026.07.24-dashboard.1");
-    expect(KCML_RELEASE.onboardingCatalogVersion).toBe("1.2");
-    expect(KCML_RELEASE.manifestSchemaVersion).toBe("2026.07.22-compliance.1");
+    expect(KCML_RELEASE.normativeLabel).toBe("2026.07.22-COMPLIANCE.1");
+    expect(KCML_RELEASE.catalogVersion).toBe("2026.07.22-compliance.1");
     expect(KCML_RELEASE.mcpProtocolVersion).toBe("2025-11-25");
     expect(Object.keys(KCML_RELEASE)).not.toContain("auditedBaselineCommit");
   });

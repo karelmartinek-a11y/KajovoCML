@@ -1,6 +1,6 @@
 {
   "name": "@kcml/server",
-  "version": "2026.7.24-dashboard.1",
+  "version": "2026.7.22-compliance.1",
   "private": true,
   "type": "module",
   "scripts": {
@@ -41,7 +41,7 @@
     "@fastify/helmet": "^13.0.1",
     "@fastify/multipart": "^9.2.1",
     "@fastify/rate-limit": "^10.3.0",
-    "@fastify/static": "^10.1.2",
+    "@fastify/static": "^9.3.0",
     "ajv": "^8.17.1",
     "argon2": "^0.41.1",
     "fastify": "^5.4.0",

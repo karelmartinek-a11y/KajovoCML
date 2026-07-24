@@ -41,6 +41,12 @@ describe("programmer onboarding API authorization", () => {
       if (sql.includes("from admin_session")) {
         return { rowCount: 1, rows: [{ id: "session-id", account_id: "account-id", session_hash: sessionHash, username: "admin" }] };
       }
+      if (sql.includes("select id from dashboard_visual_node")) {
+        return { rowCount: 0, rows: [] };
+      }
+      if (sql.includes("insert into dashboard_visual_node")) {
+        return { rowCount: 1, rows: [{ id: "dashboard-node-id" }] };
+      }
       if (sql.includes("insert into integration_token")) {
         return {
           rowCount: 1,
@@ -61,12 +67,6 @@ describe("programmer onboarding API authorization", () => {
             max_expires_at: new Date(Date.now() + 60_000).toISOString()
           }]
         };
-      }
-      if (sql.includes("select id from dashboard_visual_node")) {
-        return { rowCount: 0, rows: [] };
-      }
-      if (sql.includes("insert into dashboard_visual_node")) {
-        return { rowCount: 1, rows: [{ id: "dashboard-node-id" }] };
       }
       return { rowCount: 0, rows: [] };
     };

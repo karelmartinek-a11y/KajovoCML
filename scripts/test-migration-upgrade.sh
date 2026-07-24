@@ -9,10 +9,7 @@ case "$upgrade_database_name" in
   *[!a-zA-Z0-9_]*) echo "invalid upgrade database name" >&2; exit 1 ;;
 esac
 
-release_version="$(node --input-type=module -e "import('./apps/server/src/domain/release.ts').then(({KCML_RELEASE}) => process.stdout.write(KCML_RELEASE.applicationVersion))")"
-onboarding_catalog_version="$(node --input-type=module -e "import('./apps/server/src/domain/release.ts').then(({KCML_RELEASE}) => process.stdout.write(KCML_RELEASE.onboardingCatalogVersion))")"
-manifest_schema_version="$(node --input-type=module -e "import('./apps/server/src/domain/release.ts').then(({KCML_RELEASE}) => process.stdout.write(KCML_RELEASE.manifestSchemaVersion))")"
-pulse_envelope_version="$(node --input-type=module -e "import('./apps/server/src/domain/release.ts').then(({KCML_RELEASE}) => process.stdout.write(KCML_RELEASE.pulseEnvelopeVersion))")"
+release_version="$(node --input-type=module -e "import('./apps/server/src/domain/release.ts').then(({KCML_RELEASE}) => process.stdout.write(KCML_RELEASE.catalogVersion))")"
 
 run_migrations() {
   if [[ -x apps/server/node_modules/.bin/tsx ]]; then
@@ -34,7 +31,7 @@ run_migrations
 
 psql "$KCML_UPGRADE_DATABASE_URL" --no-psqlrc --set ON_ERROR_STOP=1 --tuples-only --no-align <<SQL | grep -Fx 'baseline-clean-install-ok'
 select case when
-  (select count(*) from schema_migration) = 7
+  (select count(*) from schema_migration) = 3
   and exists (
     select 1
       from schema_migration
@@ -56,27 +53,15 @@ select case when
        and sequence_number=3
        and checksum_sha256 ~ '^[0-9a-f]{64}$'
   )
-  and exists (
-    select 1 from schema_migration where version='004_dashboard_topology.sql' and sequence_number=4 and checksum_sha256 ~ '^[0-9a-f]{64}$'
-  )
-  and exists (
-    select 1 from schema_migration where version='005_dashboard_operational_views.sql' and sequence_number=5 and checksum_sha256 ~ '^[0-9a-f]{64}$'
-  )
-  and exists (
-    select 1 from schema_migration where version='006_dashboard_identity_delete_guards.sql' and sequence_number=6 and checksum_sha256 ~ '^[0-9a-f]{64}$'
-  )
-  and exists (
-    select 1 from schema_migration where version='007_component_pulse_idempotency.sql' and sequence_number=7 and checksum_sha256 ~ '^[0-9a-f]{64}$'
-  )
-  and (select count(*) from release_epoch) = 2
+  and (select count(*) from release_epoch) = 1
   and exists (
     select 1
       from release_epoch
      where release_version='${release_version}'
        and blueprint_version='${release_version}'
-       and catalog_version='${onboarding_catalog_version}'
-       and manifest_schema_version='${manifest_schema_version}'
-       and pulse_envelope_version='${pulse_envelope_version}'
+       and catalog_version='${release_version}'
+       and manifest_schema_version='${release_version}'
+       and pulse_envelope_version='${release_version}'
   )
   and not exists (
     select 1
@@ -134,7 +119,7 @@ run_migrations
 
 psql "$KCML_UPGRADE_DATABASE_URL" --no-psqlrc --set ON_ERROR_STOP=1 --tuples-only --no-align <<SQL | grep -Fx 'baseline-compaction-ok'
 select case when
-  (select count(*) from schema_migration) = 7
+  (select count(*) from schema_migration) = 3
   and exists (
     select 1
       from schema_migration
@@ -156,19 +141,7 @@ select case when
        and sequence_number=3
        and checksum_sha256 ~ '^[0-9a-f]{64}$'
   )
-  and exists (
-    select 1 from schema_migration where version='004_dashboard_topology.sql' and sequence_number=4 and checksum_sha256 ~ '^[0-9a-f]{64}$'
-  )
-  and exists (
-    select 1 from schema_migration where version='005_dashboard_operational_views.sql' and sequence_number=5 and checksum_sha256 ~ '^[0-9a-f]{64}$'
-  )
-  and exists (
-    select 1 from schema_migration where version='006_dashboard_identity_delete_guards.sql' and sequence_number=6 and checksum_sha256 ~ '^[0-9a-f]{64}$'
-  )
-  and exists (
-    select 1 from schema_migration where version='007_component_pulse_idempotency.sql' and sequence_number=7 and checksum_sha256 ~ '^[0-9a-f]{64}$'
-  )
-  and (select count(*) from release_epoch) = 2
+  and (select count(*) from release_epoch) = 1
   and not exists (
     select 1
       from information_schema.columns

@@ -3,13 +3,9 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import type { AppServerConfig } from "../config.js";
 import type { Db } from "../db.js";
-import { compareDashboardStreamItems, dashboardStreamItemIsAfter } from "../domain/dashboard-event-stream.js";
 import {
   bulkGrantDashboardSecret,
   createDashboardConnection,
-  dashboardRuntimeEventFromExternalRow,
-  dashboardRuntimeEventFromLeaseRow,
-  dashboardRuntimeEventFromOperationRow,
   dashboardDeregistrationPreview,
   deregisterDashboardNode,
   disconnectDashboardConnection,
@@ -49,8 +45,7 @@ const deregistrationSchema = z.object({
 const layoutSchema = z.object({
   expectedVersion: z.number().int().min(0).optional(),
   viewport: z.object({ x: z.number().min(-100000).max(100000), y: z.number().min(-100000).max(100000), zoom: z.number().min(0.1).max(4) }).strict(),
-  positions: z.array(z.object({ nodeId: z.string().uuid(), x: z.number().min(-100000).max(100000), y: z.number().min(-100000).max(100000) }).strict()).max(2000),
-  externalPositions: z.array(z.object({ externalTargetId: z.string().uuid(), x: z.number().min(-100000).max(100000), y: z.number().min(-100000).max(100000) }).strict()).max(2000).default([])
+  positions: z.array(z.object({ nodeId: z.string().uuid(), x: z.number().min(-100000).max(100000), y: z.number().min(-100000).max(100000) }).strict()).max(2000)
 }).strict();
 
 async function ownerSession(db: Db, config: AppServerConfig, request: FastifyRequest, reply: FastifyReply, correlationId: string, mutation = false) {
@@ -257,9 +252,7 @@ export function registerDashboardRoutes(app: FastifyInstance, db: Db, config: Ap
     }
   });
 
-  app.get("/api/dashboard/events", {
-    config: { rateLimit: { max: 30, timeWindow: "1 minute", groupId: "dashboard-events" } }
-  }, async (request, reply) => {
+  app.get("/api/dashboard/events", async (request, reply) => {
     const correlationId = randomUUID();
     const session = await ownerSession(db, config, request, reply, correlationId);
     if (!session) return;
@@ -276,115 +269,40 @@ export function registerDashboardRoutes(app: FastifyInstance, db: Db, config: Ap
       "x-accel-buffering": "no"
     });
     let closed = false;
-    let lastReceivedUs = BigInt(Date.now() - 5 * 60_000) * 1000n;
-    let lastEventRank = 0;
-    let lastEventKey = "";
+    let lastReceivedAt = new Date(Date.now() - 5 * 60_000).toISOString();
+    let lastEventId = "00000000-0000-0000-0000-000000000000";
     const requestedCursor = String(request.headers["last-event-id"] ?? "").trim();
-    const cursorMatch = /^(pulse|external|lease):([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})(?::(PENDING|FINAL))?$/i.exec(requestedCursor);
-    const legacyUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(requestedCursor) ? requestedCursor : null;
-    if (cursorMatch?.[1] === "pulse" || legacyUuid) {
-      const id = cursorMatch?.[2] ?? legacyUuid;
-      const cursor = await db.query("select id,floor(extract(epoch from received_at)*1000000)::bigint received_us from component_operation_event where id=$1", [id]);
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(requestedCursor)) {
+      const cursor = await db.query("select id,received_at from component_operation_event where id=$1", [requestedCursor]);
       if (cursor.rowCount) {
-        lastEventRank = 1;
-        lastEventKey = `pulse:${String(cursor.rows[0].id)}`;
-        lastReceivedUs = BigInt(String(cursor.rows[0].received_us));
-      }
-    } else if (cursorMatch?.[1] === "lease") {
-      const cursor = await db.query("select id,floor(extract(epoch from started_at)*1000000)::bigint received_us from component_operation_lease where id=$1", [cursorMatch[2]]);
-      if (cursor.rowCount) {
-        lastEventRank = 0;
-        lastEventKey = `lease:${String(cursor.rows[0].id)}`;
-        lastReceivedUs = BigInt(String(cursor.rows[0].received_us));
-      }
-    } else if (cursorMatch?.[1] === "external") {
-      const phase = String(cursorMatch?.[3] ?? "FINAL").toUpperCase();
-      const cursor = await db.query(
-        `select id,floor(extract(epoch from (case when $2='PENDING' then created_at else coalesce(completed_at,created_at) end))*1000000)::bigint received_us
-           from component_external_gateway_call where id=$1`,
-        [cursorMatch[2], phase]
-      );
-      if (cursor.rowCount) {
-        lastEventRank = phase === "PENDING" ? 0 : 1;
-        lastEventKey = `external:${String(cursor.rows[0].id)}:${phase}`;
-        lastReceivedUs = BigInt(String(cursor.rows[0].received_us));
+        lastEventId = String(cursor.rows[0].id);
+        lastReceivedAt = new Date(cursor.rows[0].received_at).toISOString();
       }
     }
-    let sending = false;
     const sendPersisted = async () => {
-      if (closed || sending) return;
-      sending = true;
-      try {
-      const [pulseResult, leaseResult, externalResult] = await Promise.all([
-        db.query(
-          `select event.id,event.component_id,component.code,event.pulse_type,event.direction,event.operation_key,event.success,
-                  event.process_trace,event.correlation_id,event.trace_id,event.occurred_at,event.received_at,
-                  floor(extract(epoch from event.received_at)*1000000)::bigint received_us
-             from component_operation_event event join component on component.id=event.component_id
-            where event.received_at >= to_timestamp($1::numeric / 1000000)
-            order by event.received_at,event.id limit 250`,
-          [lastReceivedUs.toString()]
-        ),
-        db.query(
-          `select lease.id,lease.target_component_id,component.code,lease.operation_kind,lease.operation_name,lease.process_trace,
-                  lease.started_at,lease.expires_at,lease.correlation_id,lease.trace_id,
-                  floor(extract(epoch from lease.started_at)*1000000)::bigint received_us
-             from component_operation_lease lease
-             join component on component.id=lease.target_component_id
-            where lease.started_at >= to_timestamp($1::numeric / 1000000)
-            order by lease.started_at,lease.id limit 250`,
-          [lastReceivedUs.toString()]
-        ),
-        db.query(
-          `select call.id,call.source_component_id,component.code,call.external_target_id,target.target_key,target.base_url,
-                  call.route_path,call.scope_name,call.status,call.http_status,call.error_code,call.attempt_count,
-                  call.correlation_id,call.created_at,call.completed_at,phase.event_phase,phase.event_at,
-                  floor(extract(epoch from phase.event_at)*1000000)::bigint received_us
-             from component_external_gateway_call call
-             join component on component.id=call.source_component_id
-             join component_external_target target on target.id=call.external_target_id
-             cross join lateral (
-               select 'PENDING'::text event_phase,call.created_at event_at
-               union all
-               select 'FINAL'::text event_phase,call.completed_at event_at where call.completed_at is not null
-             ) phase
-            where phase.event_at >= to_timestamp($1::numeric / 1000000)
-            order by phase.event_at,call.id,phase.event_phase desc limit 500`,
-          [lastReceivedUs.toString()]
-        )
-      ]);
-      const events = [
-        ...pulseResult.rows.map((row) => ({ key: `pulse:${String(row.id)}`, orderUs: BigInt(String(row.received_us)), orderRank: 1, event: dashboardRuntimeEventFromOperationRow(row as Record<string, unknown>) })),
-        ...leaseResult.rows.map((row) => ({ key: `lease:${String(row.id)}`, orderUs: BigInt(String(row.received_us)), orderRank: 0, event: dashboardRuntimeEventFromLeaseRow(row as Record<string, unknown>) })),
-        ...externalResult.rows.map((row) => {
-          const phase = String(row.event_phase) === "PENDING" ? "PENDING" : "FINAL";
-          return {
-            key: `external:${String(row.id)}:${phase}`,
-            orderUs: BigInt(String(row.received_us)),
-            orderRank: phase === "PENDING" ? 0 : 1,
-            event: dashboardRuntimeEventFromExternalRow({
-              ...(row as Record<string, unknown>),
-              status: phase === "PENDING" ? "PENDING" : row.status,
-              completed_at: phase === "PENDING" ? null : row.completed_at
-            })
-          };
-        })
-      ].sort(compareDashboardStreamItems);
-      for (const item of events) {
-        if (!dashboardStreamItemIsAfter(item, { orderUs: lastReceivedUs, orderRank: lastEventRank, key: lastEventKey })) continue;
-        lastReceivedUs = item.orderUs;
-        lastEventRank = item.orderRank;
-        lastEventKey = item.key;
-        reply.raw.write(`id: ${item.key}\nevent: runtime\ndata: ${JSON.stringify(item.event)}\n\n`);
-      }
-      } finally {
-        sending = false;
+      if (closed) return;
+      const result = await db.query(
+        `select event.id,event.component_id,component.code,event.pulse_type,event.direction,event.operation_key,event.success,
+                event.correlation_id,event.trace_id,event.occurred_at,event.received_at
+           from component_operation_event event join component on component.id=event.component_id
+          where event.received_at > $1 or (event.received_at = $1 and event.id > $2::uuid)
+          order by event.received_at,event.id limit 200`,
+        [lastReceivedAt, lastEventId]
+      );
+      for (const row of result.rows) {
+        lastReceivedAt = new Date(row.received_at).toISOString();
+        lastEventId = String(row.id);
+        reply.raw.write(`id: ${lastEventId}\nevent: runtime\ndata: ${JSON.stringify({
+          id: lastEventId, componentId: String(row.component_id), componentCode: String(row.code), pulseType: row.pulse_type,
+          direction: row.direction, operationKey: String(row.operation_key), success: Boolean(row.success),
+          correlationId: String(row.correlation_id), traceId: row.trace_id ?? null, occurredAt: row.occurred_at, receivedAt: row.received_at
+        })}\n\n`);
       }
     };
-    reply.raw.write(`retry: 3000\nevent: ready\ndata: ${JSON.stringify({ correlationId, source: "persisted_component_operation_lease+component_operation_event+component_external_gateway_call", replayCursor: requestedCursor || null })}\n\n`);
+    reply.raw.write(`retry: 3000\nevent: ready\ndata: ${JSON.stringify({ correlationId, source: "persisted_component_operation_event", replayCursor: requestedCursor || null })}\n\n`);
     await sendPersisted().catch(() => undefined);
-    const poll = setInterval(() => { void sendPersisted().catch(() => undefined); }, 1500);
-    const heartbeat = setInterval(() => { if (!closed) reply.raw.write(`event: heartbeat\ndata: ${JSON.stringify({ at: new Date().toISOString(), cursor: lastEventKey || null })}\n\n`); }, 12000);
+    const poll = setInterval(() => { void sendPersisted().catch(() => undefined); }, 2000);
+    const heartbeat = setInterval(() => { if (!closed) reply.raw.write(`event: heartbeat\ndata: ${JSON.stringify({ at: new Date().toISOString() })}\n\n`); }, 15000);
     request.raw.on("close", () => {
       closed = true;
       clearInterval(poll);

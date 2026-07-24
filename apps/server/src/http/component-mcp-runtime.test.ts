@@ -36,14 +36,14 @@ function fakeDb(socketPath: string, activeCount = 0): Db {
       audience: `https://${component.hostname}`,
       scope_names: ["component.invoke", "mcp.tools.call"], fingerprint: "access-fingerprint"
     }] };
-    if (sql.includes("principal_permission_suspension")) return { rowCount: 0, rows: [] };
+    if (sql.includes("from principal_permission_suspension")) return { rowCount: 0, rows: [] };
     if (sql.includes("from component_permission")) return { rowCount: 1, rows: [{}] };
     if (sql.includes("select coalesce((runtime_resources->>'maxConcurrency')")) return { rowCount: 1, rows: [{ max_concurrency: 1, active_count: activeCount }] };
     if (sql.includes("from component_runtime_target")) return { rowCount: 1, rows: [{
       transport: "UDS", upstream: socketPath, socket_path: socketPath, status: "HEALTHY"
     }] };
     if (sql.includes("insert into component_operation_lease")) return { rowCount: 1, rows: [{ id: "90000000-0000-4000-8000-000000000003" }] };
-    return { rowCount: 1, rows: [{}] };
+    return { rowCount: 0, rows: [] };
   };
   const client = { query, release: () => undefined };
   return { query, connect: async () => client } as unknown as Db;

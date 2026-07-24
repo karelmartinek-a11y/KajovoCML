@@ -1,6 +1,6 @@
 # SSOT_CURRENT
 
-This document records the current repository source of truth as of `2026-07-24`.
+This document records the current repository source of truth as of `2026-07-22`.
 
 - Product identity: `KajovoCML`
 - Internal technical prefix: `KCML`
@@ -30,22 +30,10 @@ Authoritative files for the current control-plane baseline:
 The repository now defines an additive OWNER Dashboard control-plane baseline. The authoritative implementation is:
 
 - `apps/server/src/migrations/004_dashboard_topology.sql`
-- `apps/server/src/migrations/005_dashboard_operational_views.sql`
-- `apps/server/src/migrations/006_dashboard_identity_delete_guards.sql`
-- `apps/server/src/migrations/007_component_pulse_idempotency.sql`
 - `apps/server/src/domain/dashboard-topology.ts`
 - `apps/server/src/http/dashboard-routes.ts`
 - `apps/admin-ui/src/dashboard-page.tsx`
 - `docs/dashboard/capability-parity.json`
-- `docs/dashboard/evidence-manifest.json`
-- `docs/onboarding-catalogs/onboarding-1.2.json`
-- `docs/releases/2026.07.24-dashboard.1/README.md`
-
-Current additive release identity:
-
-- application release: `2026.07.24-dashboard.1`;
-- onboarding catalog: `1.2`;
-- manifest and PULSE compatibility baseline: `2026.07.22-compliance.1`.
 
 Dashboard invariants:
 

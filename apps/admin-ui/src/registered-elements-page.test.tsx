@@ -12,7 +12,7 @@ Object.defineProperty(globalThis, "EventSource", { configurable: true, value: Ev
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 describe("Registrované prvky", () => {
   it("zobrazuje přesný prázdný stav", async () => {
-    vi.mocked(loadDashboardTopology).mockResolvedValue({ generatedAt: "2026-07-24T00:00:00Z", live: { source: "db", connected: true, lastEventAt: null, stale: false }, workspace: { id: "1", viewport: { x: 0, y: 0, zoom: 1 }, lockVersion: 0 }, nodes: [], ports: [], edges: [], externalNodes: [], externalEdges: [], activeProcesses: [], secrets: [], alarms: [], events: [] });
+    vi.mocked(loadDashboardTopology).mockResolvedValue({ generatedAt: "2026-07-24T00:00:00Z", live: { source: "db", connected: true, lastEventAt: null, stale: false }, workspace: { id: "1", viewport: { x: 0, y: 0, zoom: 1 }, lockVersion: 0 }, nodes: [], ports: [], edges: [], secrets: [], alarms: [], events: [] });
     render(<RegisteredElementsPage onOpenPage={vi.fn()} />);
     expect(await screen.findByRole("heading", { name: "Registrované prvky" })).toBeTruthy();
     expect(await screen.findByText("Žádný registrovaný prvek není dostupný.")).toBeTruthy();

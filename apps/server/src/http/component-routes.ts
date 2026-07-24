@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import type { AppServerConfig } from "../config.js";
@@ -6,14 +6,12 @@ import type { Db } from "../db.js";
 import { ingestComponentAuditEvent } from "../domain/component-audit.js";
 import { authorizeComponentCall, componentSourceIdentityMatches } from "../domain/component-auth.js";
 import {
-  beginComponentPulseLease,
   cancelComponentOnboarding,
   COMPONENT_CATALOG_VERSION,
   createComponentOnboarding,
   evaluateComponentReadiness,
   getComponent,
   getComponentOnboarding,
-  failComponentPulseLease,
   ingestComponentOperationEvent,
   ingestComponentPulse,
   listComponents,
@@ -637,22 +635,6 @@ export function registerComponentRoutes(app: FastifyInstance, db: Db, config: Ap
       const token = bearer(request);
       if (!token) return sendError(reply, 401, "invalid_token", undefined, correlationId);
       const deliveredEnvelope = { ...body, direction: "INCOMING" as const };
-      const pulseAuthorization = {
-        tokenFingerprint: decision.tokenFingerprint ?? "",
-        permissionEpoch: decision.policyEpoch ?? 0,
-        sourceClientId: decision.sourceClientId ?? "",
-        runtimeContext: {
-          targetComponentId: String(target.rows[0].id),
-          route: "/v2/component-pulse",
-          audience: `https://${targetHostname}`,
-          transport: "KCML_EGRESS"
-        }
-      };
-      const started = await beginComponentPulseLease(db, decision.sourceComponentId, body, pulseAuthorization);
-      if (started.replayed) {
-        if (started.success) return reply.code(202).send({ accepted: true, correlationId: body.correlationId, delivered: true, replayed: true, targetHostname, policyEpoch: decision.policyEpoch });
-        return sendError(reply, 502, "pulse_delivery_previously_failed", undefined, correlationId);
-      }
       try {
         const delivered = await fetchThroughEgress(config, {
           url: `https://${targetHostname}/v2/component-pulse`, method: "POST",
@@ -662,16 +644,18 @@ export function registerComponentRoutes(app: FastifyInstance, db: Db, config: Ap
         });
         if (delivered.status < 200 || delivered.status >= 300) throw new Error(`pulse_delivery_http_${delivered.status}`);
         const receipt = await ingestComponentPulse(db, decision.sourceComponentId, body, {
-          ...pulseAuthorization,
-          leaseId: started.leaseId
+          tokenFingerprint: decision.tokenFingerprint ?? "", permissionEpoch: decision.policyEpoch ?? 0, sourceClientId: decision.sourceClientId ?? ""
         });
         return reply.code(202).send({ ...receipt, delivered: true, targetHostname, policyEpoch: decision.policyEpoch });
       } catch (error) {
         const output = { error: error instanceof Error ? error.message : "pulse_delivery_failed", targetHostname };
-        await failComponentPulseLease(db, decision.sourceComponentId, body, {
-          ...pulseAuthorization,
-          leaseId: started.leaseId
-        }, output);
+        await ingestComponentOperationEvent(db, decision.sourceComponentId, {
+          operationKey: `pulse:${body.pulseType}:delivery`, inputDigest: `sha256:${createHash("sha256").update(JSON.stringify(body.input)).digest("hex")}`,
+          inputPayload: body.input, processTrace: { transport: "KCML_EGRESS", targetHostname },
+          outputDigest: `sha256:${createHash("sha256").update(JSON.stringify(output)).digest("hex")}`, outputPayload: output,
+          success: false, correlationId: body.correlationId, causationId: body.causationId, traceId: body.traceId,
+          accessTokenFingerprint: decision.tokenFingerprint ?? undefined, occurredAt: new Date().toISOString()
+        });
         return sendError(reply, 502, "pulse_delivery_failed", undefined, correlationId);
       }
     } catch (error) {

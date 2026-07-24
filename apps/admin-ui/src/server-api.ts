@@ -256,7 +256,6 @@ export async function saveDashboardLayout(input: {
   expectedVersion?: number;
   viewport: { x: number; y: number; zoom: number };
   positions: Array<{ nodeId: string; x: number; y: number }>;
-  externalPositions?: Array<{ externalTargetId: string; x: number; y: number }>;
 }): Promise<{ lock_version: number }> {
   const response = await api<{ layout: { lock_version: number } }>("/api/dashboard/layout", {
     method: "PUT", headers: mutationHeaders(), body: JSON.stringify(input)
