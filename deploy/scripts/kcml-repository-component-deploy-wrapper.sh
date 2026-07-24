@@ -42,6 +42,12 @@ export KCML_SECRET_BROKER_CAPABILITY="$(
   CONFIG_VAULT_MASTER_KEY_BASE64_FILE=/etc/kcml/credentials/config_vault_master_key \
   node /opt/kcml/current/apps/server/dist/cli/issue-repository-component-runtime-token.js "$repository_key"
 )"
+export KCML_EGRESS_CAPABILITY="$(
+  KCML_PROCESS_ROLE=worker \
+  DATABASE_URL_FILE=/etc/kcml/credentials/worker/database_url \
+  CONFIG_VAULT_MASTER_KEY_BASE64_FILE=/etc/kcml/credentials/config_vault_master_key \
+  node /opt/kcml/current/apps/server/dist/cli/issue-repository-component-runtime-egress.js "$repository_key"
+)"
 export KCML_SECRET_BROKER_SOCKET_PATH="$secret_broker_socket_path"
 export KCML_EGRESS_SOCKET_PATH="${EGRESS_PROXY_SOCKET_PATH:-/var/lib/kcml/egress/proxy.sock}"
 

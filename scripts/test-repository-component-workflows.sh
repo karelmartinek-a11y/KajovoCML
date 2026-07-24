@@ -3,8 +3,10 @@ set -euo pipefail
 
 pr_workflow=".github/workflows/repository-component-pr.yml"
 deploy_workflow=".github/workflows/repository-component-deploy.yml"
+deploy_wrapper="deploy/scripts/kcml-repository-component-deploy-wrapper.sh"
 test -f "$pr_workflow"
 test -f "$deploy_workflow"
+test -f "$deploy_wrapper"
 
 grep -Fq 'paths:' "$pr_workflow"
 grep -Fq -- '- "components/*/**"' "$pr_workflow"
@@ -34,6 +36,7 @@ grep -Fq 'diff -u /tmp/repository-component-build-1 /tmp/repository-component-bu
 grep -Fq 'https://kajovocml.hcasc.cz/contracts/repository-component-deploy/v1' "$deploy_workflow"
 grep -Fq '/usr/local/sbin/kcml-repository-component-deploy-wrapper' "$deploy_workflow"
 grep -Fq 'sudo -n /usr/local/sbin/kcml-repository-component-deploy-wrapper' "$deploy_workflow"
+grep -Fq 'issue-repository-component-runtime-egress' "$deploy_wrapper"
 grep -Fq '"${{ needs.discover.outputs.execution_mode }}"' "$deploy_workflow"
 grep -Fq '"${{ needs.discover.outputs.single_active_worker }}"' "$deploy_workflow"
 grep -Fq '"${{ needs.discover.outputs.graceful_shutdown_seconds }}"' "$deploy_workflow"
