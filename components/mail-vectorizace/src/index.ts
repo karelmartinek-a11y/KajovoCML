@@ -55,6 +55,15 @@ type StoredMailMetadata = {
   normalizedText: string;
 };
 
+type DependencySummary = {
+  dataPath: string;
+  mailSecretStatus: "available" | "pending";
+  vectorSecretStatus: "available" | "pending";
+  mode: RuntimeMode;
+  pendingReason?: string;
+  imapTlsValidated?: boolean;
+};
+
 const inputSchema = z.object({
   limit: z.number().int().min(1).max(100).optional()
 });
@@ -87,15 +96,26 @@ function openDatabase(context: RuntimeContext): DatabaseSync {
 }
 
 async function validateDependencies(context: RuntimeContext): Promise<Record<string, unknown>> {
-  const mailPassword = await context.secrets.get("MAIL_RECEPCE_PASS");
-  const vectorApiKey = await context.secrets.get("API_KEY_VECTOR");
-  const summary: Record<string, unknown> = {
+  const summary: DependencySummary = {
     dataPath: context.storage.dataPath,
-    mailSecretResolved: Boolean(mailPassword),
-    vectorSecretResolved: Boolean(vectorApiKey),
+    mailSecretStatus: "pending",
+    vectorSecretStatus: "pending",
     mode: context.runtime.currentMode()
   };
-  if (context.runtime.currentMode() === "ACTIVE") {
+  try {
+    const mailPassword = await context.secrets.get("MAIL_RECEPCE_PASS");
+    const vectorApiKey = await context.secrets.get("API_KEY_VECTOR");
+    summary.mailSecretStatus = mailPassword ? "available" : "pending";
+    summary.vectorSecretStatus = vectorApiKey ? "available" : "pending";
+  } catch (error) {
+    const code = error instanceof Error ? error.message : "secret_unavailable";
+    if (["secret_unavailable", "secret_broker_not_configured", "secret_timeout"].includes(code)) {
+      summary.pendingReason = code;
+      return summary;
+    }
+    throw error;
+  }
+  if (summary.mailSecretStatus === "available" && summary.vectorSecretStatus === "available" && context.runtime.currentMode() === "ACTIVE") {
     const socket = await context.egress.connectTls({
       host: imapHost,
       port: 993,
@@ -136,11 +156,13 @@ export async function normalizeMail(rawMessage: string): Promise<StoredMailMetad
 export async function start(context: RuntimeContext): Promise<void> {
   openDatabase(context);
   const dependencySummary = await validateDependencies(context);
+  const waitingForSecrets = dependencySummary.mailSecretStatus !== "available" || dependencySummary.vectorSecretStatus !== "available";
   await context.runtime.reportState({
     phase: context.runtime.currentMode().toLowerCase(),
     databasePath: databasePath(context),
     imapHost,
-    mailbox: "recepce@hotelchodovas.cz"
+    mailbox: "recepce@hotelchodovas.cz",
+    waitingForSecrets
   });
   await context.runtime.reportHeartbeat({
     phase: "started",
@@ -148,7 +170,9 @@ export async function start(context: RuntimeContext): Promise<void> {
   });
   await context.runtime.reportReady({
     ready: true,
-    status: context.runtime.currentMode() === "PREPARE" ? "PREPARED" : "READY",
+    status: waitingForSecrets
+      ? "WAITING_FOR_RUNTIME_SECRETS"
+      : context.runtime.currentMode() === "PREPARE" ? "PREPARED" : "READY",
     dependencySummary
   });
 }
