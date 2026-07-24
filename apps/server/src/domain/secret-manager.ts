@@ -468,6 +468,7 @@ export async function authenticatePrincipalAccessToken(db: Db, token: string, co
   const digest = hmacToken(token, config.ACCESS_TOKEN_HMAC_KEY_BASE64);
   const result = await db.query(
     `select access.id,access.scope_names,access.issued_policy_epoch,access.issued_revocation_epoch,
+            access.audience,access.target_component_id,
             principal.id principal_id,principal.public_id,principal.status,principal.policy_epoch,principal.revocation_epoch,
             component.id component_id,component.enabled,component.egress_enabled,component.activation_state,
             component.lifecycle_state,component.operational_state,component.deregistered_at
@@ -492,10 +493,13 @@ export async function authenticatePrincipalAccessToken(db: Db, token: string, co
     [row.component_id, digest]
   );
   const onboardingSecretResolveAllowed = Number(onboarding.rowCount ?? 0) > 0;
-  if ((!onboardingSecretResolveAllowed && row.status !== "ACTIVE")
+  const runtimeDeploySecretResolveAllowed = String(row.audience) === "kcml-runtime-secret-broker"
+    && String(row.target_component_id) === String(row.component_id);
+  const preActivationSecretResolveAllowed = onboardingSecretResolveAllowed || runtimeDeploySecretResolveAllowed;
+  if ((!preActivationSecretResolveAllowed && row.status !== "ACTIVE")
     || Number(row.issued_policy_epoch) !== Number(row.policy_epoch)
     || Number(row.issued_revocation_epoch) !== Number(row.revocation_epoch)
-    || (!onboardingSecretResolveAllowed && (!row.enabled || !row.egress_enabled || row.activation_state !== "ACTIVE" || row.lifecycle_state !== "ACTIVE"))
+    || (!preActivationSecretResolveAllowed && (!row.enabled || !row.egress_enabled || row.activation_state !== "ACTIVE" || row.lifecycle_state !== "ACTIVE"))
     || ["QUARANTINED", "RETIRED"].includes(String(row.operational_state)) || row.deregistered_at) return null;
   await db.query("update principal_access_token set last_used_at=now() where id=$1", [row.id]);
   return { kind: "COMPONENT", id: String(row.component_id), publicId: String(row.public_id), auditActorType: "component" };
