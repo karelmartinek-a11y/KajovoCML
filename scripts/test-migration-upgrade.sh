@@ -183,3 +183,30 @@ select case when
   and (select valid from verify_audit_chain()) is true
 then 'baseline-compaction-ok' else 'baseline-compaction-failed' end;
 SQL
+
+psql "$KCML_UPGRADE_DATABASE_URL" --no-psqlrc --set ON_ERROR_STOP=1 <<'SQL'
+delete from schema_migration where version='005_dashboard_identity_delete_guards.sql';
+insert into schema_migration(version, applied_at, sequence_number, checksum_sha256)
+values ('005_dashboard_operational_views.sql', now(), 5, repeat('0', 64));
+SQL
+
+run_migrations
+run_migrations
+
+psql "$KCML_UPGRADE_DATABASE_URL" --no-psqlrc --set ON_ERROR_STOP=1 --tuples-only --no-align <<SQL | grep -Fx 'baseline-retired-dashboard-ledger-ok'
+select case when
+  (select count(*) from schema_migration) = 5
+  and exists (
+    select 1
+      from schema_migration
+     where version='005_dashboard_identity_delete_guards.sql'
+       and sequence_number=5
+       and checksum_sha256 ~ '^[0-9a-f]{64}$'
+  )
+  and not exists (
+    select 1
+      from schema_migration
+     where version='005_dashboard_operational_views.sql'
+  )
+then 'baseline-retired-dashboard-ledger-ok' else 'baseline-retired-dashboard-ledger-failed' end;
+SQL

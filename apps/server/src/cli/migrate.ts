@@ -9,6 +9,11 @@ import { KCML_RELEASE } from "../domain/release.js";
 
 const MIGRATION_NAME = /^(\d{3})_([a-z0-9_]+)[.]sql$/;
 const BASELINE_MIGRATION = "001_pre_production_baseline.sql";
+const KNOWN_RETIRED_PRE_BASELINE_MIGRATIONS = new Set([
+  "005_dashboard_operational_views.sql",
+  "006_dashboard_identity_delete_guards.sql",
+  "007_component_pulse_idempotency.sql"
+]);
 
 export type MigrationFile = {
   name: string;
@@ -32,6 +37,21 @@ export function validateMigrationNames(entries: string[]): Array<{ name: string;
     }
   }
   return parsed;
+}
+
+export function shouldCompactAppliedSet(
+  migrations: MigrationFile[],
+  applied: Map<string, { sequence: number | null; checksum: string | null }>
+): boolean {
+  if (applied.size === 0) return false;
+  if (!applied.has(BASELINE_MIGRATION)) return true;
+  const available = new Set(migrations.map((migration) => migration.name));
+  for (const version of applied.keys()) {
+    if (available.has(version)) continue;
+    if (KNOWN_RETIRED_PRE_BASELINE_MIGRATIONS.has(version)) return true;
+    throw new Error(`unknown_applied_migration:${version}`);
+  }
+  return false;
 }
 
 async function loadMigrations(directory: string): Promise<MigrationFile[]> {
@@ -163,7 +183,7 @@ export async function runMigrations(): Promise<void> {
     if (!baseline) throw new Error(`baseline_migration_missing:${BASELINE_MIGRATION}`);
     let applied = await appliedMigrations(client);
 
-    if (applied.size > 0 && !applied.has(baseline.name)) {
+    if (shouldCompactAppliedSet(migrations, applied)) {
       await client.query("begin");
       try {
         await client.query("set local lock_timeout='10s'");
