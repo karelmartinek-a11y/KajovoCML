@@ -38,8 +38,7 @@ async function principalFor(db: Db, config: AppServerConfig, request: FastifyReq
   const token = bearer(request);
   if (!token) return null;
   if (token.startsWith("kci_")) return authenticateIntegrationTokenForSecretResolve(db, token, config);
-  if (token.startsWith("kca_")) return authenticatePrincipalAccessToken(db, token, config);
-  return null;
+  return authenticatePrincipalAccessToken(db, token, config);
 }
 
 export function isSecretApiHostname(host: string, config: Pick<AppServerConfig, "PUBLIC_BASE_DOMAIN">): boolean {

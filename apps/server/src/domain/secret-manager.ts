@@ -464,8 +464,15 @@ export async function revokeSecretGrant(db: Db, actorId: string, correlationId: 
 }
 
 export async function authenticatePrincipalAccessToken(db: Db, token: string, config: SecretManagerConfig): Promise<SecretPrincipal | null> {
-  if (!token.startsWith("kca_") || token.length < 80 || token.length > 120) return null;
-  const digest = hmacToken(token, config.ACCESS_TOKEN_HMAC_KEY_BASE64);
+  const trimmedToken = token.trim();
+  const candidates = new Set<string>();
+  if (trimmedToken.length >= 80 && trimmedToken.length <= 120) candidates.add(trimmedToken);
+  if (trimmedToken.startsWith("kca_")) {
+    const legacyPrefixed = trimmedToken.slice(4);
+    if (legacyPrefixed.length >= 80 && legacyPrefixed.length <= 120) candidates.add(legacyPrefixed);
+  }
+  if (!candidates.size) return null;
+  const digests = [...candidates].map((value) => hmacToken(value, config.ACCESS_TOKEN_HMAC_KEY_BASE64));
   const result = await db.query(
     `select access.id,access.scope_names,access.issued_policy_epoch,access.issued_revocation_epoch,
             access.audience,access.target_component_id,
@@ -475,8 +482,8 @@ export async function authenticatePrincipalAccessToken(db: Db, token: string, co
        from principal_access_token access
        join principal on principal.id=access.source_principal_id
        join component on component.principal_id=principal.id
-      where access.lookup_digest=$1 and access.revoked_at is null and access.expires_at>now()`,
-    [digest]
+      where access.lookup_digest = any($1::bytea[]) and access.revoked_at is null and access.expires_at>now()`,
+    [digests]
   );
   if (!result.rowCount) return null;
   const row = result.rows[0];
@@ -486,11 +493,11 @@ export async function authenticatePrincipalAccessToken(db: Db, token: string, co
     `select state
        from component_onboarding_job
       where component_id=$1
-        and principal_access_token_digest=$2
+        and principal_access_token_digest = any($2::bytea[])
         and state not in ('CANCELLED','FAILED')
       order by created_at desc
       limit 1`,
-    [row.component_id, digest]
+    [row.component_id, digests]
   );
   const onboardingSecretResolveAllowed = Number(onboarding.rowCount ?? 0) > 0;
   const runtimeDeploySecretResolveAllowed = String(row.audience) === "kcml-runtime-secret-broker"

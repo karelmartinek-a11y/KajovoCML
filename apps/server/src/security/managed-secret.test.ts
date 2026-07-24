@@ -59,7 +59,7 @@ describe("secret api credential authentication", () => {
       query: async (sql: string, params: unknown[]) => {
         seenSql.push(sql);
         if (sql.includes("from principal_access_token")) {
-          expect(params[0]).toEqual(hmacToken(token, accessKey));
+          expect(params[0]).toEqual([hmacToken(token, accessKey), hmacToken("a".repeat(80), accessKey)]);
           return { rowCount: 1, rows: [{
             id: "access-id", scope_names: ["secret.resolve"], issued_policy_epoch: 4, issued_revocation_epoch: 7,
             principal_id: "91000000-0000-4000-8000-000000000002", public_id: "KCML91001", status: "ACTIVE",
@@ -117,7 +117,7 @@ describe("secret api credential authentication", () => {
 
   it("accepts the repository runtime secret-broker token before component activation", async () => {
     const accessKey = randomBytes(32);
-    const token = `kca_${"c".repeat(80)}`;
+    const token = "c".repeat(86);
     const seenSql: string[] = [];
     const db = {
       query: async (sql: string) => {
