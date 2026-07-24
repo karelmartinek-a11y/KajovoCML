@@ -66,6 +66,7 @@ test -s "$sbom"
 node /opt/kcml/current/scripts/verify-repository-component-attestations.mjs \
   "$sbom" "$provenance" "$image_digest" "$source_commit" "$build_run_id"
 
-install -d -m 0750 -o root -g kcml "$(dirname "$receipt_path")"
+receipt_dir="$(dirname "$receipt_path")"
+test -d "$receipt_dir"
 exec /usr/local/libexec/kcml-install-repository-component \
   "$repository_key" "$source_commit" "$image_reference" "$image_digest" "$build_run_id" "$deploy_run_id" "$deploy_run_attempt" "$requested_git_ref" "$execution_mode" "$single_active_worker" "$graceful_shutdown_seconds" "$receipt_path"
