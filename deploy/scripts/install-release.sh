@@ -428,11 +428,11 @@ curl -fsS -H "Host: secrets.${PUBLIC_BASE_DOMAIN:?PUBLIC_BASE_DOMAIN is required
   "http://127.0.0.1:${PORT:-3010}/.well-known/kcml-secret-api" \
   | jq -e --arg issuer "https://secrets.${PUBLIC_BASE_DOMAIN}" \
       --arg resolve "https://secrets.${PUBLIC_BASE_DOMAIN}/v1/secrets/resolve" \
-      '.issuer == $issuer and .resolveEndpoint == $resolve and .auth == ["access_token_bearer"]' >/dev/null
+      '.issuer == $issuer and .resolveEndpoint == $resolve and (.auth | sort) == ["access_token_bearer", "integration_token_bearer"]' >/dev/null
 curl -fsS "https://secrets.${PUBLIC_BASE_DOMAIN}/.well-known/kcml-secret-api" \
   | jq -e --arg issuer "https://secrets.${PUBLIC_BASE_DOMAIN}" \
       --arg resolve "https://secrets.${PUBLIC_BASE_DOMAIN}/v1/secrets/resolve" \
-      '.issuer == $issuer and .resolveEndpoint == $resolve and .auth == ["access_token_bearer"]' >/dev/null
+      '.issuer == $issuer and .resolveEndpoint == $resolve and (.auth | sort) == ["access_token_bearer", "integration_token_bearer"]' >/dev/null
 curl -fsS "https://secrets.${PUBLIC_BASE_DOMAIN}/health" \
   | jq -e '.status == "ok"' >/dev/null
 test "$(curl -sS -o /dev/null -w '%{http_code}' -H 'Host: unknown.invalid' \

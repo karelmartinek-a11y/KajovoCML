@@ -48,7 +48,7 @@ test "$(grep -c '^step sync-admin-password$' "$tmpdir/release/deploy/scripts/ins
 grep -Fq 'dist/cli/admin-login-smoke.js' "$tmpdir/release/deploy/scripts/install-release.sh"
 grep -Fq "node \"\$source_dir/apps/server/dist/cli/sync-admin-password.js\"" "$tmpdir/release/deploy/scripts/install-release.sh"
 grep -Fq "node \"\$source_dir/apps/server/dist/cli/ensure-platform-worker-access.js\"" "$tmpdir/release/deploy/scripts/install-release.sh"
-grep -Fq '.auth == ["access_token_bearer"]' "$tmpdir/release/deploy/scripts/install-release.sh"
+grep -Fq '(.auth | sort) == ["access_token_bearer", "integration_token_bearer"]' "$tmpdir/release/deploy/scripts/install-release.sh"
 if grep -q 'admin_sync_totp_file' "$tmpdir/release/deploy/scripts/install-release.sh"; then
   exit 1
 fi

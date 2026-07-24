@@ -38,7 +38,7 @@
 
 - Secret values are authoritative in PostgreSQL and manageable through the KCML admin Secrets page. Do not add application `.env` keys or GitHub Actions secrets for managed values.
 - Encryption uses the existing `CONFIG_VAULT_MASTER_KEY_BASE64` and `CONFIG_VAULT_MASTER_KEY_ID`; rotating that bootstrap key requires the normal config-vault key-rotation procedure and a Secret Manager re-encryption migration plan.
-- Runtime clients call `POST https://secrets.<PUBLIC_BASE_DOMAIN>/v1/secrets/resolve` only with the component's long-lived KCML access bearer and the `secret.resolve` scope.
+- During onboarding, callers use the integration bearer only for the explicitly granted secret names recorded on that token. After automatic activation, the same Secret API endpoint accepts the component's long-lived KCML access bearer with the `secret.resolve` scope and the migrated grant set bound to the component principal.
 - Every resolve rechecks the current principal and component lifecycle, activation, egress, policy epoch and revocation epoch. It then requires an active secret plus a current explicit or all-secrets grant. Integration tokens and retired component client secrets are never runtime secret identities; missing, inactive, deleted and ungranted names remain indistinguishable as `secret_unavailable`.
 
 ## Backup and restore evidence

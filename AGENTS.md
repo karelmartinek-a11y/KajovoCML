@@ -140,7 +140,7 @@ Never claim that a test, CI run, release, deployment, visual review or compatibi
 
 An in-progress GitHub Actions CI, release or deploy run is not a blocker, is not a handoff point and is not sufficient for completion. Wait for the relevant GitHub run to finish and inspect the concrete result before handing off.
 
-An unsuccessful GitHub Actions CI, release or deploy run is not a handoff point. Treat it as active work to continue, investigate and fix unless the blocker threshold below is reached.
+An unsuccessful GitHub Actions CI, release or deploy run for any reason is never a handoff point and never a reason to stop. Treat it as active work to continue, investigate, fix and rerun unless the blocker threshold below is reached.
 
 ## Git, CI, release and deployment
 
@@ -153,7 +153,7 @@ An unsuccessful GitHub Actions CI, release or deploy run is not a handoff point.
 - Verify the deployed commit/build, services, migrations, logs, relevant endpoints, OAuth/MCP behavior, catalog compatibility and the changed user scenario after deployment.
 - Every commit that is presented as complete must be followed through to a successful relevant GitHub deploy run. A commit, push or green local verification alone is not a completion state.
 - A GitHub Actions CI, release or deploy run that is still `in_progress`, `queued` or otherwise unfinished must be waited on. It is not a blocker, not a handoff and not a reason to stop early.
-- A failed GitHub CI, release or deploy run is not a blocker or handoff by itself. Continue investigating and retrying until a successful deploy is reached or the explicit blocker threshold below is hit.
+- A failed GitHub CI, release or deploy run for any reason is not a blocker, not a handoff point and not a valid stopping point. It must be investigated, fixed and rerun until a successful deploy is reached or the explicit blocker threshold below is hit.
 - If deploy fails twice in a row for the same objective, you may additionally use authorized SSH access on the production server to diagnose and remediate, but any durable fix must still be reflected back into the repository and verified through the standard GitHub pipeline.
 - Outside the active reset, roll back only through the documented migration-compatible release procedure. The reset itself must use its approved fail-closed backup/recovery procedure and must not claim compatibility with the intentionally removed test baseline.
 
@@ -181,4 +181,4 @@ Report only verified facts and include:
 
 A partially implemented, unverified or blocked change must be labelled accordingly and must never be described as complete.
 
-Do not hand off work while the relevant GitHub CI or deploy run is still in progress. Do not hand off work after a failed GitHub CI or deploy run as though it were complete. Only a successful relevant GitHub deploy run qualifies as completion; a blocker exists only after ten consecutive deploy failures for the same objective.
+Do not hand off work while the relevant GitHub CI or deploy run is still in progress. Do not hand off work after a failed GitHub CI or deploy run for any reason as though it were complete. Failed CI or deploy remains active work that must be repaired and rerun. Only a successful relevant GitHub deploy run qualifies as completion; a blocker exists only after ten consecutive deploy failures for the same objective.

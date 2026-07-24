@@ -76,9 +76,9 @@ grep -Fq 'if [ -z "${KCML_FACTORY_RESET_CONFIRM:-}" ]; then' "$install_script"
 grep -Fq 'KCML_FACTORY_RESET_CONFIRM="${KCML_FACTORY_RESET_CONFIRM}"' "$install_script"
 grep -Fq 'KCML_PROCESS_ROLE=migrate' "$install_script"
 grep -Fq 'DATABASE_URL_FILE=/etc/kcml/credentials/migrator/database_url' "$install_script"
-grep -Fq '.auth == ["access_token_bearer"]' "$install_script"
-if grep -Eq 'client_secret_basic|integration_token_bearer' "$install_script"; then
-  echo "secret API deployment checks must enforce access-token bearer only" >&2
+grep -Fq '(.auth | sort) == ["access_token_bearer", "integration_token_bearer"]' "$install_script"
+if grep -Eq 'client_secret_basic' "$install_script"; then
+  echo "secret API deployment checks must not require client-secret auth" >&2
   exit 1
 fi
 grep -Fq "where version='001_pre_production_baseline.sql'" "$install_script"
