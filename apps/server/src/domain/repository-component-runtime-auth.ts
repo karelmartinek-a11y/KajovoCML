@@ -9,6 +9,60 @@ import { validateComponentManifest } from "./component.js";
 import type { ComponentManifest } from "./component.js";
 
 type Queryable = Pick<Db, "query">;
+type RuntimeEgressGrant =
+  | { type: "HTTPS_FETCH"; targetHost: string; port: number }
+  | { type: "TCP_TLS"; targetHost: string; port: number; servername: string };
+
+function text(value: unknown): string {
+  return typeof value === "string" || typeof value === "number" || typeof value === "boolean" ? String(value) : "";
+}
+
+function record(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function validateRuntimeEgressGrants(input: unknown): RuntimeEgressGrant[] {
+  const runtime = record(input);
+  const egressGrants = Array.isArray(runtime?.egressGrants) ? runtime.egressGrants : null;
+  if (!egressGrants) {
+    throw new Error("runtime_egress_grants_required");
+  }
+  return egressGrants.map((grant) => {
+    const egressGrant = record(grant);
+    if (!egressGrant) {
+      throw new Error("runtime_egress_grant_invalid");
+    }
+    const type = text(egressGrant.type);
+    if (type === "HTTPS_FETCH") {
+      const targetHost = text(egressGrant.targetHost);
+      const port = egressGrant.port;
+      if (!targetHost || !Number.isInteger(port)) {
+        throw new Error("runtime_egress_grant_invalid");
+      }
+      return {
+        type: "HTTPS_FETCH",
+        targetHost,
+        port: Number(port)
+      };
+    }
+    if (type === "TCP_TLS") {
+      const targetHost = text(egressGrant.targetHost);
+      const port = egressGrant.port;
+      const servername = text(egressGrant.servername);
+      const protocol = text(egressGrant.protocol);
+      if (!targetHost || !Number.isInteger(port) || !servername || protocol !== "TCP_TLS") {
+        throw new Error("runtime_egress_grant_invalid");
+      }
+      return {
+        type: "TCP_TLS",
+        targetHost,
+        port: Number(port),
+        servername
+      };
+    }
+    throw new Error("runtime_egress_grant_invalid");
+  });
+}
 
 async function repositoryComponentTarget(client: Queryable, repositoryKey: string): Promise<{
   componentId: string;
@@ -91,10 +145,14 @@ async function repositoryComponentRuntimeTarget(
   principalPublicId: string;
   policyEpoch: number;
   revocationEpoch: number;
-  manifest: ComponentManifest;
+  egressGrants: RuntimeEgressGrant[];
 }> {
   try {
-    return await activeRepositoryComponentTarget(client, repositoryKey);
+    const component = await activeRepositoryComponentTarget(client, repositoryKey);
+    return {
+      ...component,
+      egressGrants: validateRuntimeEgressGrants(component.manifest.runtime)
+    };
   } catch (error) {
     if (!(error instanceof Error) || error.message !== "repository_component_not_registered" || sourceManifestOverride === undefined) {
       throw error;
@@ -102,7 +160,7 @@ async function repositoryComponentRuntimeTarget(
     const component = await repositoryComponentTarget(client, repositoryKey);
     return {
       ...component,
-      manifest: validateComponentManifest(sourceManifestOverride)
+      egressGrants: validateRuntimeEgressGrants(record(sourceManifestOverride)?.runtime)
     };
   }
 }
@@ -171,16 +229,9 @@ export async function issueRepositoryComponentRuntimeEgressCapability(
 ): Promise<string | null> {
   return tx(db, async (client) => {
     const component = await repositoryComponentRuntimeTarget(client, repositoryKey, sourceManifestOverride);
-    const runtime = component.manifest.runtime as { egressGrants?: unknown };
-    const egressGrants = Array.isArray(runtime.egressGrants)
-      ? runtime.egressGrants as Array<
-          | { type: "HTTPS_FETCH"; targetHost: string; port: number }
-          | { type: "TCP_TLS"; targetHost: string; port: number; servername: string }
-        >
-      : [];
     const httpsAllowlist: string[] = [];
     const tcpTlsAllowlist: Array<{ targetHost: string; port: number; servername: string; protocol: "TCP_TLS" }> = [];
-    for (const grant of egressGrants) {
+    for (const grant of component.egressGrants) {
       if (grant.type === "HTTPS_FETCH") {
         httpsAllowlist.push(grant.port === 443 ? grant.targetHost : `${grant.targetHost}:${grant.port}`);
         continue;
