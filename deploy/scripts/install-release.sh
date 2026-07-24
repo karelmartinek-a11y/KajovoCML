@@ -205,6 +205,10 @@ ln -sfn /etc/nginx/sites-available/kcml.conf /etc/nginx/sites-enabled/kcml.conf
 install -m 0755 "$source_dir/deploy/scripts/kcml-deploy-wrapper.sh" /usr/local/sbin/kcml-deploy-wrapper
 install -m 0755 "$source_dir/deploy/scripts/kcml-repository-component-deploy-wrapper.sh" /usr/local/sbin/kcml-repository-component-deploy-wrapper
 install -m 0755 "$source_dir/deploy/scripts/kcml-handler-preload-wrapper.sh" /usr/local/sbin/kcml-handler-preload-wrapper
+if id kcml-deploy >/dev/null 2>&1 && [ -d /opt/actions-runner/kcml-deploy/_work ]; then
+  install -d -m 0755 -o kcml-deploy -g kcml-deploy /opt/actions-runner/kcml-deploy/_work/_temp
+  chown -R kcml-deploy:kcml-deploy /opt/actions-runner/kcml-deploy/_work/_temp
+fi
 cat >/etc/sudoers.d/kcml-deploy-wrappers <<'EOF'
 Defaults:kcml-deploy !requiretty
 Defaults:kcml-deploy env_keep += "PASS GHCR_TOKEN GHCR_ACTOR KCML_FACTORY_RESET_CONFIRM"
