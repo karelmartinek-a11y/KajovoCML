@@ -20,7 +20,7 @@ import {
 } from "./component.js";
 import { KCML_RELEASE } from "./release.js";
 import { authorizePlatformWorkerCall, ensurePlatformWorkerAccessToken, rotatePlatformWorkerAccessToken } from "./platform-worker-access.js";
-import { issueRepositoryComponentRuntimeSecretToken } from "./repository-component-runtime-auth.js";
+import { issueRepositoryComponentRuntimeEgressCapability, issueRepositoryComponentRuntimeSecretToken } from "./repository-component-runtime-auth.js";
 
 const sourceId = "91000000-0000-4000-8000-000000000001";
 const targetId = "91000000-0000-4000-8000-000000000002";
@@ -36,6 +36,7 @@ const clientSecret = "component-secret-for-current-policy-tests";
 const enabled = process.env.KCML_TEST_DATABASE === "1";
 const exampleManifest = JSON.parse(readFileSync(new URL(`../../../../docs/onboarding-manifest-${KCML_RELEASE.manifestSchemaVersion}.example.json`, import.meta.url), "utf8")) as Record<string, unknown>;
 const repositoryComponentDescriptor = JSON.parse(readFileSync(new URL(`../../../../components/mail-vectorizace/component.kcml.json`, import.meta.url), "utf8")) as Record<string, unknown>;
+const repositoryComponentManifest = JSON.parse(readFileSync(new URL(`../../../../components/mail-vectorizace/manifest.kcml.json`, import.meta.url), "utf8")) as Record<string, unknown>;
 let db: Db;
 let accessHmacKey: Buffer;
 let config: AppConfig;
@@ -371,8 +372,10 @@ describe.skipIf(!enabled)("component authorization and audit persistence", () =>
       accessTokenHmacKey: accessHmacKey,
       accessTokenHmacKeyId: config.ACCESS_TOKEN_HMAC_KEY_ID
     });
+    const runtimeEgressCapability = await issueRepositoryComponentRuntimeEgressCapability(db, config, "mail-vectorizace", repositoryComponentManifest);
     expect(runtimeToken.componentId).toBe(created.componentId);
     expect(runtimeToken.token.length).toBeGreaterThanOrEqual(80);
+    expect(runtimeEgressCapability).toBeTypeOf("string");
   });
 
   it("keeps lifecycle, permission and access-token revocation as separate audited operations", async () => {

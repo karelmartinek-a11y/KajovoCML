@@ -81,6 +81,32 @@ async function activeRepositoryComponentTarget(client: Queryable, repositoryKey:
   };
 }
 
+async function repositoryComponentRuntimeTarget(
+  client: Queryable,
+  repositoryKey: string,
+  sourceManifestOverride?: unknown
+): Promise<{
+  componentId: string;
+  principalId: string;
+  principalPublicId: string;
+  policyEpoch: number;
+  revocationEpoch: number;
+  manifest: ComponentManifest;
+}> {
+  try {
+    return await activeRepositoryComponentTarget(client, repositoryKey);
+  } catch (error) {
+    if (!(error instanceof Error) || error.message !== "repository_component_not_registered" || sourceManifestOverride === undefined) {
+      throw error;
+    }
+    const component = await repositoryComponentTarget(client, repositoryKey);
+    return {
+      ...component,
+      manifest: validateComponentManifest(sourceManifestOverride)
+    };
+  }
+}
+
 export async function issueRepositoryComponentRuntimeSecretToken(db: Db, params: {
   repositoryKey: string;
   accessTokenHmacKey: Buffer;
@@ -137,9 +163,14 @@ export async function issueRepositoryComponentRuntimeSecretToken(db: Db, params:
   });
 }
 
-export async function issueRepositoryComponentRuntimeEgressCapability(db: Db, config: EgressClientConfig, repositoryKey: string): Promise<string | null> {
+export async function issueRepositoryComponentRuntimeEgressCapability(
+  db: Db,
+  config: EgressClientConfig,
+  repositoryKey: string,
+  sourceManifestOverride?: unknown
+): Promise<string | null> {
   return tx(db, async (client) => {
-    const component = await activeRepositoryComponentTarget(client, repositoryKey);
+    const component = await repositoryComponentRuntimeTarget(client, repositoryKey, sourceManifestOverride);
     const runtime = component.manifest.runtime as { egressGrants?: unknown };
     const egressGrants = Array.isArray(runtime.egressGrants)
       ? runtime.egressGrants as Array<
