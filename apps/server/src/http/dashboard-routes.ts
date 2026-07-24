@@ -257,7 +257,9 @@ export function registerDashboardRoutes(app: FastifyInstance, db: Db, config: Ap
     }
   });
 
-  app.get("/api/dashboard/events", async (request, reply) => {
+  app.get("/api/dashboard/events", {
+    config: { rateLimit: { max: 30, timeWindow: "1 minute", groupId: "dashboard-events" } }
+  }, async (request, reply) => {
     const correlationId = randomUUID();
     const session = await ownerSession(db, config, request, reply, correlationId);
     if (!session) return;
