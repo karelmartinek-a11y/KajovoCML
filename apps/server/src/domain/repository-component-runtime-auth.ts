@@ -1,169 +1,8 @@
 import { randomUUID } from "node:crypto";
-import type { EgressClientConfig } from "../config.js";
 import type { Db } from "../db.js";
 import { tx } from "../db.js";
-import { createEphemeralEgressCapability } from "./egress.js";
 import { hmacToken, issueOpaqueSecret } from "../security/secrets.js";
 import { appendAudit } from "./audit.js";
-import { validateComponentManifest } from "./component.js";
-import type { ComponentManifest } from "./component.js";
-
-type Queryable = Pick<Db, "query">;
-type RuntimeEgressGrant =
-  | { type: "HTTPS_FETCH"; targetHost: string; port: number }
-  | { type: "TCP_TLS"; targetHost: string; port: number; servername: string };
-
-function text(value: unknown): string {
-  return typeof value === "string" || typeof value === "number" || typeof value === "boolean" ? String(value) : "";
-}
-
-function record(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
-}
-
-function validateRuntimeEgressGrants(input: unknown): RuntimeEgressGrant[] {
-  const runtime = record(input);
-  const egressGrants = Array.isArray(runtime?.egressGrants) ? runtime.egressGrants : null;
-  if (!egressGrants) {
-    throw new Error("runtime_egress_grants_required");
-  }
-  return egressGrants.map((grant) => {
-    const egressGrant = record(grant);
-    if (!egressGrant) {
-      throw new Error("runtime_egress_grant_invalid");
-    }
-    const type = text(egressGrant.type);
-    if (type === "HTTPS_FETCH") {
-      const targetHost = text(egressGrant.targetHost);
-      const port = egressGrant.port;
-      if (!targetHost || !Number.isInteger(port)) {
-        throw new Error("runtime_egress_grant_invalid");
-      }
-      return {
-        type: "HTTPS_FETCH",
-        targetHost,
-        port: Number(port)
-      };
-    }
-    if (type === "TCP_TLS") {
-      const targetHost = text(egressGrant.targetHost);
-      const port = egressGrant.port;
-      const servername = text(egressGrant.servername);
-      const protocol = text(egressGrant.protocol);
-      if (!targetHost || !Number.isInteger(port) || !servername || protocol !== "TCP_TLS") {
-        throw new Error("runtime_egress_grant_invalid");
-      }
-      return {
-        type: "TCP_TLS",
-        targetHost,
-        port: Number(port),
-        servername
-      };
-    }
-    throw new Error("runtime_egress_grant_invalid");
-  });
-}
-
-async function repositoryComponentTarget(client: Queryable, repositoryKey: string): Promise<{
-  componentId: string;
-  principalId: string;
-  principalPublicId: string;
-  policyEpoch: number;
-  revocationEpoch: number;
-}> {
-  const component = await client.query(
-    `select c.id,p.id as principal_id,p.public_id,p.policy_epoch,p.revocation_epoch
-       from component c
-       join principal p on p.id=c.principal_id
-      where c.deregistered_at is null
-        and (
-          lower(c.code::text)=lower($1)
-          or lower(coalesce(p.metadata->>'repositoryKey',''))=lower($1)
-        )
-      order by
-        case when lower(coalesce(p.metadata->>'repositoryKey',''))=lower($1) then 0 else 1 end,
-        c.created_at desc
-      limit 1
-      for update of c,p`,
-    [repositoryKey]
-  );
-  if (!component.rowCount) throw new Error("repository_component_not_registered");
-  const row = component.rows[0];
-  return {
-    componentId: String(row.id),
-    principalId: String(row.principal_id),
-    principalPublicId: String(row.public_id),
-    policyEpoch: Number(row.policy_epoch),
-    revocationEpoch: Number(row.revocation_epoch)
-  };
-}
-
-async function activeRepositoryComponentTarget(client: Queryable, repositoryKey: string): Promise<{
-  componentId: string;
-  principalId: string;
-  principalPublicId: string;
-  policyEpoch: number;
-  revocationEpoch: number;
-  manifest: ComponentManifest;
-}> {
-  const component = await client.query(
-    `select c.id,p.id as principal_id,p.public_id,p.policy_epoch,p.revocation_epoch,revision.manifest
-       from component c
-       join principal p on p.id=c.principal_id
-       join component_revision revision on revision.id=c.active_revision_id and revision.component_id=c.id
-      where c.deregistered_at is null
-        and (
-          lower(c.code::text)=lower($1)
-          or lower(coalesce(p.metadata->>'repositoryKey',''))=lower($1)
-        )
-      order by
-        case when lower(coalesce(p.metadata->>'repositoryKey',''))=lower($1) then 0 else 1 end,
-        c.created_at desc
-      limit 1
-      for update of c,p,revision`,
-    [repositoryKey]
-  );
-  if (!component.rowCount) throw new Error("repository_component_not_registered");
-  const row = component.rows[0];
-  return {
-    componentId: String(row.id),
-    principalId: String(row.principal_id),
-    principalPublicId: String(row.public_id),
-    policyEpoch: Number(row.policy_epoch),
-    revocationEpoch: Number(row.revocation_epoch),
-    manifest: validateComponentManifest(row.manifest)
-  };
-}
-
-async function repositoryComponentRuntimeTarget(
-  client: Queryable,
-  repositoryKey: string,
-  sourceManifestOverride?: unknown
-): Promise<{
-  componentId: string;
-  principalId: string;
-  principalPublicId: string;
-  policyEpoch: number;
-  revocationEpoch: number;
-  egressGrants: RuntimeEgressGrant[];
-}> {
-  try {
-    const component = await activeRepositoryComponentTarget(client, repositoryKey);
-    return {
-      ...component,
-      egressGrants: validateRuntimeEgressGrants(component.manifest.runtime)
-    };
-  } catch (error) {
-    if (!(error instanceof Error) || error.message !== "repository_component_not_registered" || sourceManifestOverride === undefined) {
-      throw error;
-    }
-    const component = await repositoryComponentTarget(client, repositoryKey);
-    return {
-      ...component,
-      egressGrants: validateRuntimeEgressGrants(record(sourceManifestOverride)?.runtime)
-    };
-  }
-}
 
 export async function issueRepositoryComponentRuntimeSecretToken(db: Db, params: {
   repositoryKey: string;
@@ -171,7 +10,16 @@ export async function issueRepositoryComponentRuntimeSecretToken(db: Db, params:
   accessTokenHmacKeyId: string;
 }): Promise<{ token: string; fingerprint: string; componentId: string; principalId: string }> {
   return tx(db, async (client) => {
-    const component = await repositoryComponentTarget(client, params.repositoryKey);
+    const component = await client.query(
+      `select c.id,p.id as principal_id,p.public_id,p.policy_epoch,p.revocation_epoch
+         from component c
+         join principal p on p.id=c.principal_id
+        where c.code=$1
+        for update of c,p`,
+      [params.repositoryKey]
+    );
+    if (!component.rowCount) throw new Error("repository_component_not_registered");
+    const row = component.rows[0];
     await client.query(
       `update principal_access_token
           set revoked_at=coalesce(revoked_at,now()),
@@ -181,7 +29,7 @@ export async function issueRepositoryComponentRuntimeSecretToken(db: Db, params:
           and target_component_id=$2
           and audience='kcml-runtime-secret-broker'
           and revoked_at is null`,
-      [component.principalId, component.componentId]
+      [row.principal_id, row.id]
     );
     const issued = issueOpaqueSecret();
     await client.query(
@@ -193,10 +41,10 @@ export async function issueRepositoryComponentRuntimeSecretToken(db: Db, params:
         hmacToken(issued.value, params.accessTokenHmacKey),
         params.accessTokenHmacKeyId,
         issued.fingerprint,
-        component.principalId,
-        component.componentId,
-        component.policyEpoch,
-        component.revocationEpoch
+        row.principal_id,
+        row.id,
+        row.policy_epoch,
+        row.revocation_epoch
       ]
     );
     await appendAudit(client, {
@@ -204,54 +52,19 @@ export async function issueRepositoryComponentRuntimeSecretToken(db: Db, params:
       actorType: "system",
       actorId: null,
       objectType: "component",
-      objectId: component.componentId,
+      objectId: String(row.id),
       after: {
         reason: "RUNTIME_DEPLOY_SECRET_BROKER",
         fingerprint: issued.fingerprint,
-        principalPublicId: component.principalPublicId
+        principalPublicId: String(row.public_id)
       },
       correlationId: randomUUID()
     });
     return {
       token: issued.value,
       fingerprint: issued.fingerprint,
-      componentId: component.componentId,
-      principalId: component.principalId
+      componentId: String(row.id),
+      principalId: String(row.principal_id)
     };
-  });
-}
-
-export async function issueRepositoryComponentRuntimeEgressCapability(
-  db: Db,
-  config: EgressClientConfig,
-  repositoryKey: string,
-  sourceManifestOverride?: unknown
-): Promise<string | null> {
-  return tx(db, async (client) => {
-    const component = await repositoryComponentRuntimeTarget(client, repositoryKey, sourceManifestOverride);
-    const httpsAllowlist: string[] = [];
-    const tcpTlsAllowlist: Array<{ targetHost: string; port: number; servername: string; protocol: "TCP_TLS" }> = [];
-    for (const grant of component.egressGrants) {
-      if (grant.type === "HTTPS_FETCH") {
-        httpsAllowlist.push(grant.port === 443 ? grant.targetHost : `${grant.targetHost}:${grant.port}`);
-        continue;
-      }
-      if (grant.type === "TCP_TLS") {
-        tcpTlsAllowlist.push({
-          targetHost: grant.targetHost,
-          port: grant.port,
-          servername: grant.servername,
-          protocol: "TCP_TLS"
-        });
-      }
-    }
-    if (httpsAllowlist.length === 0 && tcpTlsAllowlist.length === 0) return null;
-    return createEphemeralEgressCapability(config, {
-      allowlist: httpsAllowlist,
-      tcpTlsAllowlist,
-      purpose: "repository-component.runtime",
-      correlationId: randomUUID(),
-      ttlSeconds: 60 * 60 * 24 * 30
-    });
   });
 }

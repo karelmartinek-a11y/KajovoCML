@@ -5,6 +5,7 @@ import type { Db } from "../db.js";
 import { tx } from "../db.js";
 import { fingerprintSecret, hmacToken } from "../security/secrets.js";
 import { appendAudit } from "./audit.js";
+import { createPreRegistrationDashboardNode } from "./dashboard-topology.js";
 import { kcmlCodeFromNumber, kcmlHostnameForCode } from "./hostnames.js";
 import type { OnboardingManifest } from "./registration.js";
 import { KCML_RELEASE } from "./release.js";
@@ -298,6 +299,17 @@ export async function createIntegrationToken(
         false,
         deadlines.issuedAt, deadlines.initialExpiresAt, deadlines.expiresAt, deadlines.maxExpiresAt]
     );
+    await createPreRegistrationDashboardNode(client, {
+      integrationTokenId: String(inserted.rows[0].id),
+      label,
+      fingerprint: secret.fingerprint,
+      actorId,
+      metadata: {
+        serviceKind: normalizedOptions.serviceKind,
+        allowedPipeline: normalizedOptions.allowedPipeline,
+        releaseVersion: normalizedOptions.releaseVersion
+      }
+    });
     for (const grant of secretGrants ?? []) {
       const secretStableName = grant.allSecrets ? null : (grant.secretStableName?.trim().toUpperCase() ?? null);
       if (!grant.allSecrets && !secretStableName) {
@@ -805,10 +817,28 @@ export async function deleteIntegrationToken(db: Db, tokenId: string, actorId: s
       [tokenId]
     );
     if (!result.rowCount) throw Object.assign(new Error("not_found"), { statusCode: 404 });
+    const removedNode = await client.query(
+      `update dashboard_visual_node
+          set lifecycle_phase='DELETED',deleted_at=coalesce(deleted_at,now()),updated_at=now(),lock_version=lock_version+1
+        where integration_token_id=$1 and lifecycle_phase='PRE_REGISTRATION' and deleted_at is null
+        returning id`,
+      [tokenId]
+    );
+    const revokedGrants = removedNode.rowCount ? await client.query(
+      `update integration_token_secret_grant
+          set revoked_at=coalesce(revoked_at,now()),revoked_by=$2
+        where token_id=$1 and revoked_at is null and transferred_at is null`,
+      [tokenId, actorId]
+    ) : { rowCount: 0 };
     await appendAudit(client, {
       eventType: "integration_token.deleted", actorType: "admin", actorId,
       objectType: "integration_token", objectId: tokenId,
-      after: { fingerprint: result.rows[0].fingerprint }, correlationId
+      after: {
+        fingerprint: result.rows[0].fingerprint,
+        preRegistrationNodeRemoved: Boolean(removedNode.rowCount),
+        preRegistrationSecretGrantsRevoked: revokedGrants.rowCount ?? 0,
+        registeredNodePreserved: !removedNode.rowCount
+      }, correlationId
     });
   });
 }

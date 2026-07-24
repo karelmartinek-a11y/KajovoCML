@@ -1,0 +1,520 @@
+{
+  "schemaVersion": "1.1",
+  "status": "PENDING_DEPLOYMENT",
+  "reason": "Zdrojová implementace a statické důkazy jsou připraveny; produkční screenshoty vyžadují nasazený build, OWNER session a bezpečná testovací data.",
+  "releaseVersion": "2026.07.24-dashboard.1",
+  "requiredCommitBinding": true,
+  "requiredFields": [
+    "evidenceId",
+    "acceptanceCriterion",
+    "route",
+    "role",
+    "viewport",
+    "commitSha",
+    "buildId",
+    "releaseVersion",
+    "capturedAt",
+    "scenario",
+    "backendEvidence",
+    "expected",
+    "actual"
+  ],
+  "entries": [
+    {
+      "evidenceId": "DASH-NODE-PREREG",
+      "acceptanceCriterion": "Předregistrační prvek po vydání integračního tokenu",
+      "route": "/admin?view=dashboard",
+      "role": "OWNER",
+      "status": "PENDING_DEPLOYMENT",
+      "requiredViewports": [
+        "desktop"
+      ]
+    },
+    {
+      "evidenceId": "DASH-SECRET-PREREG",
+      "acceptanceCriterion": "Připnutí Secretu na předregistrační prvek",
+      "route": "/admin?view=dashboard",
+      "role": "OWNER",
+      "status": "PENDING_DEPLOYMENT",
+      "requiredViewports": [
+        "desktop"
+      ]
+    },
+    {
+      "evidenceId": "DASH-HANDOFF-STABLE",
+      "acceptanceCriterion": "Stejný stable node a pozice před a po handoffu",
+      "route": "/admin?view=dashboard",
+      "role": "OWNER",
+      "status": "PENDING_DEPLOYMENT",
+      "requiredViewports": [
+        "desktop"
+      ]
+    },
+    {
+      "evidenceId": "DASH-SECRET-TRANSFER",
+      "acceptanceCriterion": "Atomický přenos Secret grantů při handoffu",
+      "route": "/admin?view=dashboard",
+      "role": "OWNER",
+      "status": "PENDING_DEPLOYMENT",
+      "requiredViewports": [
+        "desktop"
+      ]
+    },
+    {
+      "evidenceId": "DASH-SECRET-LIBRARY",
+      "acceptanceCriterion": "Secret kartička zůstane po dropu v knihovně",
+      "route": "/admin?view=dashboard",
+      "role": "OWNER",
+      "status": "PENDING_DEPLOYMENT",
+      "requiredViewports": [
+        "desktop"
+      ]
+    },
+    {
+      "evidenceId": "DASH-SECRET-MULTI",
+      "acceptanceCriterion": "Prvek s více připnutými Secrets",
+      "route": "/admin?view=dashboard",
+      "role": "OWNER",
+      "status": "PENDING_DEPLOYMENT",
+      "requiredViewports": [
+        "desktop"
+      ]
+    },
+    {
+      "evidenceId": "DASH-SECRET-BULK-PREVIEW",
+      "acceptanceCriterion": "Bulk grant impact preview",
+      "route": "/admin?view=dashboard",
+      "role": "OWNER",
+      "status": "PENDING_DEPLOYMENT",
+      "requiredViewports": [
+        "desktop"
+      ]
+    },
+    {
+      "evidenceId": "DASH-SECRET-BULK-RESULT",
+      "acceptanceCriterion": "Bulk grant per-target výsledek",
+      "route": "/admin?view=dashboard",
+      "role": "OWNER",
+      "status": "PENDING_DEPLOYMENT",
+      "requiredViewports": [
+        "desktop"
+      ]
+    },
+    {
+      "evidenceId": "DASH-SECRET-REVEAL-MFA",
+      "acceptanceCriterion": "MFA reveal z Dashboardu",
+      "route": "/admin?view=dashboard",
+      "role": "OWNER",
+      "status": "PENDING_DEPLOYMENT",
+      "requiredViewports": [
+        "desktop"
+      ]
+    },
+    {
+      "evidenceId": "DASH-SECRET-REVEAL-HIDE",
+      "acceptanceCriterion": "Automatické skrytí hodnoty Secretu",
+      "route": "/admin?view=dashboard",
+      "role": "OWNER",
+      "status": "PENDING_DEPLOYMENT",
+      "requiredViewports": [
+        "desktop"
+      ]
+    },
+    {
+      "evidenceId": "DASH-COMPAT-AUTH-SPLIT",
+      "acceptanceCriterion": "Zelené porty a červené vlákno",
+      "route": "/admin?view=dashboard",
+      "role": "OWNER",
+      "status": "PENDING_DEPLOYMENT",
+      "requiredViewports": [
+        "desktop"
+      ]
+    },
+    {
+      "evidenceId": "DASH-INCOMPAT-AUTH",
+      "acceptanceCriterion": "Červené porty a zelené vlákno",
+      "route": "/admin?view=dashboard",
+      "role": "OWNER",
+      "status": "PENDING_DEPLOYMENT",
+      "requiredViewports": [
+        "desktop"
+      ]
+    },
+    {
+      "evidenceId": "DASH-EDGE-GRANT",
+      "acceptanceCriterion": "Udělení oprávnění bez nového edge",
+      "route": "/admin?view=dashboard",
+      "role": "OWNER",
+      "status": "PENDING_DEPLOYMENT",
+      "requiredViewports": [
+        "desktop"
+      ]
+    },
+    {
+      "evidenceId": "DASH-EDGE-REVOKE",
+      "acceptanceCriterion": "Odebrání oprávnění bez rozpojení",
+      "route": "/admin?view=dashboard",
+      "role": "OWNER",
+      "status": "PENDING_DEPLOYMENT",
+      "requiredViewports": [
+        "desktop"
+      ]
+    },
+    {
+      "evidenceId": "DASH-EDGE-DISCONNECT",
+      "acceptanceCriterion": "Samostatné rozpojení",
+      "route": "/admin?view=dashboard",
+      "role": "OWNER",
+      "status": "PENDING_DEPLOYMENT",
+      "requiredViewports": [
+        "desktop"
+      ]
+    },
+    {
+      "evidenceId": "DASH-SUSPENSION",
+      "acceptanceCriterion": "Suspendovaný prvek se zachovanými edges",
+      "route": "/admin?view=dashboard",
+      "role": "OWNER",
+      "status": "PENDING_DEPLOYMENT",
+      "requiredViewports": [
+        "desktop"
+      ]
+    },
+    {
+      "evidenceId": "DASH-RESUME",
+      "acceptanceCriterion": "Obnovení identity bez obnovení ručně odebraných práv",
+      "route": "/admin?view=dashboard",
+      "role": "OWNER",
+      "status": "PENDING_DEPLOYMENT",
+      "requiredViewports": [
+        "desktop"
+      ]
+    },
+    {
+      "evidenceId": "DASH-DEREG-PREVIEW",
+      "acceptanceCriterion": "Impact preview deregistrace",
+      "route": "/admin?view=dashboard",
+      "role": "OWNER",
+      "status": "PENDING_DEPLOYMENT",
+      "requiredViewports": [
+        "desktop"
+      ]
+    },
+    {
+      "evidenceId": "DASH-DEREG-CLEANUP",
+      "acceptanceCriterion": "Cleanup izolovaného registrovaného prvku",
+      "route": "/admin?view=dashboard",
+      "role": "OWNER",
+      "status": "PENDING_DEPLOYMENT",
+      "requiredViewports": [
+        "desktop"
+      ]
+    },
+    {
+      "evidenceId": "DASH-TOKEN-DELETE-PRE",
+      "acceptanceCriterion": "Smazání integračního tokenu před handoffem",
+      "route": "/admin?view=dashboard",
+      "role": "OWNER",
+      "status": "PENDING_DEPLOYMENT",
+      "requiredViewports": [
+        "desktop"
+      ]
+    },
+    {
+      "evidenceId": "DASH-TOKEN-DELETE-POST",
+      "acceptanceCriterion": "Zachování registrovaného prvku po smazání historického tokenu",
+      "route": "/admin?view=dashboard",
+      "role": "OWNER",
+      "status": "PENDING_DEPLOYMENT",
+      "requiredViewports": [
+        "desktop"
+      ]
+    },
+    {
+      "evidenceId": "DASH-HEALTHY-DESKTOP",
+      "acceptanceCriterion": "Zdravý Dashboard na desktopu",
+      "route": "/admin?view=dashboard",
+      "role": "OWNER",
+      "status": "PENDING_DEPLOYMENT",
+      "requiredViewports": [
+        "desktop",
+        "tablet",
+        "mobile"
+      ]
+    },
+    {
+      "evidenceId": "DASH-TABLET",
+      "acceptanceCriterion": "Dashboard na tabletu",
+      "route": "/admin?view=dashboard",
+      "role": "OWNER",
+      "status": "PENDING_DEPLOYMENT",
+      "requiredViewports": [
+        "desktop",
+        "tablet",
+        "mobile"
+      ]
+    },
+    {
+      "evidenceId": "DASH-MOBILE",
+      "acceptanceCriterion": "Dashboard na mobilu",
+      "route": "/admin?view=dashboard",
+      "role": "OWNER",
+      "status": "PENDING_DEPLOYMENT",
+      "requiredViewports": [
+        "desktop",
+        "tablet",
+        "mobile"
+      ]
+    },
+    {
+      "evidenceId": "DASH-LOADING",
+      "acceptanceCriterion": "Loading stav",
+      "route": "/admin?view=dashboard",
+      "role": "OWNER",
+      "status": "PENDING_DEPLOYMENT",
+      "requiredViewports": [
+        "desktop"
+      ]
+    },
+    {
+      "evidenceId": "DASH-EMPTY",
+      "acceptanceCriterion": "Empty stav",
+      "route": "/admin?view=dashboard",
+      "role": "OWNER",
+      "status": "PENDING_DEPLOYMENT",
+      "requiredViewports": [
+        "desktop"
+      ]
+    },
+    {
+      "evidenceId": "DASH-ERROR",
+      "acceptanceCriterion": "Error stav",
+      "route": "/admin?view=dashboard",
+      "role": "OWNER",
+      "status": "PENDING_DEPLOYMENT",
+      "requiredViewports": [
+        "desktop"
+      ]
+    },
+    {
+      "evidenceId": "DASH-DISABLED",
+      "acceptanceCriterion": "Disabled stav",
+      "route": "/admin?view=dashboard",
+      "role": "OWNER",
+      "status": "PENDING_DEPLOYMENT",
+      "requiredViewports": [
+        "desktop"
+      ]
+    },
+    {
+      "evidenceId": "DASH-STALE",
+      "acceptanceCriterion": "Stale stav",
+      "route": "/admin?view=dashboard",
+      "role": "OWNER",
+      "status": "PENDING_DEPLOYMENT",
+      "requiredViewports": [
+        "desktop"
+      ]
+    },
+    {
+      "evidenceId": "DASH-LIVE-DISCONNECTED",
+      "acceptanceCriterion": "Odpojený live stream bez pokračující animace",
+      "route": "/admin?view=dashboard",
+      "role": "OWNER",
+      "status": "PENDING_DEPLOYMENT",
+      "requiredViewports": [
+        "desktop"
+      ]
+    },
+    {
+      "evidenceId": "DASH-CRITICAL-ALARM",
+      "acceptanceCriterion": "CRITICAL alarm s dopadem a doporučením",
+      "route": "/admin?view=dashboard",
+      "role": "OWNER",
+      "status": "PENDING_DEPLOYMENT",
+      "requiredViewports": [
+        "desktop"
+      ]
+    },
+    {
+      "evidenceId": "DASH-PULSE-STARTED",
+      "acceptanceCriterion": "Skutečná STARTED PULSE komunikace",
+      "route": "/admin?view=dashboard",
+      "role": "OWNER",
+      "status": "PENDING_DEPLOYMENT",
+      "requiredViewports": [
+        "desktop"
+      ]
+    },
+    {
+      "evidenceId": "DASH-PULSE-SUCCESS",
+      "acceptanceCriterion": "Úspěšné dokončení PULSE",
+      "route": "/admin?view=dashboard",
+      "role": "OWNER",
+      "status": "PENDING_DEPLOYMENT",
+      "requiredViewports": [
+        "desktop"
+      ]
+    },
+    {
+      "evidenceId": "DASH-PULSE-FAILURE",
+      "acceptanceCriterion": "Chybové dokončení PULSE",
+      "route": "/admin?view=dashboard",
+      "role": "OWNER",
+      "status": "PENDING_DEPLOYMENT",
+      "requiredViewports": [
+        "desktop"
+      ]
+    },
+    {
+      "evidenceId": "DASH-PULSE-CONCURRENT",
+      "acceptanceCriterion": "Více souběžných PULSE událostí",
+      "route": "/admin?view=dashboard",
+      "role": "OWNER",
+      "status": "PENDING_DEPLOYMENT",
+      "requiredViewports": [
+        "desktop"
+      ]
+    },
+    {
+      "evidenceId": "DASH-PROCESS-ACTIVE",
+      "acceptanceCriterion": "Aktivní proces uvnitř komponenty",
+      "route": "/admin?view=dashboard",
+      "role": "OWNER",
+      "status": "PENDING_DEPLOYMENT",
+      "requiredViewports": [
+        "desktop"
+      ]
+    },
+    {
+      "evidenceId": "DASH-EXTERNAL-NODE",
+      "acceptanceCriterion": "Externí boundary node",
+      "route": "/admin?view=dashboard",
+      "role": "OWNER",
+      "status": "PENDING_DEPLOYMENT",
+      "requiredViewports": [
+        "desktop"
+      ]
+    },
+    {
+      "evidenceId": "DASH-EXTERNAL-STARTED",
+      "acceptanceCriterion": "Probíhající externí volání",
+      "route": "/admin?view=dashboard",
+      "role": "OWNER",
+      "status": "PENDING_DEPLOYMENT",
+      "requiredViewports": [
+        "desktop"
+      ]
+    },
+    {
+      "evidenceId": "DASH-EXTERNAL-SUCCESS",
+      "acceptanceCriterion": "Úspěšné externí volání",
+      "route": "/admin?view=dashboard",
+      "role": "OWNER",
+      "status": "PENDING_DEPLOYMENT",
+      "requiredViewports": [
+        "desktop"
+      ]
+    },
+    {
+      "evidenceId": "DASH-EXTERNAL-BLOCKED",
+      "acceptanceCriterion": "Blokované externí volání",
+      "route": "/admin?view=dashboard",
+      "role": "OWNER",
+      "status": "PENDING_DEPLOYMENT",
+      "requiredViewports": [
+        "desktop"
+      ]
+    },
+    {
+      "evidenceId": "DASH-EXTERNAL-FAILED",
+      "acceptanceCriterion": "Selhané externí volání",
+      "route": "/admin?view=dashboard",
+      "role": "OWNER",
+      "status": "PENDING_DEPLOYMENT",
+      "requiredViewports": [
+        "desktop"
+      ]
+    },
+    {
+      "evidenceId": "DASH-REDUCED-MOTION",
+      "acceptanceCriterion": "Reduced-motion se statickým směrem a výsledkem",
+      "route": "/admin?view=dashboard",
+      "role": "OWNER",
+      "status": "PENDING_DEPLOYMENT",
+      "requiredViewports": [
+        "desktop"
+      ]
+    },
+    {
+      "evidenceId": "DASH-PORT-DETAIL",
+      "acceptanceCriterion": "Detail portu a kontraktní evidence",
+      "route": "/admin?view=dashboard",
+      "role": "OWNER",
+      "status": "PENDING_DEPLOYMENT",
+      "requiredViewports": [
+        "desktop"
+      ]
+    },
+    {
+      "evidenceId": "DASH-KEYBOARD-CONNECT",
+      "acceptanceCriterion": "Klávesnicové vytvoření spojení",
+      "route": "/admin?view=dashboard",
+      "role": "OWNER",
+      "status": "PENDING_DEPLOYMENT",
+      "requiredViewports": [
+        "desktop"
+      ]
+    },
+    {
+      "evidenceId": "DASH-KEYBOARD-CONTEXT",
+      "acceptanceCriterion": "Shift+F10 kontext spojení",
+      "route": "/admin?view=dashboard",
+      "role": "OWNER",
+      "status": "PENDING_DEPLOYMENT",
+      "requiredViewports": [
+        "desktop"
+      ]
+    },
+    {
+      "evidenceId": "DASH-TOUCH-ACTION",
+      "acceptanceCriterion": "Dotyková alternativa akcí",
+      "route": "/admin?view=dashboard",
+      "role": "OWNER",
+      "status": "PENDING_DEPLOYMENT",
+      "requiredViewports": [
+        "desktop"
+      ]
+    },
+    {
+      "evidenceId": "DASH-LONG-CZECH",
+      "acceptanceCriterion": "Dlouhé české názvy bez překrytí",
+      "route": "/admin?view=dashboard",
+      "role": "OWNER",
+      "status": "PENDING_DEPLOYMENT",
+      "requiredViewports": [
+        "desktop"
+      ]
+    },
+    {
+      "evidenceId": "DASH-MANY-PORTS",
+      "acceptanceCriterion": "Velký počet portů",
+      "route": "/admin?view=dashboard",
+      "role": "OWNER",
+      "status": "PENDING_DEPLOYMENT",
+      "requiredViewports": [
+        "desktop"
+      ]
+    },
+    {
+      "evidenceId": "DASH-EXTERNAL-LAYOUT",
+      "acceptanceCriterion": "Uložená pozice externího systému",
+      "route": "/admin?view=dashboard",
+      "role": "OWNER",
+      "status": "PENDING_DEPLOYMENT",
+      "requiredViewports": [
+        "desktop"
+      ]
+    }
+  ]
+}

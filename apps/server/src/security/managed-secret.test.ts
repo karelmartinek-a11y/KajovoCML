@@ -59,7 +59,7 @@ describe("secret api credential authentication", () => {
       query: async (sql: string, params: unknown[]) => {
         seenSql.push(sql);
         if (sql.includes("from principal_access_token")) {
-          expect(params[0]).toEqual([hmacToken(token, accessKey), hmacToken("a".repeat(80), accessKey)]);
+          expect(params[0]).toEqual(hmacToken(token, accessKey));
           return { rowCount: 1, rows: [{
             id: "access-id", scope_names: ["secret.resolve"], issued_policy_epoch: 4, issued_revocation_epoch: 7,
             principal_id: "91000000-0000-4000-8000-000000000002", public_id: "KCML91001", status: "ACTIVE",
@@ -113,56 +113,6 @@ describe("secret api credential authentication", () => {
       INTEGRATION_TOKEN_HMAC_KEY_BASE64: randomBytes(32),
       INTEGRATION_TOKEN_HMAC_KEY_ID: "it-v1"
     })).resolves.toBeNull();
-  });
-
-  it("accepts the repository runtime secret-broker token before component activation", async () => {
-    const accessKey = randomBytes(32);
-    const token = "c".repeat(86);
-    const seenSql: string[] = [];
-    const db = {
-      query: async (sql: string) => {
-        seenSql.push(sql);
-        if (sql.includes("from principal_access_token")) {
-          return { rowCount: 1, rows: [{
-            id: "runtime-access-id",
-            scope_names: ["secret.resolve"],
-            issued_policy_epoch: 2,
-            issued_revocation_epoch: 3,
-            audience: "kcml-runtime-secret-broker",
-            target_component_id: "91000000-0000-4000-8000-000000000001",
-            principal_id: "91000000-0000-4000-8000-000000000002",
-            public_id: "KCML91001",
-            status: "PENDING",
-            policy_epoch: 2,
-            revocation_epoch: 3,
-            component_id: "91000000-0000-4000-8000-000000000001",
-            enabled: false,
-            egress_enabled: false,
-            activation_state: "READY",
-            lifecycle_state: "REVIEW",
-            operational_state: "HEALTHY",
-            deregistered_at: null
-          }] };
-        }
-        if (sql.includes("from component_onboarding_job")) return { rowCount: 0, rows: [] };
-        if (sql.includes("update principal_access_token")) return { rowCount: 1, rows: [] };
-        return { rowCount: 0, rows: [] };
-      }
-    } as unknown as Db;
-
-    await expect(authenticatePrincipalAccessToken(db, token, {
-      CONFIG_VAULT_MASTER_KEY_BASE64: randomBytes(32),
-      CONFIG_VAULT_MASTER_KEY_ID: "config-v1",
-      ACCESS_TOKEN_HMAC_KEY_BASE64: accessKey,
-      INTEGRATION_TOKEN_HMAC_KEY_BASE64: randomBytes(32),
-      INTEGRATION_TOKEN_HMAC_KEY_ID: "it-v1"
-    })).resolves.toMatchObject({
-      kind: "COMPONENT",
-      id: "91000000-0000-4000-8000-000000000001",
-      publicId: "KCML91001"
-    });
-    expect(seenSql.join("\n")).toContain("access.audience");
-    expect(seenSql.join("\n")).toContain("access.target_component_id");
   });
 
   it("rejects raw integration tokens as grant public identifiers", () => {

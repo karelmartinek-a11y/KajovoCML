@@ -241,15 +241,11 @@ export async function buildEgressProxy(db: Db, config: EgressProxyConfig): Promi
 }
 
 export async function listenEgressProxy(server: http.Server, socketPath: string): Promise<void> {
-  const socketDirectory = path.dirname(socketPath);
-  await fs.mkdir(socketDirectory, { recursive: true, mode: 0o711 });
-  await fs.chmod(socketDirectory, 0o711);
+  await fs.mkdir(path.dirname(socketPath), { recursive: true, mode: 0o700 });
   await fs.rm(socketPath, { force: true });
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
     server.listen(socketPath, () => resolve());
   });
-  // Repository component runtimes authenticate with capabilities, so the UDS
-  // itself must be connectable from the rootless container namespace.
-  await fs.chmod(socketPath, 0o666);
+  await fs.chmod(socketPath, 0o600);
 }

@@ -464,26 +464,18 @@ export async function revokeSecretGrant(db: Db, actorId: string, correlationId: 
 }
 
 export async function authenticatePrincipalAccessToken(db: Db, token: string, config: SecretManagerConfig): Promise<SecretPrincipal | null> {
-  const trimmedToken = token.trim();
-  const candidates = new Set<string>();
-  if (trimmedToken.length >= 80 && trimmedToken.length <= 120) candidates.add(trimmedToken);
-  if (trimmedToken.startsWith("kca_")) {
-    const legacyPrefixed = trimmedToken.slice(4);
-    if (legacyPrefixed.length >= 80 && legacyPrefixed.length <= 120) candidates.add(legacyPrefixed);
-  }
-  if (!candidates.size) return null;
-  const digests = [...candidates].map((value) => hmacToken(value, config.ACCESS_TOKEN_HMAC_KEY_BASE64));
+  if (!token.startsWith("kca_") || token.length < 80 || token.length > 120) return null;
+  const digest = hmacToken(token, config.ACCESS_TOKEN_HMAC_KEY_BASE64);
   const result = await db.query(
     `select access.id,access.scope_names,access.issued_policy_epoch,access.issued_revocation_epoch,
-            access.audience,access.target_component_id,
             principal.id principal_id,principal.public_id,principal.status,principal.policy_epoch,principal.revocation_epoch,
             component.id component_id,component.enabled,component.egress_enabled,component.activation_state,
             component.lifecycle_state,component.operational_state,component.deregistered_at
        from principal_access_token access
        join principal on principal.id=access.source_principal_id
        join component on component.principal_id=principal.id
-      where access.lookup_digest = any($1::bytea[]) and access.revoked_at is null and access.expires_at>now()`,
-    [digests]
+      where access.lookup_digest=$1 and access.revoked_at is null and access.expires_at>now()`,
+    [digest]
   );
   if (!result.rowCount) return null;
   const row = result.rows[0];
@@ -493,20 +485,22 @@ export async function authenticatePrincipalAccessToken(db: Db, token: string, co
     `select state
        from component_onboarding_job
       where component_id=$1
-        and principal_access_token_digest = any($2::bytea[])
+        and principal_access_token_digest=$2
         and state not in ('CANCELLED','FAILED')
       order by created_at desc
       limit 1`,
-    [row.component_id, digests]
+    [row.component_id, digest]
   );
   const onboardingSecretResolveAllowed = Number(onboarding.rowCount ?? 0) > 0;
-  const runtimeDeploySecretResolveAllowed = String(row.audience) === "kcml-runtime-secret-broker"
-    && String(row.target_component_id) === String(row.component_id);
-  const preActivationSecretResolveAllowed = onboardingSecretResolveAllowed || runtimeDeploySecretResolveAllowed;
-  if ((!preActivationSecretResolveAllowed && row.status !== "ACTIVE")
+  const permissionSuspension = await db.query(
+    "select 1 from principal_permission_suspension where principal_id=$1 and resumed_at is null limit 1",
+    [row.principal_id]
+  );
+  if (permissionSuspension.rowCount
+    || (!onboardingSecretResolveAllowed && row.status !== "ACTIVE")
     || Number(row.issued_policy_epoch) !== Number(row.policy_epoch)
     || Number(row.issued_revocation_epoch) !== Number(row.revocation_epoch)
-    || (!preActivationSecretResolveAllowed && (!row.enabled || !row.egress_enabled || row.activation_state !== "ACTIVE" || row.lifecycle_state !== "ACTIVE"))
+    || (!onboardingSecretResolveAllowed && (!row.enabled || !row.egress_enabled || row.activation_state !== "ACTIVE" || row.lifecycle_state !== "ACTIVE"))
     || ["QUARANTINED", "RETIRED"].includes(String(row.operational_state)) || row.deregistered_at) return null;
   await db.query("update principal_access_token set last_used_at=now() where id=$1", [row.id]);
   return { kind: "COMPONENT", id: String(row.component_id), publicId: String(row.public_id), auditActorType: "component" };

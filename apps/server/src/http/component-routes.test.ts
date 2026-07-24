@@ -2,6 +2,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadConfig, type AppConfig } from "../config.js";
 import type { Db } from "../db.js";
+import { COMPONENT_CATALOG_VERSION } from "../domain/component.js";
 import { KCML_RELEASE } from "../domain/release.js";
 import { registerComponentRoutes } from "./component-routes.js";
 
@@ -62,7 +63,7 @@ describe("component public route protection", () => {
     expect(response.json()).toEqual({
       mcpEndpoint: "https://kcml0002.kajovocml.hcasc.cz/mcp",
       protectedResourceMetadata: "https://kcml0002.kajovocml.hcasc.cz/.well-known/oauth-protected-resource",
-      catalogVersion: KCML_RELEASE.catalogVersion
+      catalogVersion: COMPONENT_CATALOG_VERSION
     });
     expect(query).not.toHaveBeenCalled();
   });

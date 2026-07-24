@@ -1,4 +1,4 @@
-export type Page = "components" | "external" | "monitoring" | "integration" | "secrets" | "tokens" | "permissions" | "audit" | "config" | "security" | "admins";
+export type Page = "dashboard" | "registered" | "identities" | "components" | "external" | "monitoring" | "integration" | "secrets" | "tokens" | "permissions" | "audit" | "config" | "security" | "admins";
 export type AdminRole = "OWNER" | "ADMIN" | "AUDITOR";
 export type Session = { authenticated: boolean; account: string | null; role: AdminRole | null; bootstrapRequired?: boolean };
 export type ReleaseInfo = {
@@ -476,6 +476,9 @@ export type OnboardingDescriptor = {
 };
 
 export const pageNames: Record<Page, string> = {
+  dashboard: "Dashboard",
+  registered: "Registrované prvky",
+  identities: "Tokeny a identity",
   components: "Katalog komponent",
   external: "Externí strany",
   monitoring: "Monitoring komponent",
@@ -491,4 +494,205 @@ export const pageNames: Record<Page, string> = {
 
 export const accessLabels: Record<AccessLevel, string> = {
   EXECUTE: "Spouštění"
+};
+
+export type DashboardPort = {
+  key: string;
+  componentId: string;
+  revisionId: string;
+  direction: "INCOMING" | "OUTGOING";
+  kind: "PULSE";
+  label: string;
+  pulseType: string;
+  routes: string[];
+  scopes: string[];
+  protocol: string;
+  transport: string;
+  authMode: string;
+  requestSchema: Record<string, unknown>;
+  responseSchema: Record<string, unknown>;
+  contractDigest: string;
+  source: Record<string, unknown>;
+};
+export type DashboardNode = {
+  id: string;
+  lifecyclePhase: "PRE_REGISTRATION" | "REGISTERED";
+  label: string;
+  integrationTokenId: string | null;
+  componentId: string | null;
+  principalId: string | null;
+  code: string | null;
+  displayName: string;
+  description: string;
+  category: string;
+  role: string | null;
+  lifecycleState: string;
+  activationState: string;
+  operationalState: string;
+  monitoringState: string;
+  recertificationState: string;
+  enabled: boolean;
+  runtimeAvailable: boolean;
+  identityUnavailable: boolean;
+  suspended: boolean;
+  suspensionReason: string | null;
+  tokenFingerprint: string | null;
+  tokenLastUsedAt: string | null;
+  integrationTokenExpiresAt: string | null;
+  critical: boolean;
+  position: { x: number; y: number };
+  secrets: Array<{ secretId: string; stableName: string; status: string; source: string }>;
+  statistics: { period: string; callCount: number; successCount: number; failureCount: number; errorRate: number; lastRunAt: string | null; lastFailureAt: string | null };
+};
+export type DashboardConnection = {
+  id: string;
+  sourceComponentId: string;
+  sourcePortKey: string;
+  targetComponentId: string;
+  targetPortKey: string;
+  route: string;
+  scope: string;
+  audience: string;
+  compatibilityStatus: "EXACT_MATCH" | "COMPATIBLE_WITH_DIFFERENCES" | "INCOMPATIBLE" | "UNKNOWN" | "STALE";
+  compatibilityEvidence: Record<string, unknown>;
+  authorizationDesired: boolean;
+  effectiveAuthorization: "GRANTED" | "DENIED";
+  authorizationReason: string;
+  sourceCode: string;
+  targetCode: string;
+  createdAt: string;
+  correlationId: string;
+};
+export type DashboardSecret = {
+  id: string;
+  stableName: string;
+  displayName: string;
+  description: string;
+  ownerKind: string;
+  ownerId: string | null;
+  status: string;
+  version: number | null;
+  fingerprint: string | null;
+  expiresAt: string | null;
+  grantCount: number;
+  lockVersion: number;
+  deletedAt: string | null;
+};
+export type DashboardRuntimeEvent = {
+  id: string;
+  kind: "PULSE" | "PROCESS" | "EXTERNAL";
+  componentId: string;
+  componentCode: string;
+  targetComponentId: string | null;
+  externalTargetId: string | null;
+  externalTargetKey: string | null;
+  pulseType: string | null;
+  direction: string | null;
+  operationKey: string;
+  subsystem: string;
+  severity: "INFO" | "WARNING" | "ERROR";
+  stage: "STARTED" | "COMPLETED" | "BLOCKED";
+  status: string;
+  success: boolean;
+  route: string | null;
+  scope: string | null;
+  audience: string | null;
+  durationMs: number | null;
+  correlationId: string;
+  traceId: string | null;
+  occurredAt: string;
+  receivedAt: string;
+  evidence: Record<string, unknown>;
+};
+export type DashboardAlarm = { id: string; severity: "CRITICAL" | "HIGH"; objectKind: "NODE" | "EXTERNAL_TARGET"; objectId: string; title: string; impact: string; recommendedAction: string; occurredAt: string | null };
+export type DashboardExternalNode = {
+  id: string;
+  targetKey: string;
+  displayName: string;
+  baseUrl: string;
+  status: string;
+  circuitState: string;
+  circuitFailureCount: number;
+  circuitFailureThreshold: number;
+  allowedPathPrefixes: string[];
+  auditRequired: boolean;
+  position: { x: number; y: number };
+  statistics: { period: string; callCount: number; successCount: number; failureCount: number; blockedCount: number; errorRate: number; lastRunAt: string | null; lastFailureAt: string | null };
+};
+export type DashboardExternalEdge = {
+  id: string;
+  sourceComponentId: string;
+  externalTargetId: string;
+  route: string;
+  scope: string;
+  audience: string;
+  effectiveAuthorization: "GRANTED" | "DENIED";
+  authorizationReason: string;
+  sourceCode: string;
+  targetKey: string;
+  targetDisplayName: string;
+  targetStatus: string;
+  circuitState: string;
+  createdAt: string;
+};
+export type DashboardActiveProcess = {
+  id: string;
+  componentId: string;
+  componentCode: string;
+  kind: string;
+  name: string;
+  state: "RUNNING";
+  startedAt: string;
+  expiresAt: string;
+  correlationId: string;
+  traceId: string | null;
+};
+export type DashboardSecretBulkPreview = {
+  secretId: string;
+  stableName: string;
+  secretStatus: string;
+  eligibleCount: number;
+  alreadyGrantedCount: number;
+  createCount: number;
+  eligible: Array<{ nodeId: string; label: string; alreadyGranted: boolean }>;
+  skipped: Array<{ nodeId: string; label: string; reason: string }>;
+};
+export type DashboardDeregistrationPreview = {
+  node_id: string;
+  component_id: string;
+  code: string;
+  display_name: string;
+  token_count: number;
+  direct_secret_grant_count: number;
+  transferred_secret_grant_count: number;
+  connection_count: number;
+  requiresMfa: true;
+  typedConfirmation: string;
+  requiresCompleteOnboarding: true;
+};
+export type DashboardTopology = {
+  generatedAt: string;
+  live: { source: string; connected: boolean; lastEventAt: string | null; stale: boolean };
+  workspace: { id: string; viewport: { x: number; y: number; zoom: number }; lockVersion: number };
+  nodes: DashboardNode[];
+  ports: DashboardPort[];
+  edges: DashboardConnection[];
+  externalNodes: DashboardExternalNode[];
+  externalEdges: DashboardExternalEdge[];
+  activeProcesses: DashboardActiveProcess[];
+  secrets: DashboardSecret[];
+  alarms: DashboardAlarm[];
+  events: DashboardRuntimeEvent[];
+};
+export type DashboardIdentityCard = {
+  nodeId: string;
+  identityType: "INTEGRATION_TOKEN" | "COMPONENT";
+  displayName: string;
+  code: string | null;
+  publicId: string | null;
+  status: string;
+  fingerprint: string | null;
+  lastUsedAt: string | null;
+  componentId: string | null;
+  integrationTokenId: string | null;
 };

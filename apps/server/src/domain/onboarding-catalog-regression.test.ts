@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 
 const repoRoot = path.resolve(import.meta.dirname, "../../../../");
 const onboardingCatalogDir = path.join(repoRoot, "docs/onboarding-catalogs");
-const allowedCatalogs = new Set(["external-api-1.0.json", "onboarding-1.1.json", "repository-component-1.1.json"]);
+const allowedCatalogs = new Set(["external-api-1.0.json", "onboarding-1.1.json", "onboarding-1.2.json", "repository-component-1.1.json"]);
 const forbiddenNeedles = [
   ["docs/onboarding-catalogs", "component-2026.07.22-compliance.1.json"].join("/"),
   ["component", "2026.07.22-compliance.1.json"].join("-"),
@@ -48,10 +48,10 @@ describe("onboarding catalog regression guard", () => {
   });
 
   it("keeps the canonical onboarding catalog deterministic on disk", () => {
-    const onboardingCatalog = path.join(onboardingCatalogDir, "onboarding-1.1.json");
+    const onboardingCatalog = path.join(onboardingCatalogDir, "onboarding-1.2.json");
     expect(statSync(onboardingCatalog).isFile()).toBe(true);
     const parsed = JSON.parse(readFileSync(onboardingCatalog, "utf8")) as { version?: string; canonicalDigest?: string };
-    expect(parsed.version).toBe("1.1");
+    expect(parsed.version).toBe("1.2");
     expect(typeof parsed.canonicalDigest).toBe("string");
   });
 });

@@ -36,6 +36,7 @@ function fakeDb(socketPath: string, activeCount = 0): Db {
       audience: `https://${component.hostname}`,
       scope_names: ["component.invoke", "mcp.tools.call"], fingerprint: "access-fingerprint"
     }] };
+    if (sql.includes("principal_permission_suspension")) return { rowCount: 0, rows: [] };
     if (sql.includes("from component_permission")) return { rowCount: 1, rows: [{}] };
     if (sql.includes("select coalesce((runtime_resources->>'maxConcurrency')")) return { rowCount: 1, rows: [{ max_concurrency: 1, active_count: activeCount }] };
     if (sql.includes("from component_runtime_target")) return { rowCount: 1, rows: [{

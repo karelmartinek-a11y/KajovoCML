@@ -1,0 +1,1233 @@
+{
+  "version": "1.2",
+  "normativeLabel": "1.2",
+  "applicationRelease": "2026.07.24-dashboard.1",
+  "serviceKind": "COMPONENT",
+  "manifestSchemaVersion": "2026.07.22-compliance.1",
+  "pulseEnvelopeVersion": "2026.07.22-compliance.1",
+  "policyBaseline": "2026-07-22",
+  "mcpProtocolVersion": "2025-11-25",
+  "manifestSchemaPath": "apps/server/src/contracts/component-manifest-2026.07.22-compliance.1.schema.json",
+  "manifestExamplePath": "docs/onboarding-manifest-2026.07.22-compliance.1.example.json",
+  "documentationArtifacts": [
+    "docs/releases/2026.07.24-dashboard.1/README.md",
+    "docs/releases/2026.07.24-dashboard.1/compatibility-matrix.md",
+    "docs/dashboard/evidence-manifest.json"
+  ],
+  "jsonSchema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "$id": "https://register.hcasc.cz/schemas/component-manifest-2026.07.22-compliance.1.schema.json",
+    "title": "KCML generic component onboarding manifest",
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "schemaVersion",
+      "registrationRevision",
+      "displayName",
+      "businessPurpose",
+      "kind",
+      "owners",
+      "contacts",
+      "criticality",
+      "artifact",
+      "runtime",
+      "capabilities",
+      "tools",
+      "endpoints",
+      "pulses",
+      "states",
+      "controlPlane",
+      "e2eScenarios",
+      "documentationEvidence",
+      "secretPolicy",
+      "outboundPolicies",
+      "monitoring",
+      "auditPolicy"
+    ],
+    "properties": {
+      "schemaVersion": {
+        "const": "2026.07.22-compliance.1"
+      },
+      "registrationRevision": {
+        "type": "string",
+        "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+      },
+      "displayName": {
+        "type": "string",
+        "minLength": 2,
+        "maxLength": 200
+      },
+      "businessPurpose": {
+        "type": "string",
+        "minLength": 10,
+        "maxLength": 4000
+      },
+      "kind": {
+        "type": "string",
+        "minLength": 2,
+        "maxLength": 120
+      },
+      "owners": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+          "type": "object",
+          "required": [
+            "name"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "name": {
+              "type": "string",
+              "minLength": 2
+            },
+            "team": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "contacts": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+          "type": "object",
+          "required": [
+            "type",
+            "value"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "enum": [
+                "EMAIL",
+                "SLACK",
+                "URL"
+              ]
+            },
+            "value": {
+              "type": "string",
+              "minLength": 3
+            }
+          }
+        }
+      },
+      "criticality": {
+        "type": "object",
+        "required": [
+          "level",
+          "reviewIntervalDays"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "level": {
+            "enum": [
+              "LOW",
+              "MEDIUM",
+              "HIGH",
+              "CRITICAL"
+            ]
+          },
+          "reviewIntervalDays": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 365
+          }
+        }
+      },
+      "artifact": {
+        "type": "object",
+        "required": [
+          "type",
+          "digest",
+          "provenance"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "enum": [
+              "OCI_IMAGE",
+              "SOURCE_PACKAGE",
+              "REMOTE_RUNTIME"
+            ]
+          },
+          "digest": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "provenance": {
+            "type": "object",
+            "minProperties": 1
+          },
+          "imageReference": {
+            "type": "string"
+          },
+          "sourceBundleDigest": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "buildContract": {
+            "type": "object"
+          }
+        }
+      },
+      "runtime": {
+        "type": "object",
+        "required": [
+          "transport",
+          "executionMode",
+          "runtimeDigest",
+          "resources",
+          "lifecycle",
+          "readinessMode",
+          "persistentState",
+          "secretGrants",
+          "egressGrants"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "transport": {
+            "enum": [
+              "UDS",
+              "HTTPS"
+            ]
+          },
+          "executionMode": {
+            "enum": [
+              "REQUEST_RESPONSE",
+              "LONG_RUNNING"
+            ]
+          },
+          "runtimeDigest": {
+            "type": "string",
+            "pattern": "^sha256:[a-f0-9]{64}$"
+          },
+          "upstream": {
+            "type": "string",
+            "format": "uri"
+          },
+          "socketPath": {
+            "type": "string",
+            "pattern": "^/"
+          },
+          "tlsIdentity": {
+            "type": "string"
+          },
+          "container": {
+            "type": "object"
+          },
+          "lifecycle": {
+            "type": "object",
+            "required": [
+              "prepareRequired",
+              "gracefulShutdownSeconds",
+              "singleActiveWorker"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "prepareRequired": {
+                "type": "boolean"
+              },
+              "gracefulShutdownSeconds": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 600
+              },
+              "singleActiveWorker": {
+                "type": "boolean"
+              }
+            }
+          },
+          "readinessMode": {
+            "const": "DEPENDENCY_AWARE"
+          },
+          "persistentState": {
+            "type": "object",
+            "required": [
+              "required",
+              "mountPath",
+              "survivesRestart",
+              "survivesUpgrade",
+              "survivesRollback"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "required": {
+                "type": "boolean"
+              },
+              "mountPath": {
+                "type": "string",
+                "pattern": "^/"
+              },
+              "survivesRestart": {
+                "const": true
+              },
+              "survivesUpgrade": {
+                "const": true
+              },
+              "survivesRollback": {
+                "const": true
+              }
+            }
+          },
+          "secretGrants": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "name"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "pattern": "^[A-Z][A-Z0-9_]{2,127}$"
+                },
+                "required": {
+                  "type": "boolean"
+                }
+              }
+            }
+          },
+          "egressGrants": {
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "required": [
+                    "type",
+                    "targetHost",
+                    "port",
+                    "pathPrefix",
+                    "scope"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "type": {
+                      "const": "HTTPS_FETCH"
+                    },
+                    "targetHost": {
+                      "type": "string",
+                      "minLength": 3,
+                      "maxLength": 255,
+                      "pattern": "^[A-Za-z0-9.-]+$"
+                    },
+                    "port": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 65535
+                    },
+                    "pathPrefix": {
+                      "type": "string",
+                      "pattern": "^/"
+                    },
+                    "scope": {
+                      "type": "string",
+                      "minLength": 2,
+                      "maxLength": 160
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "type",
+                    "targetHost",
+                    "port",
+                    "servername",
+                    "scope",
+                    "protocol"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "type": {
+                      "const": "TCP_TLS"
+                    },
+                    "targetHost": {
+                      "type": "string",
+                      "minLength": 3,
+                      "maxLength": 255,
+                      "pattern": "^[A-Za-z0-9.-]+$"
+                    },
+                    "port": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 65535
+                    },
+                    "servername": {
+                      "type": "string",
+                      "minLength": 3,
+                      "maxLength": 255,
+                      "pattern": "^[A-Za-z0-9.-]+$"
+                    },
+                    "scope": {
+                      "type": "string",
+                      "minLength": 2,
+                      "maxLength": 160
+                    },
+                    "protocol": {
+                      "const": "TCP_TLS"
+                    }
+                  }
+                }
+              ]
+            }
+          },
+          "resources": {
+            "type": "object",
+            "required": [
+              "cpuMillis",
+              "memoryMiB",
+              "maxConcurrency"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "cpuMillis": {
+                "type": "integer",
+                "minimum": 10
+              },
+              "memoryMiB": {
+                "type": "integer",
+                "minimum": 16
+              },
+              "maxConcurrency": {
+                "type": "integer",
+                "minimum": 1
+              }
+            }
+          }
+        }
+      },
+      "capabilities": {
+        "type": "array",
+        "uniqueItems": true,
+        "items": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 160
+        }
+      },
+      "tools": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": [
+            "name",
+            "title",
+            "description",
+            "inputSchema",
+            "outputSchema",
+            "scope",
+            "timeoutMs",
+            "limits"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "name": {
+              "type": "string",
+              "pattern": "^[a-zA-Z0-9._-]+$"
+            },
+            "title": {
+              "type": "string",
+              "minLength": 2
+            },
+            "description": {
+              "type": "string",
+              "minLength": 5
+            },
+            "inputSchema": {
+              "type": "object",
+              "minProperties": 1
+            },
+            "outputSchema": {
+              "type": "object",
+              "minProperties": 1
+            },
+            "scope": {
+              "type": "string",
+              "minLength": 2
+            },
+            "timeoutMs": {
+              "type": "integer",
+              "minimum": 100,
+              "maximum": 300000
+            },
+            "limits": {
+              "type": "object",
+              "required": [
+                "requestMaxBytes",
+                "responseMaxBytes"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "requestMaxBytes": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "responseMaxBytes": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            },
+            "annotations": {
+              "type": "object"
+            }
+          }
+        }
+      },
+      "endpoints": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": [
+            "key",
+            "method",
+            "path",
+            "scope",
+            "requestSchema",
+            "responseSchema"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "key": {
+              "type": "string",
+              "minLength": 2
+            },
+            "method": {
+              "enum": [
+                "GET",
+                "POST",
+                "PUT",
+                "PATCH",
+                "DELETE"
+              ]
+            },
+            "path": {
+              "type": "string",
+              "pattern": "^/"
+            },
+            "scope": {
+              "type": "string",
+              "minLength": 2
+            },
+            "requestSchema": {
+              "type": "object",
+              "minProperties": 1
+            },
+            "responseSchema": {
+              "type": "object",
+              "minProperties": 1
+            }
+          }
+        }
+      },
+      "pulses": {
+        "type": "object",
+        "required": [
+          "incoming",
+          "outgoing"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "incoming": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/pulse"
+            }
+          },
+          "outgoing": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/pulse"
+            }
+          }
+        }
+      },
+      "states": {
+        "type": "object",
+        "required": [
+          "states",
+          "transitions"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "states": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": [
+                "key",
+                "category",
+                "schema"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "key": {
+                  "type": "string",
+                  "minLength": 2
+                },
+                "category": {
+                  "type": "string",
+                  "minLength": 2
+                },
+                "schema": {
+                  "type": "object",
+                  "minProperties": 1
+                },
+                "terminal": {
+                  "type": "boolean"
+                }
+              }
+            }
+          },
+          "transitions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "from",
+                "to",
+                "trigger"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "from": {
+                  "type": "string"
+                },
+                "to": {
+                  "type": "string"
+                },
+                "trigger": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "controlPlane": {
+        "type": "object",
+        "required": [
+          "enable",
+          "disable",
+          "state",
+          "heartbeat"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "enable": {
+            "type": "object",
+            "required": [
+              "path",
+              "requestSchema",
+              "responseSchema"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "type": "string",
+                "pattern": "^/"
+              },
+              "requestSchema": {
+                "type": "object",
+                "minProperties": 1
+              },
+              "responseSchema": {
+                "type": "object",
+                "minProperties": 1
+              }
+            }
+          },
+          "disable": {
+            "type": "object",
+            "required": [
+              "path",
+              "requestSchema",
+              "responseSchema"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "type": "string",
+                "pattern": "^/"
+              },
+              "requestSchema": {
+                "type": "object",
+                "minProperties": 1
+              },
+              "responseSchema": {
+                "type": "object",
+                "minProperties": 1
+              }
+            }
+          },
+          "state": {
+            "type": "object",
+            "required": [
+              "path",
+              "requestSchema",
+              "responseSchema"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "type": "string",
+                "pattern": "^/"
+              },
+              "requestSchema": {
+                "type": "object",
+                "minProperties": 1
+              },
+              "responseSchema": {
+                "type": "object",
+                "minProperties": 1
+              }
+            }
+          },
+          "heartbeat": {
+            "type": "object",
+            "required": [
+              "path",
+              "requestSchema",
+              "responseSchema"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "type": "string",
+                "pattern": "^/"
+              },
+              "requestSchema": {
+                "type": "object",
+                "minProperties": 1
+              },
+              "responseSchema": {
+                "type": "object",
+                "minProperties": 1
+              }
+            }
+          }
+        }
+      },
+      "e2eScenarios": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+          "type": "object",
+          "required": [
+            "scenarioKey",
+            "variantKey",
+            "invocation",
+            "input",
+            "expected",
+            "timeoutMs",
+            "deterministic",
+            "cleanup"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "scenarioKey": {
+              "type": "string",
+              "minLength": 2
+            },
+            "variantKey": {
+              "type": "string",
+              "minLength": 1
+            },
+            "invocation": {
+              "type": "object",
+              "required": [
+                "kind",
+                "name"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "TOOL",
+                    "PULSE",
+                    "ENDPOINT"
+                  ]
+                },
+                "name": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            },
+            "input": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "required": [
+                    "mediaType",
+                    "json"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "mediaType": {
+                      "const": "application/json"
+                    },
+                    "json": {}
+                  }
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "mediaType",
+                    "base64"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "mediaType": {
+                      "type": "string",
+                      "minLength": 3
+                    },
+                    "base64": {
+                      "type": "string",
+                      "minLength": 1,
+                      "contentEncoding": "base64"
+                    }
+                  }
+                }
+              ]
+            },
+            "expected": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "required": [
+                    "mediaType",
+                    "json"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "mediaType": {
+                      "const": "application/json"
+                    },
+                    "json": {}
+                  }
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "mediaType",
+                    "base64"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "mediaType": {
+                      "type": "string",
+                      "minLength": 3
+                    },
+                    "base64": {
+                      "type": "string",
+                      "minLength": 1,
+                      "contentEncoding": "base64"
+                    }
+                  }
+                }
+              ]
+            },
+            "timeoutMs": {
+              "type": "integer",
+              "minimum": 100,
+              "maximum": 600000
+            },
+            "deterministic": {
+              "const": true
+            },
+            "cleanup": {
+              "type": "object",
+              "required": [
+                "required"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "required": {
+                  "type": "boolean"
+                },
+                "operation": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "documentationEvidence": {
+        "type": "array",
+        "minItems": 1,
+        "items": {
+          "type": "object",
+          "required": [
+            "key",
+            "path",
+            "digest",
+            "content"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "key": {
+              "type": "string",
+              "minLength": 2
+            },
+            "path": {
+              "type": "string",
+              "pattern": "^(?!/)(?!.*\\.\\.).+$"
+            },
+            "digest": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            },
+            "content": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "required": [
+                    "mediaType",
+                    "json"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "mediaType": {
+                      "const": "application/json"
+                    },
+                    "json": {}
+                  }
+                },
+                {
+                  "type": "object",
+                  "required": [
+                    "mediaType",
+                    "base64"
+                  ],
+                  "additionalProperties": false,
+                  "properties": {
+                    "mediaType": {
+                      "type": "string",
+                      "minLength": 3
+                    },
+                    "base64": {
+                      "type": "string",
+                      "minLength": 1,
+                      "contentEncoding": "base64"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      },
+      "secretPolicy": {
+        "type": "object",
+        "required": [
+          "authorizationAuthority",
+          "allSecretsRequireGrant",
+          "auditLevel"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "authorizationAuthority": {
+            "const": "KCML"
+          },
+          "allSecretsRequireGrant": {
+            "const": true
+          },
+          "auditLevel": {
+            "const": "FULL"
+          }
+        }
+      },
+      "outboundPolicies": {
+        "type": "array",
+        "items": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": [
+                "type",
+                "targetHost",
+                "port",
+                "pathPrefix",
+                "scope"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "type": {
+                  "const": "HTTPS_FETCH"
+                },
+                "targetHost": {
+                  "type": "string",
+                  "minLength": 3,
+                  "maxLength": 255,
+                  "pattern": "^[A-Za-z0-9.-]+$"
+                },
+                "port": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 65535
+                },
+                "pathPrefix": {
+                  "type": "string",
+                  "pattern": "^/"
+                },
+                "scope": {
+                  "type": "string",
+                  "minLength": 2,
+                  "maxLength": 160
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": [
+                "type",
+                "targetHost",
+                "port",
+                "servername",
+                "scope",
+                "protocol"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "type": {
+                  "const": "TCP_TLS"
+                },
+                "targetHost": {
+                  "type": "string",
+                  "minLength": 3,
+                  "maxLength": 255,
+                  "pattern": "^[A-Za-z0-9.-]+$"
+                },
+                "port": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 65535
+                },
+                "servername": {
+                  "type": "string",
+                  "minLength": 3,
+                  "maxLength": 255,
+                  "pattern": "^[A-Za-z0-9.-]+$"
+                },
+                "scope": {
+                  "type": "string",
+                  "minLength": 2,
+                  "maxLength": 160
+                },
+                "protocol": {
+                  "const": "TCP_TLS"
+                }
+              }
+            }
+          ]
+        }
+      },
+      "monitoring": {
+        "type": "object",
+        "required": [
+          "probes",
+          "staleAfterSeconds",
+          "disableAfterSeconds"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "probes": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": [
+                "kind",
+                "intervalSeconds"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "minLength": 2
+                },
+                "intervalSeconds": {
+                  "type": "integer",
+                  "minimum": 5
+                }
+              }
+            }
+          },
+          "staleAfterSeconds": {
+            "type": "integer",
+            "minimum": 10
+          },
+          "disableAfterSeconds": {
+            "type": "integer",
+            "minimum": 10
+          }
+        }
+      },
+      "auditPolicy": {
+        "type": "object",
+        "required": [
+          "technicalAudit",
+          "payloadProtection",
+          "retentionDays"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "technicalAudit": {
+            "const": "PLATFORM"
+          },
+          "payloadProtection": {
+            "const": "ENCRYPTED"
+          },
+          "retentionDays": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      }
+    },
+    "$defs": {
+      "pulse": {
+        "type": "object",
+        "required": [
+          "type",
+          "schema",
+          "scope"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "type": "string",
+            "minLength": 2
+          },
+          "schema": {
+            "type": "object",
+            "minProperties": 1
+          },
+          "scope": {
+            "type": "string",
+            "minLength": 2
+          }
+        }
+      }
+    }
+  },
+  "identityAssignment": {
+    "authority": "KCML",
+    "codePattern": "KCML####",
+    "hostnamePattern": "kcml####.kajovocml.hcasc.cz",
+    "clientSuppliedIdentityForbidden": true
+  },
+  "tokens": {
+    "integration": {
+      "ttlHours": 24,
+      "consumedOn": "SUCCESSFUL_REGISTRATION",
+      "reusableAfterFailedAttempt": true
+    },
+    "access": {
+      "expires": false,
+      "rotatedOrRevokedOnly": true
+    },
+    "permittedTokenClasses": [
+      "INTEGRATION",
+      "ACCESS"
+    ]
+  },
+  "runtime": {
+    "canonicalMcpPath": "/mcp",
+    "transports": [
+      "UDS",
+      "HTTPS"
+    ],
+    "internalControlExcludedFromBusinessTools": true
+  },
+  "compatibility": {
+    "classification": "ADDITIVE_MINOR",
+    "migration": "Apply forward migrations 004 through 006. Existing manifest 2026.07.22-compliance.1 and active permissions remain supported; legacy permissions are represented without claiming verified port compatibility.",
+    "rollback": "Deploy the previous application release while retaining additive tables, or restore from the pre-migration backup after draining Dashboard mutations."
+  },
+  "compatibilityMatrix": [
+    {
+      "kind": "ANY_API_CAPABLE_COMPONENT",
+      "UDS": "SUPPORTED",
+      "HTTPS": "SUPPORTED"
+    }
+  ],
+  "dashboardControlPlane": {
+    "visualNodeLifecycle": [
+      "PRE_REGISTRATION",
+      "REGISTERED",
+      "DELETED"
+    ],
+    "topologyState": [
+      "CONNECTED",
+      "DISCONNECTED",
+      "ARCHIVED"
+    ],
+    "compatibilityState": [
+      "EXACT_MATCH",
+      "COMPATIBLE_WITH_DIFFERENCES",
+      "INCOMPATIBLE",
+      "UNKNOWN",
+      "STALE"
+    ],
+    "authorizationState": [
+      "GRANTED",
+      "DENIED",
+      "SUSPENDED"
+    ],
+    "runtimeEventStages": [
+      "STARTED",
+      "COMPLETED",
+      "BLOCKED"
+    ],
+    "secretGrantHandoff": "ATOMIC_WITH_ONBOARDING",
+    "credentialRevocationIsReversible": false,
+    "permissionSuspensionIsReversible": true
+  },
+  "pipelineGates": [
+    "manifest_schema",
+    "artifact_provenance",
+    "runtime_probe",
+    "authorization",
+    "control_plane",
+    "state_contract",
+    "e2e_all_scenarios",
+    "monitoring",
+    "audit_continuity",
+    "recertification"
+  ],
+  "programmerApi": {
+    "openapi": "3.1.0",
+    "paths": {
+      "/v2/component-onboardings": {
+        "post": {}
+      },
+      "/v2/component-onboardings/{id}": {
+        "get": {}
+      },
+      "/v2/component-onboardings/{id}/revisions": {
+        "post": {}
+      },
+      "/v2/component-onboardings/{id}/readiness": {
+        "post": {}
+      },
+      "/v2/component-onboardings/{id}/e2e-results": {
+        "post": {
+          "deprecated": true,
+          "responses": {
+            "410": {
+              "description": "Client supplied E2E evidence is forbidden"
+            }
+          }
+        }
+      }
+    }
+  },
+  "canonicalDigest": "sha256:092d6ffe0a9c0a1eb0cc31e6336813ca9455f1180f9c1d96318a62dc47e21384"
+}

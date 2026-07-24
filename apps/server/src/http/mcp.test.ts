@@ -47,6 +47,7 @@ function createDb(found = true): Db {
       scope_names: ["mcp.initialize", "mcp.notifications.initialized", "mcp.tools.list", "mcp.tools.call"],
       fingerprint: "test-fingerprint"
     }] };
+    if (sql.includes("principal_permission_suspension")) return { rowCount: 0, rows: [] };
     if (sql.includes("from component_permission")) return { rowCount: 1, rows: [{ route_pattern: "/mcp" }] };
     if (sql.includes("from component_tool_contract")) return { rowCount: 1, rows: [{
       name: "example_tool",

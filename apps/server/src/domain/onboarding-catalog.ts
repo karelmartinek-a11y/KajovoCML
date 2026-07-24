@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { KCML_RELEASE } from "./release.js";
 
-export const MCP_CATALOG_VERSION = "1.1";
+export const MCP_CATALOG_VERSION = KCML_RELEASE.onboardingCatalogVersion;
 export const MCP_MANIFEST_SCHEMA_VERSION = KCML_RELEASE.manifestSchemaVersion;
 export const MCP_CATALOG_PATH = `docs/onboarding-catalogs/onboarding-${MCP_CATALOG_VERSION}.json`;
 export const MCP_CONNECT_FILE = `onboarding-${MCP_CATALOG_VERSION}.json`;

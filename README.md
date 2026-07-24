@@ -2,9 +2,15 @@
 
 KCML is a security-focused control plane for registering, operating and auditing isolated MCP servers and managed external APIs. The executable source of truth is the code, numbered PostgreSQL migrations and machine-readable catalogs in `docs/onboarding-catalogs/`; `docs/requirements-matrix.md` and `docs/audit-remediation-matrix.md` map those invariants to automated evidence.
 
-AI agents, MCP-facing components and deterministic microsteps may be maintained outside KajovoCML and then follow the canonical onboarding catalog `docs/onboarding-catalogs/onboarding-1.1.json` at registration time. When they are maintained in this monorepository, they belong exclusively in `components/<repository-key>/`; their source layout and generation flow are governed by `docs/onboarding-catalogs/repository-component-1.1.json`, while runtime registration continues through `/v2/component-onboardings`. Integration tokens authorize KCML registration plus onboarding-time reads of explicitly granted KCML Secrets only; they must never be committed or used as GitHub or deployment credentials.
+AI agents, MCP-facing components and deterministic microsteps may be maintained outside KajovoCML and then follow the canonical onboarding catalog `docs/onboarding-catalogs/onboarding-1.2.json` at registration time. When they are maintained in this monorepository, they belong exclusively in `components/<repository-key>/`; their source layout and generation flow are governed by `docs/onboarding-catalogs/repository-component-1.1.json`, while runtime registration continues through `/v2/component-onboardings`. Integration tokens authorize KCML registration plus onboarding-time reads of explicitly granted KCML Secrets only; they must never be committed or used as GitHub or deployment credentials.
 
 Pure `components/<repository-key>/**` changes use the dedicated repository-component PR and deploy workflows. Mixed diffs still run full platform CI, and the post-deploy evidence for a component rollout is captured in `apps/server/src/contracts/repository-component-deploy-receipt-1.0.schema.json`.
+
+## Aktivní OWNER Dashboard
+
+OWNER administrační UI obsahuje primární aktivní Dashboard nad persistovaným serverovým read modelem. Zobrazuje stabilní lifecycle uzlu od integračního tokenu po registrovanou komponentu, PULSE topologii s oddělenou kompatibilitou a autorizací, Secret granty, uložený layout a persistovanou runtime timeline. Implementační model, migrační postup, parity matice a pravdivý stav důkazů jsou v `docs/dashboard/`.
+
+Nové administrační API je pod `/api/dashboard/*`; všechny mutace vyžadují OWNER session a CSRF, destruktivní deregistrace navíc čerstvé heslo, MFA a typed confirmation.
 
 ## Local development
 

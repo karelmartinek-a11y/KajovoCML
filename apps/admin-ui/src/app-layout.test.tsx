@@ -50,5 +50,7 @@ describe("application layout and router", () => {
     expect(screen.getByText("Build 35754cf")).toBeTruthy();
     expect(screen.queryByText("Release 2026.07.21")).toBeNull();
     expect(screen.queryByText("Production")).toBeNull();
+    const navigationButtons = screen.getAllByRole("button");
+    expect(navigationButtons.some((button) => button.textContent?.includes("Dashboard"))).toBe(true);
   });
 });

@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   Boxes,
   KeyRound,
+  LayoutDashboard,
   Lock,
   LockKeyhole,
   LogOut,
@@ -52,12 +53,13 @@ export function AppLayout({
       <aside className="sidebar">
         <div className="brand-row"><span className="brand-mark"><ShieldCheck size={22} /></span><div><strong>KCML</strong><span>{releaseLabel}</span></div></div>
         <nav>
+          {role === "OWNER" ? navigationButton("dashboard", "Dashboard", <LayoutDashboard size={18} />) : null}
+          {role === "OWNER" ? navigationButton("registered", "Registrované prvky", <Activity size={18} />) : null}
           {navigationButton("components", "Katalog komponent", <Boxes size={18} />)}
           {navigationButton("external", "Externí strany", <Workflow size={18} />)}
           {navigationButton("monitoring", "Monitoring komponent", <Activity size={18} />)}
-          {role !== "AUDITOR" ? navigationButton("integration", "Integrační tokeny", <Workflow size={18} />) : null}
+          {role !== "AUDITOR" ? navigationButton("identities", "Tokeny a identity", <KeyRound size={18} />) : null}
           {role !== "AUDITOR" ? navigationButton("secrets", "Secrets", <Lock size={18} />) : null}
-          {role !== "AUDITOR" ? navigationButton("tokens", "Přístupové tokeny", <KeyRound size={18} />) : null}
           {role !== "AUDITOR" ? navigationButton("permissions", "Správa oprávnění", <LockKeyhole size={18} />) : null}
           {navigationButton("audit", "Audit", <Terminal size={18} />)}
           {role !== "AUDITOR" ? navigationButton("config", "Konfigurace", <SlidersHorizontal size={18} />) : null}

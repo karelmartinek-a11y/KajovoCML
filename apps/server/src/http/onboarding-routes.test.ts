@@ -62,6 +62,12 @@ describe("programmer onboarding API authorization", () => {
           }]
         };
       }
+      if (sql.includes("select id from dashboard_visual_node")) {
+        return { rowCount: 0, rows: [] };
+      }
+      if (sql.includes("insert into dashboard_visual_node")) {
+        return { rowCount: 1, rows: [{ id: "dashboard-node-id" }] };
+      }
       return { rowCount: 0, rows: [] };
     };
     const db = {

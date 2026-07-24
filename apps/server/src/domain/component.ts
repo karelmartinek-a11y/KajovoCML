@@ -6,13 +6,14 @@ import type { Db } from "../db.js";
 import { tx } from "../db.js";
 import { decryptVaultSecret, encryptVaultSecret, hmacToken, issueOpaqueSecret } from "../security/secrets.js";
 import { appendAudit } from "./audit.js";
+import { handoffDashboardNode } from "./dashboard-topology.js";
 import { authorizeComponentCall, componentSourceIdentityMatches } from "./component-auth.js";
 import { CANONICAL_COMPONENT_HOST_SUFFIX } from "./hostnames.js";
 import { transferIntegrationTokenSecretGrants } from "./onboarding.js";
 import { KCML_RELEASE } from "./release.js";
 import { resolveSecret, type SecretPrincipal } from "./secret-manager.js";
 
-export const COMPONENT_CATALOG_VERSION = KCML_RELEASE.catalogVersion;
+export const COMPONENT_CATALOG_VERSION = KCML_RELEASE.manifestSchemaVersion;
 export const MCP_REQUIRED_CAPABILITIES = [
   "mcp.initialize",
   "mcp.notifications.initialized",
@@ -92,23 +93,6 @@ export type ComponentManifest = JsonRecord & {
   outboundPolicies: JsonRecord[];
   secretPolicy: JsonRecord;
 };
-
-export type RepositoryComponentDescriptor = JsonRecord & {
-  catalogVersion: "1.1";
-  repositoryKey: string;
-  kind: string;
-  displayName: string;
-  businessPurpose: string;
-  owners: JsonRecord;
-  runtime: string;
-  entrypoint: string;
-  maintenanceMode: string;
-  registration: JsonRecord;
-};
-
-export type ComponentOnboardingSubmission =
-  | { phase: "FINAL"; manifest: ComponentManifest }
-  | { phase: "SOURCE"; manifest: RepositoryComponentDescriptor };
 
 type GateResult = {
   gate: typeof ACTIVATION_GATES[number];
@@ -317,51 +301,6 @@ export function validateComponentManifest(input: unknown): ComponentManifest {
   const manifest = input as ComponentManifest;
   rejectIncompleteContract(manifest);
   return manifest;
-}
-
-export function validateRepositoryComponentDescriptor(input: unknown): RepositoryComponentDescriptor {
-  const descriptor = record(input);
-  const owners = record(descriptor?.owners);
-  const registration = record(descriptor?.registration);
-  const valid = descriptor?.catalogVersion === "1.1"
-    && /^[a-z0-9][a-z0-9-]{2,62}$/.test(text(descriptor.repositoryKey))
-    && ["AI_AGENT", "MCP_COMPONENT", "MICROSTEP", "API_COMPONENT", "EVENT_PROCESSOR"].includes(text(descriptor.kind))
-    && text(descriptor.displayName).length >= 2
-    && text(descriptor.businessPurpose).length >= 20
-    && owners
-    && text(owners.service).length >= 2
-    && text(owners.technical).length >= 2
-    && text(descriptor.runtime) === "nodejs24-typescript"
-    && text(descriptor.entrypoint) === "src/index.ts"
-    && ["EXTERNAL", "IN_REPOSITORY"].includes(text(descriptor.maintenanceMode))
-    && registration
-    && text(registration.manifest) === "manifest.kcml.json"
-    && text(registration.intake) === "/v2/component-onboardings"
-    && text(registration.identityAssignedBy) === "KCML";
-  if (!valid) throw Object.assign(new Error("invalid_manifest"), { statusCode: 400 });
-  return descriptor as RepositoryComponentDescriptor;
-}
-
-export function validateComponentOnboardingSubmission(input: unknown): ComponentOnboardingSubmission {
-  try {
-    return { phase: "FINAL", manifest: validateComponentManifest(input) };
-  } catch (error) {
-    try {
-      return { phase: "SOURCE", manifest: validateRepositoryComponentDescriptor(input) };
-    } catch {
-      // Fall through to the combined error response below.
-    }
-    if (error instanceof Error && error.message === "invalid_manifest") {
-      throw Object.assign(new Error("invalid_manifest"), {
-        statusCode: 400,
-        errors: {
-          finalManifest: validateCatalogComponentManifest.errors ?? [],
-          repositoryComponentDescriptor: "validation_failed"
-        }
-      });
-    }
-    throw error;
-  }
 }
 
 function evidenceDigest(value: unknown): string {
@@ -1193,10 +1132,10 @@ async function replaceDerivedComponentContracts(client: pg.PoolClient, component
 export async function createComponentOnboarding(db: Db, params: {
   integrationTokenId: string;
   idempotencyKey: string;
-  manifest: ComponentOnboardingSubmission;
+  manifest: ComponentManifest;
   correlationId: string;
 }): Promise<Record<string, unknown>> {
-  const digest = createHash("sha256").update(canonicalJson(params.manifest.manifest)).digest("hex");
+  const digest = componentManifestDigest(params.manifest);
   return tx(db, async (client) => {
     const token = await client.query(
       `select id,token_kind,release_version,max_child_jobs
@@ -1247,58 +1186,41 @@ export async function createComponentOnboarding(db: Db, params: {
     const category = "EXTERNAL_SERVICE";
     const registrationType = "GENERIC_COMPONENT";
     const role = "SERVICE";
-    const finalManifest = params.manifest.phase === "FINAL" ? params.manifest.manifest : null;
-    const sourceManifest = params.manifest.phase === "SOURCE" ? params.manifest.manifest : null;
-    const capabilities = finalManifest ? manifestCapabilities(finalManifest) : [];
-    const protocols = finalManifest ? manifestProtocols(finalManifest) : [];
-    const transports = finalManifest ? manifestTransports(finalManifest) : [];
+    const capabilities = manifestCapabilities(params.manifest);
+    const protocols = manifestProtocols(params.manifest);
+    const transports = manifestTransports(params.manifest);
     const authorizationSnapshot = {
       tokenId: params.integrationTokenId,
       tokenKind: String(tokenRow.token_kind),
       releaseVersion: COMPONENT_CATALOG_VERSION,
       manifestDigest: digest,
-      manifestPhase: params.manifest.phase,
-      repositoryKey: sourceManifest?.repositoryKey ?? null,
       registrationType,
-      componentKind: finalManifest?.kind ?? sourceManifest?.kind ?? null,
+      componentKind: params.manifest.kind,
       category,
       capturedAt: new Date().toISOString()
     };
     await client.query(
       `insert into principal(id,kind,public_id,status,policy_epoch,revocation_epoch,metadata)
        values ($1,'COMPONENT',$2,'SUSPENDED',1,1,$3::jsonb)`,
-      [principalId, code, JSON.stringify({
-        componentId,
-        assignedBy: "component_onboarding",
-        repositoryKey: sourceManifest?.repositoryKey ?? null,
-        onboardingPhase: params.manifest.phase
-      })]
+      [principalId, code, JSON.stringify({ componentId, assignedBy: "component_onboarding" })]
     );
     await client.query(
       `insert into component(
         id,principal_id,kcml_number,code,hostname,display_name,description,category,registration_type,component_role,owners,contacts,
         lifecycle_state,activation_state,operational_state,monitoring_state,enabled,release_version
       ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,'REVIEW','INACTIVE','UNKNOWN',$13,false,$14)`,
-      [componentId, principalId, number, code, hostname,
-        finalManifest?.displayName ?? sourceManifest?.displayName ?? code,
-        finalManifest?.businessPurpose ?? sourceManifest?.businessPurpose ?? "",
-        category, registrationType, role,
-        JSON.stringify(finalManifest?.owners ?? sourceManifest?.owners ?? []),
-        JSON.stringify(finalManifest?.contacts ?? []),
+      [componentId, principalId, number, code, hostname, params.manifest.displayName, params.manifest.businessPurpose, category,
+        registrationType, role, JSON.stringify(params.manifest.owners), JSON.stringify(params.manifest.contacts),
         "PENDING", COMPONENT_CATALOG_VERSION]
     );
-    let revisionId: string | null = null;
-    if (finalManifest) {
-      const revision = await client.query(
-        `insert into component_revision(
-          component_id,revision,manifest,manifest_digest,capabilities,protocols,transports,derived_gates
-        ) values ($1,$2,$3::jsonb,$4,$5::text[],$6::text[],$7::text[],$8::jsonb) returning id`,
-        [componentId, manifestRevision(finalManifest), JSON.stringify(finalManifest), digest, capabilities,
-          protocols, transports, JSON.stringify(ACTIVATION_GATES)]
-      );
-      revisionId = String(revision.rows[0].id);
-      await replaceDerivedComponentContracts(client, componentId, revisionId, finalManifest, hostname);
-    }
+    const revision = await client.query(
+      `insert into component_revision(
+        component_id,revision,manifest,manifest_digest,capabilities,protocols,transports,derived_gates
+      ) values ($1,$2,$3::jsonb,$4,$5::text[],$6::text[],$7::text[],$8::jsonb) returning id`,
+      [componentId, manifestRevision(params.manifest), JSON.stringify(params.manifest), digest, capabilities,
+        protocols, transports, JSON.stringify(ACTIVATION_GATES)]
+    );
+    await replaceDerivedComponentContracts(client, componentId, String(revision.rows[0].id), params.manifest, hostname);
     await client.query("insert into component_audit_stream(component_id) values ($1)", [componentId]);
     const inserted = await client.query(
       `insert into component_onboarding_job(
@@ -1306,23 +1228,22 @@ export async function createComponentOnboarding(db: Db, params: {
         release_version,authorization_snapshot
       ) values ($1,$2,$3,$4,$5,$6,$7::jsonb,$4,'IN_REVIEW',$8,$9::jsonb) returning *`,
       [params.integrationTokenId, componentId, params.idempotencyKey, digest, category, registrationType,
-        JSON.stringify(params.manifest.manifest), COMPONENT_CATALOG_VERSION, JSON.stringify(authorizationSnapshot)]
+        JSON.stringify(params.manifest), COMPONENT_CATALOG_VERSION, JSON.stringify(authorizationSnapshot)]
     );
-    if (revisionId) {
-      await client.query("update component set active_revision_id=$2 where id=$1", [componentId, revisionId]);
-    }
+    await client.query("update component set active_revision_id=$2 where id=$1", [componentId, revision.rows[0].id]);
     await transferIntegrationTokenSecretGrants(client, params.integrationTokenId, componentId, code);
+    await handoffDashboardNode(client, {
+      integrationTokenId: params.integrationTokenId,
+      componentId,
+      principalId,
+      code,
+      displayName: params.manifest.displayName,
+      correlationId: params.correlationId
+    });
     await appendAudit(client, {
       eventType: "component_onboarding.created", actorType: "integration_token", actorId: params.integrationTokenId,
       objectType: "component", objectId: componentId,
-      after: {
-        code,
-        hostname,
-        catalogVersion: COMPONENT_CATALOG_VERSION,
-        componentKind: finalManifest?.kind ?? sourceManifest?.kind ?? null,
-        repositoryKey: sourceManifest?.repositoryKey ?? null,
-        manifestPhase: params.manifest.phase
-      },
+      after: { code, hostname, catalogVersion: COMPONENT_CATALOG_VERSION, componentKind: params.manifest.kind },
       correlationId: params.correlationId
     });
     return componentOnboardingView(inserted.rows[0]);
@@ -1672,63 +1593,262 @@ async function componentActiveRevision(client: pg.PoolClient, componentId: strin
   return revisionId;
 }
 
-export async function ingestComponentPulse(db: Db, componentId: string, envelope: ComponentPulseEnvelope, authorization: {
+export function componentPulseIdentityCodes(direction: ComponentPulseEnvelope["direction"], sourceCode: string, targetCode: string): {
+  localComponentCode: string;
+  routedComponentCode: string;
+} {
+  return direction === "INCOMING"
+    ? { localComponentCode: targetCode, routedComponentCode: sourceCode }
+    : { localComponentCode: sourceCode, routedComponentCode: targetCode };
+}
+
+type PulseAuthorizationContext = {
   tokenFingerprint: string;
   permissionEpoch: number;
   sourceClientId: string;
-}): Promise<{ accepted: true; correlationId: string }> {
+  leaseId?: string;
+  runtimeContext?: {
+    targetComponentId?: string;
+    route?: string;
+    scope?: string;
+    audience?: string;
+    transport?: string;
+  };
+};
+
+async function validateComponentPulse(
+  client: pg.PoolClient,
+  componentId: string,
+  envelope: ComponentPulseEnvelope,
+  authorization: PulseAuthorizationContext
+): Promise<{ sourcePrincipalId: string; processTrace: Record<string, unknown> }> {
+  const mask = await client.query(
+    `select mask.*,component.code as component_code
+       from component_pulse_mask mask
+       join component on component.id=mask.component_id
+      where component_id=$1 and pulse_type=$2 and direction=$3`,
+    [componentId, envelope.pulseType, envelope.direction]
+  );
+  if (!mask.rowCount) throw Object.assign(new Error("unknown_pulse_type"), { statusCode: 409 });
+  if (envelope.accessTokenFingerprint !== authorization.tokenFingerprint) throw Object.assign(new Error("access_token_fingerprint_mismatch"), { statusCode: 403 });
+  const source = record(envelope.source);
+  const target = record(envelope.target);
+  const sourceCode = text(source?.componentCode);
+  const targetCode = text(target?.componentCode);
+  if (!text(source?.clientId) || !sourceCode || !targetCode) {
+    throw Object.assign(new Error("component_identity_required"), { statusCode: 400 });
+  }
+  const identity = componentPulseIdentityCodes(envelope.direction, sourceCode, targetCode);
+  if (identity.localComponentCode !== String(mask.rows[0].component_code)) {
+    throw Object.assign(new Error(envelope.direction === "INCOMING" ? "target_component_mismatch" : "source_component_mismatch"), { statusCode: 403 });
+  }
+  const routeAclRaw = mask.rows[0].route_acl;
+  const routeAcl = Array.isArray(routeAclRaw) ? routeAclRaw.map((value: unknown) => String(value)) : [];
+  if (routeAcl.length > 0 && !routeAcl.includes(identity.routedComponentCode)) {
+    throw Object.assign(new Error("route_denied"), { statusCode: 403 });
+  }
+  validateAgainstStoredSchema(mask.rows[0].envelope_schema, {
+    state: envelope.state,
+    operation: envelope.operation,
+    input: envelope.input,
+    process: envelope.process,
+    output: envelope.output,
+    success: envelope.success
+  }, "pulse_schema_invalid");
+  const sourcePrincipal = await client.query("select id from principal where public_id=$1 and status='ACTIVE'", [authorization.sourceClientId]);
+  if (!sourcePrincipal.rowCount) throw Object.assign(new Error("source_principal_unavailable"), { statusCode: 403 });
+  return {
+    sourcePrincipalId: String(sourcePrincipal.rows[0].id),
+    processTrace: {
+      ...(record(envelope.process) ?? {}),
+      direction: envelope.direction,
+      sourceComponentCode: sourceCode,
+      targetComponentCode: targetCode,
+      ...authorization.runtimeContext
+    }
+  };
+}
+
+export async function beginComponentPulseLease(
+  db: Db,
+  componentId: string,
+  envelope: ComponentPulseEnvelope,
+  authorization: PulseAuthorizationContext
+): Promise<{ leaseId: string; correlationId: string; replayed: boolean; success: boolean | null }> {
   return tx(db, async (client) => {
-    const mask = await client.query(
-      `select mask.*,component.code as component_code
-         from component_pulse_mask mask
-         join component on component.id=mask.component_id
-        where component_id=$1 and pulse_type=$2 and direction=$3`,
-      [componentId, envelope.pulseType, envelope.direction]
+    const validated = await validateComponentPulse(client, componentId, envelope, authorization);
+    const existing = await client.query(
+      `select id,finished_at,success
+         from component_operation_lease
+        where target_component_id=$1 and correlation_id=$2 and operation_kind='PULSE'
+        for update`,
+      [componentId, envelope.correlationId]
     );
-    if (!mask.rowCount) throw Object.assign(new Error("unknown_pulse_type"), { statusCode: 409 });
-    if (envelope.accessTokenFingerprint !== authorization.tokenFingerprint) throw Object.assign(new Error("access_token_fingerprint_mismatch"), { statusCode: 403 });
-    const source = record(envelope.source);
-    const target = record(envelope.target);
-    const routeAclRaw = mask.rows[0].route_acl;
-    const routeAcl = Array.isArray(routeAclRaw) ? routeAclRaw.map((value: unknown) => String(value)) : [];
-    if (!text(source?.clientId) || !text(source?.componentCode) || !text(target?.componentCode)) {
-      throw Object.assign(new Error("component_identity_required"), { statusCode: 400 });
+    if (existing.rowCount) {
+      if (!existing.rows[0].finished_at) throw Object.assign(new Error("component_pulse_in_progress"), { statusCode: 409 });
+      return {
+        leaseId: String(existing.rows[0].id),
+        correlationId: envelope.correlationId,
+        replayed: true,
+        success: Boolean(existing.rows[0].success)
+      };
     }
-    if (target?.componentCode !== mask.rows[0].component_code) {
-      throw Object.assign(new Error("target_component_mismatch"), { statusCode: 403 });
-    }
-    if (routeAcl.length > 0 && !routeAcl.includes(text(source?.componentCode))) {
-      throw Object.assign(new Error("route_denied"), { statusCode: 403 });
-    }
-    validateAgainstStoredSchema(mask.rows[0].envelope_schema, {
-      state: envelope.state, operation: envelope.operation, input: envelope.input, process: envelope.process,
-      output: envelope.output, success: envelope.success
-    }, "pulse_schema_invalid");
-    const sourcePrincipal = await client.query("select id from principal where public_id=$1 and status='ACTIVE'", [authorization.sourceClientId]);
-    if (!sourcePrincipal.rowCount) throw Object.assign(new Error("source_principal_unavailable"), { statusCode: 403 });
     const lease = await client.query(
       `insert into component_operation_lease(source_principal_id,target_component_id,operation_kind,operation_name,input_payload,input_digest,
-        output_payload,output_digest,process_trace,success,finished_at,expires_at,correlation_id,causation_id,trace_id,token_fingerprint,permission_epoch)
+        process_trace,expires_at,correlation_id,causation_id,trace_id,token_fingerprint,permission_epoch)
        values ($1,$2,'PULSE',$3,$4::jsonb,'sha256:'||encode(sha256(convert_to(($4::jsonb)::text,'utf8')),'hex'),
-        $5::jsonb,'sha256:'||encode(sha256(convert_to(($5::jsonb)::text,'utf8')),'hex'),$6::jsonb,$7,now(),now()+interval '1 minute',$8,$9,$10,$11,$12)
+        $5::jsonb,now()+interval '1 minute',$6,$7,$8,$9,$10)
+       on conflict (target_component_id,correlation_id,operation_kind) where operation_kind='PULSE' do nothing
        returning id`,
-      [sourcePrincipal.rows[0].id, componentId, envelope.pulseType, JSON.stringify(envelope.input), JSON.stringify(envelope.output),
-        JSON.stringify(envelope.process), envelope.success, envelope.correlationId, envelope.causationId ?? null, envelope.traceId ?? null,
-        authorization.tokenFingerprint, authorization.permissionEpoch]
+      [validated.sourcePrincipalId, componentId, envelope.pulseType, JSON.stringify(envelope.input), JSON.stringify(validated.processTrace),
+        envelope.correlationId, envelope.causationId ?? null, envelope.traceId ?? null, authorization.tokenFingerprint, authorization.permissionEpoch]
     );
+    if (!lease.rowCount) {
+      const concurrent = await client.query(
+        `select id,finished_at,success
+           from component_operation_lease
+          where target_component_id=$1 and correlation_id=$2 and operation_kind='PULSE'`,
+        [componentId, envelope.correlationId]
+      );
+      if (!concurrent.rowCount || !concurrent.rows[0].finished_at) throw Object.assign(new Error("component_pulse_in_progress"), { statusCode: 409 });
+      return {
+        leaseId: String(concurrent.rows[0].id),
+        correlationId: envelope.correlationId,
+        replayed: true,
+        success: Boolean(concurrent.rows[0].success)
+      };
+    }
+    await appendAudit(client, {
+      eventType: "component.pulse.started",
+      actorType: "component",
+      actorId: validated.sourcePrincipalId,
+      objectType: "component_operation_lease",
+      objectId: String(lease.rows[0].id),
+      after: { pulseType: envelope.pulseType, direction: envelope.direction, targetComponentId: authorization.runtimeContext?.targetComponentId ?? null },
+      correlationId: envelope.correlationId
+    });
+    return { leaseId: String(lease.rows[0].id), correlationId: envelope.correlationId, replayed: false, success: null };
+  });
+}
+
+export async function failComponentPulseLease(
+  db: Db,
+  componentId: string,
+  envelope: ComponentPulseEnvelope,
+  authorization: PulseAuthorizationContext & { leaseId: string },
+  output: Record<string, unknown>
+): Promise<void> {
+  await tx(db, async (client) => {
+    const validated = await validateComponentPulse(client, componentId, envelope, authorization);
+    const processTrace = { ...validated.processTrace, outcome: "FAILED", errorCode: output.error ?? "pulse_delivery_failed" };
+    const finalized = await client.query(
+      `update component_operation_lease
+          set output_payload=$3::jsonb,
+              output_digest='sha256:'||encode(sha256(convert_to(($3::jsonb)::text,'utf8')),'hex'),
+              process_trace=$4::jsonb,success=false,finished_at=now()
+        where id=$1 and target_component_id=$2 and finished_at is null
+        returning id`,
+      [authorization.leaseId, componentId, JSON.stringify(output), JSON.stringify(processTrace)]
+    );
+    if (!finalized.rowCount) throw Object.assign(new Error("component_operation_lease_not_active"), { statusCode: 409 });
     await client.query(
       `insert into component_operation_event(
         component_id,pulse_type,direction,operation_key,input_digest,input_payload,process_trace,output_digest,output_payload,
         success,correlation_id,causation_id,trace_id,access_token_fingerprint,occurred_at
-      ) values ($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8,$9::jsonb,$10,$11,$12,$13,$14,$15)`,
+      ) values ($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8,$9::jsonb,false,$10,$11,$12,$13,now())`,
       [componentId, envelope.pulseType, envelope.direction, text(envelope.operation.operationKey) || envelope.pulseType,
-        `sha256:${digestPayload(envelope.input)}`, JSON.stringify(envelope.input), JSON.stringify(envelope.process),
+        `sha256:${digestPayload(envelope.input)}`, JSON.stringify(envelope.input), JSON.stringify(processTrace),
+        `sha256:${digestPayload(output)}`, JSON.stringify(output), envelope.correlationId, envelope.causationId ?? null,
+        envelope.traceId ?? null, envelope.accessTokenFingerprint]
+    );
+    await appendAudit(client, {
+      eventType: "component.pulse.finalized",
+      actorType: "component",
+      actorId: validated.sourcePrincipalId,
+      objectType: "component_operation_lease",
+      objectId: authorization.leaseId,
+      after: { pulseType: envelope.pulseType, direction: envelope.direction, success: false, output },
+      correlationId: envelope.correlationId
+    });
+    await client.query(
+      "update component set operational_state='UNHEALTHY',monitoring_state='FAILED',updated_at=now() where id=$1",
+      [componentId]
+    );
+  });
+}
+
+export async function ingestComponentPulse(db: Db, componentId: string, envelope: ComponentPulseEnvelope, authorization: PulseAuthorizationContext): Promise<{ accepted: true; correlationId: string }> {
+  return tx(db, async (client) => {
+    const validated = await validateComponentPulse(client, componentId, envelope, authorization);
+    const operationKey = text(envelope.operation.operationKey) || envelope.pulseType;
+    const priorEvent = await client.query(
+      `select id,success
+         from component_operation_event
+        where component_id=$1 and correlation_id=$2 and direction=$3 and operation_key=$4
+        limit 1`,
+      [componentId, envelope.correlationId, envelope.direction, operationKey]
+    );
+    if (priorEvent.rowCount) return { accepted: true, correlationId: envelope.correlationId };
+    let leaseId = authorization.leaseId ?? null;
+    if (leaseId) {
+      const finalized = await client.query(
+        `update component_operation_lease
+            set output_payload=$3::jsonb,
+                output_digest='sha256:'||encode(sha256(convert_to(($3::jsonb)::text,'utf8')),'hex'),
+                process_trace=$4::jsonb,success=$5,finished_at=now()
+          where id=$1 and target_component_id=$2 and finished_at is null
+          returning id`,
+        [leaseId, componentId, JSON.stringify(envelope.output), JSON.stringify(validated.processTrace), envelope.success]
+      );
+      if (!finalized.rowCount) throw Object.assign(new Error("component_operation_lease_not_active"), { statusCode: 409 });
+    } else {
+      const lease = await client.query(
+        `insert into component_operation_lease(source_principal_id,target_component_id,operation_kind,operation_name,input_payload,input_digest,
+          output_payload,output_digest,process_trace,success,finished_at,expires_at,correlation_id,causation_id,trace_id,token_fingerprint,permission_epoch)
+         values ($1,$2,'PULSE',$3,$4::jsonb,'sha256:'||encode(sha256(convert_to(($4::jsonb)::text,'utf8')),'hex'),
+          $5::jsonb,'sha256:'||encode(sha256(convert_to(($5::jsonb)::text,'utf8')),'hex'),$6::jsonb,$7,now(),now()+interval '1 minute',$8,$9,$10,$11,$12)
+         on conflict (target_component_id,correlation_id,operation_kind) where operation_kind='PULSE' do nothing
+         returning id`,
+        [validated.sourcePrincipalId, componentId, envelope.pulseType, JSON.stringify(envelope.input), JSON.stringify(envelope.output),
+          JSON.stringify(validated.processTrace), envelope.success, envelope.correlationId, envelope.causationId ?? null, envelope.traceId ?? null,
+          authorization.tokenFingerprint, authorization.permissionEpoch]
+      );
+      if (lease.rowCount) {
+        leaseId = String(lease.rows[0].id);
+      } else {
+        const concurrentLease = await client.query(
+          `select id from component_operation_lease
+            where target_component_id=$1 and correlation_id=$2 and operation_kind='PULSE'`,
+          [componentId, envelope.correlationId]
+        );
+        if (!concurrentLease.rowCount) throw Object.assign(new Error("component_pulse_idempotency_conflict"), { statusCode: 409 });
+        leaseId = String(concurrentLease.rows[0].id);
+      }
+    }
+    const insertedEvent = await client.query(
+      `insert into component_operation_event(
+        component_id,pulse_type,direction,operation_key,input_digest,input_payload,process_trace,output_digest,output_payload,
+        success,correlation_id,causation_id,trace_id,access_token_fingerprint,occurred_at
+      ) values ($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb,$8,$9::jsonb,$10,$11,$12,$13,$14,$15)
+      on conflict (component_id,correlation_id,direction,operation_key)
+        where pulse_type is not null and direction is not null
+      do nothing
+      returning id`,
+      [componentId, envelope.pulseType, envelope.direction, operationKey,
+        `sha256:${digestPayload(envelope.input)}`, JSON.stringify(envelope.input), JSON.stringify(validated.processTrace),
         `sha256:${digestPayload(envelope.output)}`, JSON.stringify(envelope.output), envelope.success, envelope.correlationId,
         envelope.causationId ?? null, envelope.traceId ?? null, envelope.accessTokenFingerprint, envelope.occurredAt]
     );
-    await appendAudit(client, { eventType: "component.pulse.finalized", actorType: "component", actorId: String(sourcePrincipal.rows[0].id),
-      objectType: "component_operation_lease", objectId: String(lease.rows[0].id),
-      after: { pulseType: envelope.pulseType, direction: envelope.direction, success: envelope.success }, correlationId: envelope.correlationId });
+    if (!insertedEvent.rowCount) return { accepted: true, correlationId: envelope.correlationId };
+    await appendAudit(client, {
+      eventType: "component.pulse.finalized",
+      actorType: "component",
+      actorId: validated.sourcePrincipalId,
+      objectType: "component_operation_lease",
+      objectId: leaseId,
+      after: { pulseType: envelope.pulseType, direction: envelope.direction, success: envelope.success },
+      correlationId: envelope.correlationId
+    });
     await client.query(
       `update component
           set operational_state=case when $2 then operational_state else 'UNHEALTHY' end,
@@ -2539,11 +2659,48 @@ export async function setComponentLifecycle(db: Db, params: {
       "update principal_access_token set revoked_at=coalesce(revoked_at,now()),rotation_reason=$2 where source_principal_id=(select principal_id from component where id=$1) and revoked_at is null",
       [params.componentId, `LIFECYCLE_${params.action}`]
     ) : { rowCount: 0 };
+    let dashboardCleanup = { nodes: 0, connections: 0, permissions: 0, secretGrants: 0, transferredSecretGrants: 0 };
+    if (params.action === "DEREGISTER") {
+      const nodes = await client.query(
+        `update dashboard_visual_node
+            set lifecycle_phase='DELETED',deleted_at=coalesce(deleted_at,now()),updated_at=now(),lock_version=lock_version+1
+          where component_id=$1 and deleted_at is null`,
+        [params.componentId]
+      );
+      const connections = await client.query(
+        `update pulse_topology_connection
+            set state='ARCHIVED',authorization_desired=false,revoked_at=coalesce(revoked_at,now()),revoked_by=$2,lock_version=lock_version+1
+          where (source_component_id=$1 or target_component_id=$1) and revoked_at is null`,
+        [params.componentId, params.actorId]
+      );
+      const permissions = await client.query(
+        `update component_permission set revoked_at=coalesce(revoked_at,now())
+          where (source_component_id=$1 or target_component_id=$1) and revoked_at is null`,
+        [params.componentId]
+      );
+      const secretGrants = await client.query(
+        `update secret_grant set revoked_at=coalesce(revoked_at,now()),revoked_by=$2
+          where principal_kind='COMPONENT' and principal_id=$1 and revoked_at is null`,
+        [params.componentId, params.actorId]
+      );
+      const transferredSecretGrants = await client.query(
+        `update integration_token_secret_grant set revoked_at=coalesce(revoked_at,now()),revoked_by=$2
+          where transferred_component_id=$1 and revoked_at is null`,
+        [params.componentId, params.actorId]
+      );
+      dashboardCleanup = {
+        nodes: nodes.rowCount ?? 0,
+        connections: connections.rowCount ?? 0,
+        permissions: permissions.rowCount ?? 0,
+        secretGrants: secretGrants.rowCount ?? 0,
+        transferredSecretGrants: transferredSecretGrants.rowCount ?? 0
+      };
+    }
     await appendAudit(client, {
       eventType: `component.lifecycle.${params.action.toLowerCase()}`, actorType: "admin", actorId: params.actorId,
       objectType: "component", objectId: params.componentId,
       before: { lifecycleState: component.lifecycle_state, activationState: component.activation_state, operationalState: component.operational_state },
-      after: { lifecycleState: next.lifecycle, activationState: next.activation, operationalState: next.operational, accessTokensRevoked: revoked.rowCount ?? 0 },
+      after: { lifecycleState: next.lifecycle, activationState: next.activation, operationalState: next.operational, accessTokensRevoked: revoked.rowCount ?? 0, dashboardCleanup },
       correlationId: params.correlationId
     });
   });

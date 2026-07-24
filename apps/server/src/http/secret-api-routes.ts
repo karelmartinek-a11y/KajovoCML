@@ -12,6 +12,7 @@ import {
   type SecretPrincipal
 } from "../domain/secret-manager.js";
 import { hostOf, sendError } from "./errors.js";
+import { MCP_CATALOG_VERSION } from "../domain/onboarding-catalog.js";
 
 const resolveSchema = z.object({
   name: z.string().trim().min(3).max(128)
@@ -38,7 +39,8 @@ async function principalFor(db: Db, config: AppServerConfig, request: FastifyReq
   const token = bearer(request);
   if (!token) return null;
   if (token.startsWith("kci_")) return authenticateIntegrationTokenForSecretResolve(db, token, config);
-  return authenticatePrincipalAccessToken(db, token, config);
+  if (token.startsWith("kca_")) return authenticatePrincipalAccessToken(db, token, config);
+  return null;
 }
 
 export function isSecretApiHostname(host: string, config: Pick<AppServerConfig, "PUBLIC_BASE_DOMAIN">): boolean {
@@ -54,7 +56,7 @@ export function registerSecretApiRoutes(app: FastifyInstance, db: Db, config: Ap
       discoveryEndpoint: `https://${secretHost(config)}/.well-known/kcml-secret-api`,
       resolveEndpoint: `https://${secretHost(config)}/v1/secrets/resolve`,
       auth: ["integration_token_bearer", "access_token_bearer"],
-      catalogVersion: "1.1"
+      catalogVersion: MCP_CATALOG_VERSION
     });
   });
 

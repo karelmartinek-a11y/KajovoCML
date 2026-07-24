@@ -1,7 +1,8 @@
 export const KCML_RELEASE = {
-  normativeLabel: "2026.07.22-COMPLIANCE.1",
-  applicationVersion: "2026.07.22-compliance.1",
-  catalogVersion: "2026.07.22-compliance.1",
+  normativeLabel: "2026.07.24-DASHBOARD.1",
+  applicationVersion: "2026.07.24-dashboard.1",
+  catalogVersion: "2026.07.24-dashboard.1",
+  onboardingCatalogVersion: "1.2",
   manifestSchemaVersion: "2026.07.22-compliance.1",
   pulseEnvelopeVersion: "2026.07.22-compliance.1",
   policyBaseline: "2026-07-22",

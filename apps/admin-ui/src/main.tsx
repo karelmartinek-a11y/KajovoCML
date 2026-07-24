@@ -17,6 +17,7 @@ import {
   PauseCircle,
   PlayCircle,
   Plus,
+  KeyRound,
   RefreshCw,
   Rocket,
   Radar,
@@ -36,7 +37,9 @@ import { AuditPage, auditQueryParams, type AuditFilters } from "./audit-page.js"
 import { BootstrapPage, Login, ReauthModal } from "./auth-pages.js";
 import { IconButton, MetricCard, Modal, PageHeader } from "./common.js";
 import { ComponentCatalogPage } from "./component-page.js";
+import { DashboardPage } from "./dashboard-page.js";
 import { ExternalComponentsPage } from "./external-components-page.js";
+import { RegisteredElementsPage } from "./registered-elements-page.js";
 import {
   CreateCredentialModal,
   CredentialConfirmModal,
@@ -1097,7 +1100,8 @@ function IntegrationTokensPage({ tokens, jobs, onCreate, onOpenJob, onRevoke, on
 }
 
 function Dashboard({ accountName, role, releaseInfo, onLogout }: { accountName: string | null; role: AdminRole; releaseInfo: ReleaseInfo | null; onLogout: () => void }) {
-  const [page, setPage] = useState<Page>("components");
+  const [page, setPage] = useState<Page>(role === "OWNER" ? "dashboard" : "components");
+  const [identityTab, setIdentityTab] = useState<"integration" | "access">("integration");
   const [components, setComponents] = useState<Component[]>([]);
   const [externalPrincipals, setExternalPrincipals] = useState<ExternalPrincipal[]>([]);
   const [externalTargets, setExternalTargets] = useState<ExternalTarget[]>([]);
@@ -1525,6 +1529,9 @@ function Dashboard({ accountName, role, releaseInfo, onLogout }: { accountName: 
       </>}
     >
       <PageRouter page={page} routes={{
+        dashboard: role === "OWNER" ? <DashboardPage releaseInfo={releaseInfo} onOpenStandardPage={(target) => setPage(target === "integration" || target === "tokens" ? "identities" : target)} /> : null,
+        registered: role === "OWNER" ? <RegisteredElementsPage onOpenPage={setPage} /> : null,
+        identities: role !== "AUDITOR" ? <section className="identity-center-page"><div className="identity-center-tabs" role="tablist" aria-label="Tokenový lifecycle"><button role="tab" aria-selected={identityTab === "integration"} className={identityTab === "integration" ? "active" : ""} onClick={() => setIdentityTab("integration")}><Workflow size={17} /> Integrační tokeny a onboarding</button><button role="tab" aria-selected={identityTab === "access"} className={identityTab === "access" ? "active" : ""} onClick={() => setIdentityTab("access")}><KeyRound size={17} /> Dlouhodobé přístupové tokeny</button></div>{identityTab === "integration" ? <IntegrationTokensPage tokens={integrationTokens} jobs={onboardingJobs} onCreate={() => setIntegrationCreate(true)} onOpenJob={setSelectedJobId} onRevoke={(token) => setIntegrationConfirm({ token, action: "revoke" })} onDelete={(token) => setIntegrationConfirm({ token, action: "delete" })} onRefresh={() => { void load(); }} /> : <CredentialsPage credentials={credentials} onOpenCreate={() => setCreateOpen(true)} onEditPermissions={openPermissions} onRename={setRenameCredential} onConfirm={(credential, action) => setConfirm({ credential, action })} onRefresh={() => { void load(); }} />}</section> : null,
         components: <ComponentCatalogPage components={components} platformWorkerAccess={platformWorkerAccess} role={role} onRefresh={() => { void load(); }} onLoadDetail={loadComponentDetail} onToggle={toggleComponent}
           onRotatePlatformWorkerAccess={async () => { const result = await api<{ status: PlatformWorkerAccessStatus; accessToken: { token: string; fingerprint: string } }>("/api/platform-worker-access/rotate", { method: "POST", headers: { "x-csrf-token": csrf() }, body: "{}" }); setPlatformWorkerAccess(result.status); return result.accessToken; }}
           onLifecycle={(component, action) => updateComponent(component, () => setComponentLifecycleRequest(component, action), "Změna lifecycle komponenty selhala")}
@@ -1548,7 +1555,7 @@ function Dashboard({ accountName, role, releaseInfo, onLogout }: { accountName: 
           onSetInboundPermission={async (input) => { await api("/api/external-inbound-permissions", { method: "POST", headers: { "x-csrf-token": csrf() }, body: JSON.stringify(input) }); await load(); }} />,
         monitoring: <MonitoringPage servers={servers} accountName={accountName} catalogVersion={catalogVersion} probes={probes} overview={monitoringOverview} onRefresh={() => { void load(); }} onAutomatedOnboarding={() => setIntegrationCreate(true)} onToggleEnabled={toggleServerEnabled} onRunTest={runServerTest} onLoadMonitoringProfile={loadMonitoringProfile} onSaveMonitoringProfile={saveMonitoringProfile} onStartRevision={startServerRevision} onDeleteServer={deleteServerRegistration} onTestWebhook={testAlertWebhooks} onAcknowledgeAlert={acknowledgeAlert} onSuppressAlert={suppressAlert} onRetryDelivery={retryAlertDelivery} />,
         integration: <IntegrationTokensPage tokens={integrationTokens} jobs={onboardingJobs} onCreate={() => setIntegrationCreate(true)} onOpenJob={setSelectedJobId} onRevoke={(token) => setIntegrationConfirm({ token, action: "revoke" })} onDelete={(token) => setIntegrationConfirm({ token, action: "delete" })} onRefresh={() => { void load(); }} />,
-        secrets: role !== "AUDITOR" ? <SecretsPage secrets={managedSecrets} accountName={accountName} onRefresh={() => { void refreshSecrets(); }} /> : null,
+        secrets: role !== "AUDITOR" ? <SecretsPage secrets={managedSecrets} accountName={accountName} role={role} onRefresh={() => { void refreshSecrets(); }} /> : null,
         tokens: <CredentialsPage credentials={credentials} onOpenCreate={() => setCreateOpen(true)} onEditPermissions={openPermissions} onRename={setRenameCredential} onConfirm={(credential, action) => setConfirm({ credential, action })} onRefresh={() => { void load(); }} />,
         permissions: <PermissionsPage credentials={credentials} servers={servers} selectedId={selectedCredentialId} permissions={permissions} saving={savingPermissions} onSelect={setSelectedCredentialId} onChange={setPermissions} onSave={() => { void savePermissions(); }} />,
         audit: <AuditPage events={events} nextCursor={auditNextCursor} integrity={auditIntegrity} onLoadMore={loadMoreAudit} onLoadDetail={loadAuditDetail} onRefresh={refreshAudit} onRefreshIntegrity={refreshAuditIntegrity} />,

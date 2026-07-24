@@ -246,3 +246,120 @@ export async function auditSecretRevealUiEvent(secret: ManagedSecret, eventType:
     body: JSON.stringify({ eventType, revealGrantId: revealGrantId ?? null })
   });
 }
+
+export async function loadDashboardTopology(): Promise<import("./types.js").DashboardTopology> {
+  const response = await api<{ topology: import("./types.js").DashboardTopology }>("/api/dashboard/topology");
+  return response.topology;
+}
+
+export async function saveDashboardLayout(input: {
+  expectedVersion?: number;
+  viewport: { x: number; y: number; zoom: number };
+  positions: Array<{ nodeId: string; x: number; y: number }>;
+  externalPositions?: Array<{ externalTargetId: string; x: number; y: number }>;
+}): Promise<{ lock_version: number }> {
+  const response = await api<{ layout: { lock_version: number } }>("/api/dashboard/layout", {
+    method: "PUT", headers: mutationHeaders(), body: JSON.stringify(input)
+  });
+  return response.layout;
+}
+
+export async function previewDashboardConnection(input: {
+  sourceComponentId: string; sourcePortKey: string; targetComponentId: string; targetPortKey: string;
+}): Promise<unknown> {
+  return api("/api/dashboard/connections/preview", { method: "POST", headers: mutationHeaders(), body: JSON.stringify(input) });
+}
+
+export async function createDashboardConnection(input: {
+  sourceComponentId: string; sourcePortKey: string; targetComponentId: string; targetPortKey: string;
+  targetRoute?: string; targetScope?: string; grantAuthorization?: boolean;
+}): Promise<void> {
+  await api("/api/dashboard/connections", { method: "POST", headers: mutationHeaders(), body: JSON.stringify(input) });
+}
+
+export async function setDashboardConnectionAuthorization(connectionId: string, enabled: boolean): Promise<void> {
+  await api(`/api/dashboard/connections/${connectionId}/authorization`, { method: "PUT", headers: mutationHeaders(), body: JSON.stringify({ enabled }) });
+}
+
+export async function disconnectDashboardConnection(connectionId: string): Promise<void> {
+  await api(`/api/dashboard/connections/${connectionId}`, { method: "DELETE", headers: mutationHeaders() });
+}
+
+export async function setDashboardNodeSuspension(nodeId: string, suspended: boolean, reason: string): Promise<void> {
+  await api(`/api/dashboard/nodes/${nodeId}/suspension`, { method: "PUT", headers: mutationHeaders(), body: JSON.stringify({ suspended, reason }) });
+}
+
+export async function setDashboardComponentEnabled(componentId: string, enabled: boolean): Promise<void> {
+  await api(`/api/components/${componentId}/activation`, { method: "POST", headers: mutationHeaders(), body: JSON.stringify({ enabled }) });
+}
+
+export async function setDashboardComponentLifecycle(componentId: string, action: "QUARANTINE" | "RESTORE" | "RETIRE"): Promise<void> {
+  await api(`/api/components/${componentId}/lifecycle`, { method: "POST", headers: mutationHeaders(), body: JSON.stringify({ action }) });
+}
+
+export async function runDashboardComponentE2E(componentId: string): Promise<void> {
+  await api(`/api/components/${componentId}/e2e-runs`, { method: "POST", headers: mutationHeaders(), body: "{}" });
+}
+
+export async function runDashboardComponentStateQuery(componentId: string): Promise<void> {
+  await api(`/api/components/${componentId}/state-queries`, { method: "POST", headers: mutationHeaders(), body: "{}" });
+}
+
+export async function runDashboardComponentHeartbeatChallenge(componentId: string): Promise<void> {
+  await api(`/api/components/${componentId}/heartbeat-challenges`, { method: "POST", headers: mutationHeaders(), body: "{}" });
+}
+
+export async function loadDashboardDeregistrationPreview(nodeId: string): Promise<import("./types.js").DashboardDeregistrationPreview> {
+  const response = await api<{ preview: import("./types.js").DashboardDeregistrationPreview }>(`/api/dashboard/nodes/${nodeId}/deregistration-preview`);
+  return response.preview;
+}
+
+export async function deregisterDashboardNode(nodeId: string, input: {
+  password: string;
+  totp: string;
+  reason: string;
+  confirmedCode: string;
+  idempotencyKey: string;
+}): Promise<{ componentCode: string; cleanup: Record<string, number>; correlationId: string }> {
+  const response = await api<{ result: { componentCode: string; cleanup: Record<string, number>; correlationId: string } }>(`/api/dashboard/nodes/${nodeId}/deregister`, {
+    method: "POST", headers: mutationHeaders(), body: JSON.stringify(input)
+  });
+  return response.result;
+}
+
+export async function grantDashboardSecret(secretId: string, nodeId: string): Promise<void> {
+  await api(`/api/dashboard/secrets/${secretId}/grants`, { method: "POST", headers: mutationHeaders(), body: JSON.stringify({ nodeId }) });
+}
+
+export async function revokeDashboardSecret(secretId: string, nodeId: string): Promise<void> {
+  await api(`/api/dashboard/secrets/${secretId}/grants/${nodeId}`, { method: "DELETE", headers: mutationHeaders() });
+}
+
+export async function previewBulkDashboardSecret(secretId: string): Promise<import("./types.js").DashboardSecretBulkPreview> {
+  const response = await api<{ preview: import("./types.js").DashboardSecretBulkPreview }>(`/api/dashboard/secrets/${secretId}/grants/bulk-preview`);
+  return response.preview;
+}
+
+export async function bulkGrantDashboardSecret(secretId: string): Promise<{ targetCount: number; skippedCount: number; results: Array<{ nodeId: string; status: string; reason?: string }> }> {
+  const response = await api<{ result: { targetCount: number; skippedCount: number; results: Array<{ nodeId: string; status: string; reason?: string }> } }>(`/api/dashboard/secrets/${secretId}/grants/bulk`, {
+    method: "POST", headers: mutationHeaders(), body: "{}"
+  });
+  return response.result;
+}
+
+export async function createDashboardSecretRevealGrant(secretId: string, input: { password: string; totp: string; purpose: string }): Promise<{ revealGrantId: string; expiresAt: string }> {
+  return api(`/api/secrets/${secretId}/reveal-grants`, { method: "POST", headers: mutationHeaders(), body: JSON.stringify(input) });
+}
+
+export async function revealDashboardSecret(secretId: string, revealGrantId: string): Promise<{ value: string; expiresAt: string; version: number; fingerprint: string }> {
+  return api(`/api/secrets/${secretId}/reveal`, { method: "POST", headers: mutationHeaders(), body: JSON.stringify({ revealGrantId }) });
+}
+
+export async function auditDashboardSecretRevealEvent(secretId: string, eventType: "blur" | "visibility_hidden" | "expired" | "cleared", revealGrantId?: string | null): Promise<void> {
+  await api(`/api/secrets/${secretId}/reveal-events`, { method: "POST", headers: mutationHeaders(), body: JSON.stringify({ eventType, revealGrantId: revealGrantId ?? null }) });
+}
+
+export async function listDashboardIdentityCards(): Promise<import("./types.js").DashboardIdentityCard[]> {
+  const response = await api<{ identities: import("./types.js").DashboardIdentityCard[] }>("/api/dashboard/identity-cards");
+  return response.identities;
+}

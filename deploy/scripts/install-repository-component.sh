@@ -129,7 +129,6 @@ start_container() {
   podman_args=(
     run --detach --replace
     --name "$name"
-    --user 0:0
     --label "cz.hcasc.kcml.repository-component=true"
     --label "cz.hcasc.kcml.repository-key=${repository_key}"
     --label "cz.hcasc.kcml.image-digest=${image_digest}"
@@ -182,7 +181,6 @@ install -d -m 0750 -o "$runtime_owner" -g "$runtime_group" "$runtime_root" "$(di
 rm -rf "$candidate_root"
 mkdir -p "$candidate_root"
 chown -R "$runtime_owner:$runtime_group" "$runtime_root"
-chmod 0777 "$candidate_root" "$data_root"
 
 previous_digest="$(container_image_digest "$container_name")"
 previous_image_reference="$(container_image_name "$container_name")"
@@ -191,7 +189,6 @@ rm -rf "$previous_root"
 if [ -n "$previous_live_target" ] && [ -d "$previous_live_target" ]; then
   cp -a "$previous_live_target" "$previous_root"
   chown -R "$runtime_owner:$runtime_group" "$previous_root"
-  chmod 0777 "$previous_root"
 fi
 
 immutable_image="${image_reference%@*}@${image_digest}"

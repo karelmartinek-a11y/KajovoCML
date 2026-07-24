@@ -37,4 +37,28 @@ describe("application route composition", () => {
     expect(canonical.statusCode).not.toBe(404);
     expect(retiredShortHost.statusCode).toBe(404);
   });
+
+  it("registers the OWNER Dashboard surface only on the administrative host", async () => {
+    const config = loadConfig({
+      NODE_ENV: "test",
+      DATABASE_URL: "postgres://unused/test",
+      ACCESS_TOKEN_HMAC_KEY_BASE64: secret(1),
+      INTEGRATION_TOKEN_HMAC_KEY_BASE64: secret(2),
+      EGRESS_CAPABILITY_HMAC_KEY_BASE64: secret(3),
+      SESSION_SECRET_BASE64: secret(4),
+      CSRF_SECRET_BASE64: secret(5),
+      MFA_ENCRYPTION_KEY_BASE64: secret(6),
+      CONFIG_VAULT_MASTER_KEY_BASE64: secret(9),
+      CONFIG_VAULT_MASTER_KEY_ID: "test-v1"
+    });
+    const db = { query: async () => ({ rowCount: 0, rows: [] }) } as unknown as Db;
+    const app = await buildApp(config, db);
+    apps.push(app);
+    await app.ready();
+
+    const adminResponse = await app.inject({ method: "GET", url: "/api/dashboard/topology", headers: { host: config.ADMIN_HOST } });
+    const publicResponse = await app.inject({ method: "GET", url: "/api/dashboard/topology", headers: { host: `www.${config.PUBLIC_BASE_DOMAIN}` } });
+    expect(adminResponse.statusCode).toBe(401);
+    expect(publicResponse.statusCode).toBe(404);
+  });
 });

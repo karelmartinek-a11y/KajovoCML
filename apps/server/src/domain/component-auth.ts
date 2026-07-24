@@ -14,7 +14,8 @@ export type ComponentAuthorizationReason =
   | "component_disabled"
   | "component_quarantined"
   | "route_denied"
-  | "catalog_incompatible";
+  | "catalog_incompatible"
+  | "authorization_suspended";
 
 export type ComponentAuthorizationDecision = {
   allow: boolean;
@@ -116,11 +117,17 @@ export async function authorizeComponentCall(db: Db, params: {
         policyEpoch: Number(row.policy_epoch),
         tokenFingerprint: String(row.fingerprint)
       };
+      const suspension = await client.query(
+        "select 1 from principal_permission_suspension where principal_id=$1 and resumed_at is null limit 1",
+        [row.source_principal_id]
+      );
       let principalDecision: ComponentAuthorizationDecision;
       if (row.revoked_at || Number(row.issued_revocation_epoch) !== Number(row.current_source_revocation_epoch)) {
         principalDecision = denied("revoked_token", params.correlationId, base);
       } else if (row.token_expired) {
         principalDecision = denied("expired_token", params.correlationId, base);
+      } else if (suspension.rowCount) {
+        principalDecision = denied("authorization_suspended", params.correlationId, base);
       } else if (row.source_principal_status !== "ACTIVE") {
         principalDecision = denied(row.source_principal_status === "QUARANTINED" ? "component_quarantined" : "component_disabled", params.correlationId, base);
       } else if (String(row.target_hostname).toLowerCase() !== params.host.toLowerCase()

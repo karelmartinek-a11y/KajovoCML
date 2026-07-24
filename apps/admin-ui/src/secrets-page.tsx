@@ -6,6 +6,8 @@ import {
   createSecretRevealGrant,
   deleteManagedSecret,
   grantManagedSecret,
+  grantDashboardSecret,
+  listDashboardIdentityCards,
   auditSecretRevealUiEvent,
   listSecretGrants,
   listSecretVersions,
@@ -15,7 +17,7 @@ import {
   rotateManagedSecret,
   setManagedSecretStatus
 } from "./server-api.js";
-import type { ManagedSecret, SecretGrant, SecretVersion } from "./types.js";
+import type { AdminRole, DashboardIdentityCard, ManagedSecret, SecretGrant, SecretVersion } from "./types.js";
 import { formatDate } from "./ui-helpers.js";
 
 function SecretFormModal({ onClose, onSaved }: {
@@ -160,9 +162,10 @@ function RevealSecretModal({ secret, accountName, onClose }: {
   </Modal>;
 }
 
-function SecretDetailModal({ secret, accountName, onClose, onChanged }: {
+function SecretDetailModal({ secret, accountName, identityCards, onClose, onChanged }: {
   secret: ManagedSecret;
   accountName: string | null;
+  identityCards: DashboardIdentityCard[];
   onClose: () => void;
   onChanged: () => void;
 }) {
@@ -172,6 +175,8 @@ function SecretDetailModal({ secret, accountName, onClose, onChanged }: {
   const [principalId, setPrincipalId] = useState("");
   const [principalPublicId, setPrincipalPublicId] = useState("");
   const [allSecrets, setAllSecrets] = useState(false);
+  const [identityQuery, setIdentityQuery] = useState("");
+  const [recentIdentityGrants, setRecentIdentityGrants] = useState<Set<string>>(new Set());
   const [revealOpen, setRevealOpen] = useState(false);
   const [rotateOpen, setRotateOpen] = useState(false);
   const [error, setError] = useState("");
@@ -195,6 +200,18 @@ function SecretDetailModal({ secret, accountName, onClose, onChanged }: {
       onChanged();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Grant se nepodařilo uložit");
+    }
+  }
+  async function grantIdentity(identity: DashboardIdentityCard) {
+    setError("");
+    try {
+      await grantDashboardSecret(secret.id, identity.nodeId);
+      setRecentIdentityGrants((current) => new Set(current).add(identity.nodeId));
+      const result = await listSecretGrants(secret);
+      setGrants(result.grants);
+      onChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Grant identity se nepodařilo uložit");
     }
   }
   async function revoke(grant: SecretGrant) {
@@ -241,13 +258,30 @@ function SecretDetailModal({ secret, accountName, onClose, onChanged }: {
         {deleted ? <div className="notice error"><ShieldAlert size={18} /><span>Secret je soft-deleted. Runtime resolve je vypnutý; restore ho vrátí do DISABLED a granty se z bezpečnostních důvodů automaticky neobnoví.</span></div> : null}
         <section className="secret-grant-editor">
           <h3>Granty</h3>
-          <div className="secret-grant-form">
+          <div className="secret-identity-grant-panel">
+            <div className="notice"><KeyRound size={18} /><span>Vyberte bezpečnou veřejnou reprezentaci identity. Plná hodnota bearer tokenu se nepřenáší, nezobrazuje ani neukládá do drag payloadu.</span></div>
+            <label className="search-box"><Search size={16} /><input value={identityQuery} onChange={(event) => setIdentityQuery(event.target.value)} placeholder="Hledat název, kód, veřejnou identitu…" aria-label="Hledat identitu pro Secret grant" /></label>
+            <div className="secret-identity-drop-target" onDragOver={(event) => { if (event.dataTransfer.types.includes("application/x-kcml-identity-node")) event.preventDefault(); }} onDrop={(event) => {
+              const nodeId = event.dataTransfer.getData("application/x-kcml-identity-node");
+              const identity = identityCards.find((item) => item.nodeId === nodeId);
+              if (identity) { event.preventDefault(); void grantIdentity(identity); }
+            }}><LockKeyhole size={18} /><span>Přetáhněte sem kartu identity pro vytvoření grantu k <strong>{secret.stableName}</strong>.</span></div>
+            <div className="secret-identity-card-list">{identityCards.filter((identity) => `${identity.displayName} ${identity.code ?? ""} ${identity.publicId ?? ""} ${identity.fingerprint ?? ""}`.toLowerCase().includes(identityQuery.toLowerCase())).map((identity) => {
+              const granted = recentIdentityGrants.has(identity.nodeId) || grants.some((grant) => (identity.componentId && grant.principalId === identity.componentId) || (identity.code && grant.principalPublicId === identity.code));
+              return <article key={identity.nodeId} draggable={identity.status === "ACTIVE"} onDragStart={(event) => event.dataTransfer.setData("application/x-kcml-identity-node", identity.nodeId)}>
+                <div><span className={`status-dot ${identity.status === "ACTIVE" ? "ok" : "warn"}`} /><span><strong>{identity.code ?? identity.displayName}</strong><small>{identity.identityType === "INTEGRATION_TOKEN" ? "Předregistrační integrační token" : "Registrovaná komponentová identita"}</small></span></div>
+                <code>{identity.fingerprint ?? identity.publicId ?? "veřejný identifikátor není k dispozici"}</code>
+                <button type="button" className="small-button" disabled={deleted || identity.status !== "ACTIVE" || granted} onClick={() => { void grantIdentity(identity); }}>{granted ? "Již přiděleno" : "Přidělit"}</button>
+              </article>;
+            })}</div>
+          </div>
+          <details className="secret-advanced-grant"><summary>Pokročilé technické přidělení</summary><div className="secret-grant-form">
             <label>Typ<select value={principalKind} onChange={(event) => setPrincipalKind(event.target.value as SecretGrant["principalKind"])}><option value="COMPONENT">Prvek (přístupový token)</option><option value="KAJA">KCML přístup</option></select></label>
             <label>Principal UUID<input value={principalId} onChange={(event) => setPrincipalId(event.target.value)} placeholder="volitelné UUID komponenty nebo KCML přístupu" /></label>
             <label>Public ID<span className="field-hint">Zadejte veřejnou identitu principalu; nikdy nevkládejte plnou hodnotu integračního ani přístupového tokenu.</span><input value={principalPublicId} onChange={(event) => setPrincipalPublicId(event.target.value)} placeholder="např. KCML0001 nebo veřejná identita KCML přístupu" /></label>
             <label className="checkbox-line"><input type="checkbox" checked={allSecrets} onChange={(event) => setAllSecrets(event.target.checked)} /> Povolit všechny proměnné KCML Secrets pro tuto identitu</label>
             <button type="button" onClick={() => { void addGrant(); }} disabled={deleted || (!principalId.trim() && !principalPublicId.trim())}><LockKeyhole size={16} /> Přidat grant</button>
-          </div>
+          </div></details>
           {grants.length ? <div className="table-scroll"><table><thead><tr><th>Principal</th><th>Identita</th><th>Rozsah</th><th>Vydáno</th><th>Stav</th><th>Akce</th></tr></thead><tbody>{grants.map((grant) => <tr key={grant.id}><td>{grant.principalKind === "COMPONENT" ? "Prvek (přístupový token)" : "KCML přístup"}</td><td><code>{grant.principalPublicId ?? grant.principalId}</code></td><td>{grant.allSecrets ? "Všechny proměnné" : "Tento secret"}</td><td>{formatDate(grant.grantedAt)}</td><td><span className={`badge ${grant.revokedAt ? "danger" : "ok"}`}>{grant.revokedAt ? "REVOKED" : "ACTIVE"}</span></td><td>{grant.revokedAt ? null : <button className="small-button danger-link" onClick={() => { void revoke(grant); }}>Revokovat</button>}</td></tr>)}</tbody></table></div> : <p>Secret zatím nemá žádný grant.</p>}
         </section>
         <section className="secret-grant-editor">
@@ -271,14 +305,20 @@ function SecretDetailModal({ secret, accountName, onClose, onChanged }: {
   </>;
 }
 
-export function SecretsPage({ secrets, accountName, onRefresh }: {
+export function SecretsPage({ secrets, accountName, role, onRefresh }: {
   secrets: ManagedSecret[];
   accountName: string | null;
+  role: AdminRole;
   onRefresh: () => void;
 }) {
   const [query, setQuery] = useState("");
   const [createOpen, setCreateOpen] = useState(false);
   const [selected, setSelected] = useState<ManagedSecret | null>(null);
+  const [identityCards, setIdentityCards] = useState<DashboardIdentityCard[]>([]);
+  useEffect(() => {
+    if (role !== "OWNER") return;
+    void listDashboardIdentityCards().then(setIdentityCards).catch(() => setIdentityCards([]));
+  }, [role, secrets]);
   const filtered = useMemo(() => secrets.filter((secret) => `${secret.stableName} ${secret.displayName} ${secret.description}`.toLowerCase().includes(query.toLowerCase())), [secrets, query]);
   return <>
     <PageHeader title="Secrets" description="Centrální správa stabilních secret názvů, verzí a grantů pro komponenty a přístupové tokeny.">
@@ -297,6 +337,6 @@ export function SecretsPage({ secrets, accountName, onRefresh }: {
       {filtered.length ? <div className="table-scroll"><table><thead><tr><th>Název</th><th>Popis</th><th>Stav</th><th>Verze</th><th>Fingerprint</th><th>Granty</th><th>Aktualizace</th><th>Akce</th></tr></thead><tbody>{filtered.map((secret) => <tr key={secret.id}><td><strong>{secret.displayName}</strong><span className="cell-subtitle"><code>{secret.stableName}</code></span></td><td>{secret.description || "-"}<span className="cell-subtitle">{secret.ownerKind}</span></td><td><span className={`badge ${secret.status === "ACTIVE" ? "ok" : secret.status === "DELETED" ? "danger" : "warn"}`}>{secret.status}</span></td><td>{secret.activeVersionNumber ?? "-"}</td><td><code>{secret.activeFingerprint ?? "-"}</code></td><td>{secret.grantCount}</td><td>{formatDate(secret.updatedAt)}</td><td><button className="small-button" onClick={() => setSelected(secret)}>Detail</button></td></tr>)}</tbody></table></div> : <div className="empty-state"><KeyRound size={34} /><strong>Žádný secret neodpovídá filtrům</strong></div>}
     </section>
     {createOpen ? <SecretFormModal onClose={() => setCreateOpen(false)} onSaved={() => { setCreateOpen(false); onRefresh(); }} /> : null}
-    {selected ? <SecretDetailModal secret={selected} accountName={accountName} onClose={() => setSelected(null)} onChanged={onRefresh} /> : null}
+    {selected ? <SecretDetailModal secret={selected} accountName={accountName} identityCards={identityCards} onClose={() => setSelected(null)} onChanged={onRefresh} /> : null}
   </>;
 }

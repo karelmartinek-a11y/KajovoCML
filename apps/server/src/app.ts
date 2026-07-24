@@ -14,6 +14,7 @@ import { registerAdminRoutes } from "./http/admin-routes.js";
 import { registerAuthRoutes } from "./http/auth-routes.js";
 import { registerExternalApiRoutes } from "./http/external-api-routes.js";
 import { registerComponentRoutes } from "./http/component-routes.js";
+import { registerDashboardRoutes } from "./http/dashboard-routes.js";
 import { registerMcpRoutes } from "./http/mcp.js";
 import { registerOnboardingRoutes } from "./http/onboarding-routes.js";
 import { registerReferenceExternalApiRoutes } from "./http/reference-external-api-routes.js";
@@ -85,6 +86,7 @@ export async function buildApp(config: AppServerConfig, db: Db) {
   registerExternalApiRoutes(app, db, config);
   registerOnboardingRoutes(app, db, config);
   registerComponentRoutes(app, db, config);
+  registerDashboardRoutes(app, db, config);
   await app.register(async (secretApi) => {
     registerSecretApiRoutes(secretApi, db, config);
   });

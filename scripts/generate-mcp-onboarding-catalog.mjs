@@ -6,7 +6,8 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const release = "2026.07.22-compliance.1";
-const onboardingCatalogVersion = "1.1";
+const applicationRelease = "2026.07.24-dashboard.1";
+const onboardingCatalogVersion = "1.2";
 const schemaPath = path.join(root, `apps/server/src/contracts/component-manifest-${release}.schema.json`);
 const examplePath = path.join(root, `docs/onboarding-manifest-${release}.example.json`);
 const catalogPath = path.join(root, `docs/onboarding-catalogs/onboarding-${onboardingCatalogVersion}.json`);
@@ -109,17 +110,27 @@ const example = {
 };
 
 const catalog = {
-  version: onboardingCatalogVersion, normativeLabel: "1.1", serviceKind: "COMPONENT",
+  version: onboardingCatalogVersion, normativeLabel: "1.2", applicationRelease, serviceKind: "COMPONENT",
   manifestSchemaVersion: release, pulseEnvelopeVersion: release, policyBaseline: "2026-07-22", mcpProtocolVersion: "2025-11-25",
   manifestSchemaPath: `apps/server/src/contracts/component-manifest-${release}.schema.json`,
   manifestExamplePath: `docs/onboarding-manifest-${release}.example.json`,
-  documentationArtifacts: [`docs/releases/${release}/README.md`, `docs/releases/${release}/compatibility-matrix.md`],
+  documentationArtifacts: [`docs/releases/${applicationRelease}/README.md`, `docs/releases/${applicationRelease}/compatibility-matrix.md`, "docs/dashboard/evidence-manifest.json"],
   jsonSchema: schema,
   identityAssignment: { authority: "KCML", codePattern: "KCML####", hostnamePattern: "kcml####.kajovocml.hcasc.cz", clientSuppliedIdentityForbidden: true },
   tokens: { integration: { ttlHours: 24, consumedOn: "SUCCESSFUL_REGISTRATION", reusableAfterFailedAttempt: true }, access: { expires: false, rotatedOrRevokedOnly: true }, permittedTokenClasses: ["INTEGRATION", "ACCESS"] },
   runtime: { canonicalMcpPath: "/mcp", transports: ["UDS", "HTTPS"], internalControlExcludedFromBusinessTools: true },
-  compatibility: { classification: "BREAKING", migration: "Re-submit a generic manifest and evidence bundle against the canonical pre-production baseline.", rollback: "Restore the last verified pre-production release and re-run baseline verification." },
+  compatibility: { classification: "ADDITIVE_MINOR", migration: "Apply forward migrations 004 through 006. Existing manifest 2026.07.22-compliance.1 and active permissions remain supported; legacy permissions are represented without claiming verified port compatibility.", rollback: "Deploy the previous application release while retaining additive tables, or restore from the pre-migration backup after draining Dashboard mutations." },
   compatibilityMatrix: [{ kind: "ANY_API_CAPABLE_COMPONENT", UDS: "SUPPORTED", HTTPS: "SUPPORTED" }],
+  dashboardControlPlane: {
+    visualNodeLifecycle: ["PRE_REGISTRATION", "REGISTERED", "DELETED"],
+    topologyState: ["CONNECTED", "DISCONNECTED", "ARCHIVED"],
+    compatibilityState: ["EXACT_MATCH", "COMPATIBLE_WITH_DIFFERENCES", "INCOMPATIBLE", "UNKNOWN", "STALE"],
+    authorizationState: ["GRANTED", "DENIED", "SUSPENDED"],
+    runtimeEventStages: ["STARTED", "COMPLETED", "BLOCKED"],
+    secretGrantHandoff: "ATOMIC_WITH_ONBOARDING",
+    credentialRevocationIsReversible: false,
+    permissionSuspensionIsReversible: true
+  },
   pipelineGates: ["manifest_schema", "artifact_provenance", "runtime_probe", "authorization", "control_plane", "state_contract", "e2e_all_scenarios", "monitoring", "audit_continuity", "recertification"],
   programmerApi: { openapi: "3.1.0", paths: { "/v2/component-onboardings": { post: {} }, "/v2/component-onboardings/{id}": { get: {} }, "/v2/component-onboardings/{id}/revisions": { post: {} }, "/v2/component-onboardings/{id}/readiness": { post: {} }, "/v2/component-onboardings/{id}/e2e-results": { post: { deprecated: true, responses: { 410: { description: "Client supplied E2E evidence is forbidden" } } } } } }
 };
@@ -132,7 +143,7 @@ function canonical(value) {
 const digestInput = structuredClone(catalog);
 catalog.canonicalDigest = `sha256:${crypto.createHash("sha256").update(canonical(digestInput)).digest("hex")}`;
 
-const outputs = [[schemaPath, schema], [examplePath, example], [catalogPath, catalog]];
+const outputs = [[catalogPath, catalog]];
 const check = process.argv.includes("--check");
 let stale = false;
 for (const [file, value] of outputs) {

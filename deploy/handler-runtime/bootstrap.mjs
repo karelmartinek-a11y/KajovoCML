@@ -343,9 +343,7 @@ async function main() {
       });
     }, 500).unref();
     try { fs.unlinkSync(socketPath); } catch (error) { if (error?.code !== "ENOENT") throw error; }
-    // The wrapper probes the UDS from the host namespace after the container starts.
-    // Parent runtime directories stay host-restricted, so a world-accessible socket is acceptable here.
-    server.listen(socketPath, () => fs.chmodSync(socketPath, 0o666));
+    server.listen(socketPath, () => fs.chmodSync(socketPath, 0o600));
   } catch (error) {
     lastErrorCode = error instanceof Error ? error.message : "bootstrap_failed";
     readyState = { status: "FAILED", ready: false, dependencySummary: { errorCode: lastErrorCode }, checkedAt: new Date().toISOString(), evidenceDigest: null };

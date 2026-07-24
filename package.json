@@ -1,6 +1,6 @@
 {
   "name": "kajovocml",
-  "version": "2026.7.22-compliance.1",
+  "version": "2026.7.24-dashboard.1",
   "private": true,
   "type": "module",
   "engines": {
@@ -24,12 +24,13 @@
     "repository-attestations:check": "node scripts/test-repository-component-attestations.mjs",
     "repository-validator:check": "node scripts/test-repository-component-validator.mjs",
     "repository-components:check": "node scripts/validate-repository-components.mjs",
-    "pretest": "node scripts/clean-appledouble.mjs && node scripts/generate-mcp-onboarding-catalog.mjs --check && node scripts/generate-repository-component-catalog.mjs --check && node scripts/validate-repository-components.mjs && node scripts/test-repository-component-change-classifier.mjs && node scripts/test-repository-component-deploy-receipt.mjs && node scripts/test-repository-component-finalizer.mjs && node scripts/test-repository-component-validator.mjs && bash scripts/test-repository-component-workflows.sh && bash scripts/test-repository-component-deploy.sh && node scripts/test-repository-component-attestations.mjs",
+    "pretest": "node scripts/check-capability-parity.mjs && node scripts/clean-appledouble.mjs && node scripts/generate-mcp-onboarding-catalog.mjs --check && node scripts/generate-repository-component-catalog.mjs --check && node scripts/validate-repository-components.mjs && node scripts/test-repository-component-change-classifier.mjs && node scripts/test-repository-component-deploy-receipt.mjs && node scripts/test-repository-component-finalizer.mjs && node scripts/test-repository-component-validator.mjs && bash scripts/test-repository-component-workflows.sh && bash scripts/test-repository-component-deploy.sh && node scripts/test-repository-component-attestations.mjs",
     "test": "vitest run --exclude '**/._*' --exclude 'components/**'",
     "typecheck": "pnpm -r typecheck",
     "ci": "pnpm lint && pnpm typecheck && pnpm test && pnpm build",
     "db:migrate": "pnpm --filter @kcml/server db:migrate",
-    "admin:sync-password": "pnpm --filter @kcml/server admin:sync-password"
+    "admin:sync-password": "pnpm --filter @kcml/server admin:sync-password",
+    "dashboard:parity:check": "node scripts/check-capability-parity.mjs"
   },
   "workspaces": [
     "apps/*",

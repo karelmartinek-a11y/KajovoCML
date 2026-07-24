@@ -121,7 +121,7 @@ async function ensureCanonicalReleaseEpoch(client: pg.PoolClient): Promise<void>
        mcp_protocol_version,
        sealed_previous_epoch_hash
      )
-     values ($1,$1,$1,$1,$1,$2::date,$3,'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855')
+     values ($1,$1,$2,$3,$4,$5::date,$6,'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855')
      on conflict (release_version) do update
        set blueprint_version=excluded.blueprint_version,
            catalog_version=excluded.catalog_version,
@@ -129,7 +129,7 @@ async function ensureCanonicalReleaseEpoch(client: pg.PoolClient): Promise<void>
            pulse_envelope_version=excluded.pulse_envelope_version,
            policy_baseline=excluded.policy_baseline,
            mcp_protocol_version=excluded.mcp_protocol_version`,
-    [KCML_RELEASE.catalogVersion, KCML_RELEASE.policyBaseline, KCML_RELEASE.mcpProtocolVersion]
+    [KCML_RELEASE.applicationVersion, KCML_RELEASE.onboardingCatalogVersion, KCML_RELEASE.manifestSchemaVersion, KCML_RELEASE.pulseEnvelopeVersion, KCML_RELEASE.policyBaseline, KCML_RELEASE.mcpProtocolVersion]
   );
 
   for (const tableName of [
@@ -143,7 +143,7 @@ async function ensureCanonicalReleaseEpoch(client: pg.PoolClient): Promise<void>
   ]) {
     const exists = await client.query("select to_regclass($1) is not null as exists", [`public.${tableName}`]);
     if (!exists.rows[0]?.exists) continue;
-    await client.query(`alter table public.${tableName} alter column release_version set default '${KCML_RELEASE.catalogVersion}'::text`);
+    await client.query(`alter table public.${tableName} alter column release_version set default '${KCML_RELEASE.applicationVersion}'::text`);
   }
 }
 

@@ -1,0 +1,1497 @@
+import { createHash } from "node:crypto";
+import argon2 from "argon2";
+import { authenticator } from "otplib";
+import type pg from "pg";
+import type { AppServerConfig } from "../config.js";
+import type { Db } from "../db.js";
+import { tx } from "../db.js";
+import { decryptMfaSecret } from "../security/secrets.js";
+import { appendAudit } from "./audit.js";
+import { grantSecret } from "./secret-manager.js";
+
+export const DASHBOARD_COMPATIBILITY_EVALUATOR_VERSION = "dashboard-compatibility/1";
+
+type Queryable = Pick<Db, "query"> | pg.PoolClient;
+
+export type DashboardPort = {
+  key: string;
+  componentId: string;
+  revisionId: string;
+  direction: "INCOMING" | "OUTGOING";
+  kind: "PULSE";
+  label: string;
+  pulseType: string;
+  routes: string[];
+  scopes: string[];
+  protocol: string;
+  transport: string;
+  authMode: string;
+  requestSchema: Record<string, unknown>;
+  responseSchema: Record<string, unknown>;
+  contractDigest: string;
+  source: Record<string, unknown>;
+};
+
+export type CompatibilityStatus = "EXACT_MATCH" | "COMPATIBLE_WITH_DIFFERENCES" | "INCOMPATIBLE" | "UNKNOWN";
+export type CompatibilityResult = {
+  status: CompatibilityStatus;
+  evaluatorVersion: string;
+  sourceDigest: string;
+  targetDigest: string;
+  evidenceDigest: string;
+  checks: Array<{ field: string; result: "PASS" | "WARN" | "FAIL" | "UNKNOWN"; reason: string }>;
+};
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function digest(value: unknown): string {
+  return `sha256:${createHash("sha256").update(stableJson(value)).digest("hex")}`;
+}
+
+function textArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.map(String).filter(Boolean) : [];
+}
+
+function objectValue(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function firstString(source: Record<string, unknown>, keys: string[]): string | null {
+  for (const key of keys) {
+    const value = source[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return null;
+}
+
+function safeDurationMs(trace: Record<string, unknown>): number | null {
+  const direct = trace.durationMs ?? trace.duration_ms ?? trace.elapsedMs ?? trace.elapsed_ms;
+  if (typeof direct === "number" && Number.isFinite(direct) && direct >= 0 && direct <= 86_400_000) return Math.round(direct);
+  const started = firstString(trace, ["startedAt", "started_at"]);
+  const finished = firstString(trace, ["finishedAt", "finished_at", "completedAt", "completed_at"]);
+  if (!started || !finished) return null;
+  const duration = new Date(finished).getTime() - new Date(started).getTime();
+  return Number.isFinite(duration) && duration >= 0 && duration <= 86_400_000 ? duration : null;
+}
+
+export function dashboardRuntimeEventFromOperationRow(row: Record<string, unknown>) {
+  const trace = objectValue(row.process_trace);
+  const success = Boolean(row.success);
+  const targetComponentId = firstString(trace, ["targetComponentId", "target_component_id"]);
+  const route = firstString(trace, ["route", "routePath", "route_path", "targetRoute", "target_route"]);
+  const scope = firstString(trace, ["scope", "scopeName", "scope_name", "targetScope", "target_scope"]);
+  const audience = firstString(trace, ["audience", "targetAudience", "target_audience"]);
+  const subsystem = firstString(trace, ["subsystem", "operationKind", "operation_kind"]) ?? (firstString(row, ["pulse_type"]) ? "PULSE" : "COMPONENT");
+  const evidence: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries({
+    targetComponentId,
+    route,
+    scope,
+    audience,
+    processStep: firstString(trace, ["workflowStep", "workflow_step", "step", "stepKey", "step_key"])
+  })) if (value) evidence[key] = value;
+  return {
+    id: String(row.id),
+    kind: row.pulse_type ? "PULSE" as const : "PROCESS" as const,
+    componentId: String(row.component_id),
+    componentCode: String(row.code),
+    targetComponentId,
+    externalTargetId: null,
+    externalTargetKey: null,
+    pulseType: firstString(row, ["pulse_type"]),
+    direction: firstString(row, ["direction"]),
+    operationKey: String(row.operation_key),
+    subsystem,
+    severity: success ? "INFO" as const : "ERROR" as const,
+    stage: "COMPLETED" as const,
+    status: success ? "SUCCEEDED" : "FAILED",
+    success,
+    route,
+    scope,
+    audience,
+    durationMs: safeDurationMs(trace),
+    correlationId: String(row.correlation_id),
+    traceId: firstString(row, ["trace_id"]),
+    occurredAt: String(row.occurred_at),
+    receivedAt: String(row.received_at),
+    evidence
+  };
+}
+
+export function dashboardRuntimeEventFromLeaseRow(row: Record<string, unknown>) {
+  const trace = objectValue(row.process_trace);
+  const operationKind = String(row.operation_kind);
+  const kind = operationKind === "PULSE" ? "PULSE" as const : "PROCESS" as const;
+  const targetComponentId = firstString(trace, ["targetComponentId", "target_component_id"]);
+  const route = firstString(trace, ["route", "routePath", "route_path", "targetRoute", "target_route"]);
+  const scope = firstString(trace, ["scope", "scopeName", "scope_name", "targetScope", "target_scope"]);
+  const audience = firstString(trace, ["audience", "targetAudience", "target_audience"]);
+  const direction = firstString(trace, ["direction"]);
+  const evidence: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries({
+    targetComponentId,
+    route,
+    scope,
+    audience,
+        processStep: firstString(trace, ["workflowStep", "workflow_step", "step", "stepKey", "step_key"]),
+        expiresAt: firstString(row, ["expires_at"])
+  })) if (value) evidence[key] = value;
+  return {
+    id: String(row.id),
+    kind,
+    componentId: String(row.target_component_id),
+    componentCode: String(row.code),
+    targetComponentId,
+    externalTargetId: null,
+    externalTargetKey: null,
+    pulseType: kind === "PULSE" ? String(row.operation_name) : null,
+    direction,
+    operationKey: String(row.operation_name),
+    subsystem: operationKind,
+    severity: "INFO" as const,
+    stage: "STARTED" as const,
+    status: "RUNNING",
+    success: false,
+    route,
+    scope,
+    audience,
+    durationMs: Math.max(0, Date.now() - new Date(String(row.started_at)).getTime()),
+    correlationId: String(row.correlation_id),
+    traceId: firstString(row, ["trace_id"]),
+    occurredAt: String(row.started_at),
+    receivedAt: String(row.started_at),
+    evidence
+  };
+}
+
+export function dashboardRuntimeEventFromExternalRow(row: Record<string, unknown>) {
+  const status = String(row.status);
+  const completed = status !== "PENDING";
+  const success = status === "SUCCEEDED";
+  return {
+    id: String(row.id),
+    kind: "EXTERNAL" as const,
+    componentId: String(row.source_component_id),
+    componentCode: String(row.code),
+    targetComponentId: null,
+    externalTargetId: String(row.external_target_id),
+    externalTargetKey: String(row.target_key),
+    pulseType: null,
+    direction: "OUTGOING",
+    operationKey: `EXTERNAL ${String(row.scope_name)}`,
+    subsystem: "EXTERNAL_GATEWAY",
+    severity: success || !completed ? "INFO" as const : status === "BLOCKED" ? "WARNING" as const : "ERROR" as const,
+    stage: completed ? status === "BLOCKED" ? "BLOCKED" as const : "COMPLETED" as const : "STARTED" as const,
+    status,
+    success,
+    route: String(row.route_path),
+    scope: String(row.scope_name),
+    audience: String(row.base_url),
+    durationMs: firstString(row, ["completed_at"]) ? Math.max(0, new Date(String(row.completed_at)).getTime() - new Date(String(row.created_at)).getTime()) : null,
+    correlationId: String(row.correlation_id),
+    traceId: null,
+    occurredAt: row.completed_at ?? row.created_at,
+    receivedAt: row.completed_at ?? row.created_at,
+    evidence: { httpStatus: row.http_status ?? null, errorCode: row.error_code ?? null, attemptCount: Number(row.attempt_count ?? 0) }
+  };
+}
+
+function schemaType(schema: Record<string, unknown>): string | null {
+  return typeof schema.type === "string" ? schema.type : null;
+}
+
+function schemaProperties(schema: Record<string, unknown>): Record<string, Record<string, unknown>> {
+  const raw = objectValue(schema.properties);
+  return Object.fromEntries(Object.entries(raw).filter((entry): entry is [string, Record<string, unknown>] => Boolean(entry[1]) && typeof entry[1] === "object" && !Array.isArray(entry[1])));
+}
+
+function schemaRequired(schema: Record<string, unknown>): string[] {
+  return textArray(schema.required);
+}
+
+function finiteNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function schemaCompatibilityChecks(
+  producer: Record<string, unknown>,
+  consumer: Record<string, unknown>,
+  fieldPrefix: string,
+  path = "$"
+): CompatibilityResult["checks"] {
+  const checks: CompatibilityResult["checks"] = [];
+  const producerType = schemaType(producer);
+  const consumerType = schemaType(consumer);
+  if (!producerType || !consumerType) {
+    checks.push({ field: `${fieldPrefix}:${path}:type`, result: "UNKNOWN", reason: `Schéma ${path} neobsahuje na obou stranách jednoznačný typ.` });
+    return checks;
+  }
+  if (producerType !== consumerType) {
+    checks.push({ field: `${fieldPrefix}:${path}:type`, result: "FAIL", reason: `Typ ${path} se liší (${producerType} / ${consumerType}).` });
+    return checks;
+  }
+  checks.push({ field: `${fieldPrefix}:${path}:type`, result: "PASS", reason: `Typ ${path} je shodný (${producerType}).` });
+
+  const producerEnum = textArray(producer.enum);
+  const consumerEnum = textArray(consumer.enum);
+  if (producerEnum.length && consumerEnum.length) {
+    const rejected = producerEnum.filter((value) => !consumerEnum.includes(value));
+    checks.push(rejected.length
+      ? { field: `${fieldPrefix}:${path}:enum`, result: "FAIL", reason: `Producent může odeslat hodnoty, které příjemce nepovoluje: ${rejected.join(", ")}.` }
+      : { field: `${fieldPrefix}:${path}:enum`, result: "PASS", reason: "Všechny deklarované hodnoty producenta přijímač podporuje." });
+  } else if (producerEnum.length !== consumerEnum.length) {
+    checks.push({ field: `${fieldPrefix}:${path}:enum`, result: "WARN", reason: "Enum je deklarován pouze na jedné straně; runtime validace zůstává rozhodující." });
+  }
+
+  for (const [minimumKey, maximumKey] of [["minimum", "maximum"], ["minLength", "maxLength"], ["minItems", "maxItems"]] as const) {
+    const producerMinimum = finiteNumber(producer[minimumKey]);
+    const consumerMinimum = finiteNumber(consumer[minimumKey]);
+    const producerMaximum = finiteNumber(producer[maximumKey]);
+    const consumerMaximum = finiteNumber(consumer[maximumKey]);
+    if (producerMinimum !== null && consumerMinimum !== null) checks.push(producerMinimum < consumerMinimum
+      ? { field: `${fieldPrefix}:${path}:${minimumKey}`, result: "FAIL", reason: `Producent připouští nižší hodnotu (${producerMinimum}) než příjemce (${consumerMinimum}).` }
+      : { field: `${fieldPrefix}:${path}:${minimumKey}`, result: "PASS", reason: `Dolní limit producenta je v limitu příjemce.` });
+    if (producerMaximum !== null && consumerMaximum !== null) checks.push(producerMaximum > consumerMaximum
+      ? { field: `${fieldPrefix}:${path}:${maximumKey}`, result: "FAIL", reason: `Producent připouští vyšší hodnotu (${producerMaximum}) než příjemce (${consumerMaximum}).` }
+      : { field: `${fieldPrefix}:${path}:${maximumKey}`, result: "PASS", reason: `Horní limit producenta je v limitu příjemce.` });
+  }
+
+  if (producerType === "object") {
+    const producerProperties = schemaProperties(producer);
+    const consumerProperties = schemaProperties(consumer);
+    const producerRequired = new Set(schemaRequired(producer));
+    const consumerRequired = schemaRequired(consumer);
+    for (const required of consumerRequired) {
+      if (!producerProperties[required]) {
+        checks.push({ field: `${fieldPrefix}:${path}.${required}:required`, result: "FAIL", reason: `Příjemce vyžaduje pole ${path}.${required}, které producent nedeklaruje.` });
+      } else if (!producerRequired.has(required)) {
+        checks.push({ field: `${fieldPrefix}:${path}.${required}:required`, result: "FAIL", reason: `Producent negarantuje povinné pole ${path}.${required}.` });
+      } else {
+        checks.push({ field: `${fieldPrefix}:${path}.${required}:required`, result: "PASS", reason: `Povinné pole ${path}.${required} je garantováno.` });
+      }
+    }
+    for (const [name, producerProperty] of Object.entries(producerProperties)) {
+      const consumerProperty = consumerProperties[name];
+      if (consumerProperty) checks.push(...schemaCompatibilityChecks(producerProperty, consumerProperty, fieldPrefix, `${path}.${name}`));
+      else if (consumer.additionalProperties === false) checks.push({ field: `${fieldPrefix}:${path}.${name}:additional`, result: "FAIL", reason: `Producent deklaruje pole ${path}.${name}, ale příjemce zakazuje dodatečné vlastnosti.` });
+      else checks.push({ field: `${fieldPrefix}:${path}.${name}:additional`, result: "WARN", reason: `Pole ${path}.${name} není v příjemcově schématu popsáno.` });
+    }
+  }
+
+  if (producerType === "array") {
+    const producerItems = objectValue(producer.items);
+    const consumerItems = objectValue(consumer.items);
+    if (Object.keys(producerItems).length && Object.keys(consumerItems).length) checks.push(...schemaCompatibilityChecks(producerItems, consumerItems, fieldPrefix, `${path}[]`));
+    else checks.push({ field: `${fieldPrefix}:${path}:items`, result: "UNKNOWN", reason: `Položkové schéma ${path} není úplně deklarováno.` });
+  }
+  return checks;
+}
+
+function routeMatches(left: string, right: string): boolean {
+  if (left === right || left === "*" || right === "*") return true;
+  if (left.endsWith("/*")) return right.startsWith(left.slice(0, -1));
+  if (right.endsWith("/*")) return left.startsWith(right.slice(0, -1));
+  return false;
+}
+
+export function evaluateDashboardPortCompatibility(source: DashboardPort, target: DashboardPort): CompatibilityResult {
+  const checks: CompatibilityResult["checks"] = [];
+  if (source.direction !== "OUTGOING" || target.direction !== "INCOMING") {
+    checks.push({ field: "direction", result: "FAIL", reason: "Spojení musí vést z odchozího do příchozího portu." });
+  } else {
+    checks.push({ field: "direction", result: "PASS", reason: "Směr portů je platný." });
+  }
+  checks.push(source.pulseType === target.pulseType
+    ? { field: "pulseType", result: "PASS", reason: "Typ PULSE je shodný." }
+    : { field: "pulseType", result: "FAIL", reason: `Typy PULSE se liší (${source.pulseType} / ${target.pulseType}).` });
+  const routeCompatible = source.routes.length === 0 || target.routes.length === 0
+    ? null
+    : source.routes.some((left) => target.routes.some((right) => routeMatches(left, right)));
+  checks.push(routeCompatible === null
+    ? { field: "route", result: "UNKNOWN", reason: "Jeden z kontraktů neuvádí cestu volání." }
+    : routeCompatible
+      ? { field: "route", result: "PASS", reason: "Cesty volání se překrývají." }
+      : { field: "route", result: "FAIL", reason: "Cesty volání se nepřekrývají." });
+  const scopeCompatible = source.scopes.length === 0 || target.scopes.length === 0
+    ? null
+    : source.scopes.some((scope) => target.scopes.includes(scope) || scope === "*" || target.scopes.includes("*"));
+  checks.push(scopeCompatible === null
+    ? { field: "scope", result: "UNKNOWN", reason: "Jeden z kontraktů neuvádí rozsah oprávnění." }
+    : scopeCompatible
+      ? { field: "scope", result: "PASS", reason: "Rozsahy oprávnění mají společnou hodnotu." }
+      : { field: "scope", result: "FAIL", reason: "Rozsahy oprávnění nemají společnou hodnotu." });
+  checks.push(...schemaCompatibilityChecks(source.requestSchema, target.requestSchema, "requestSchema"));
+  checks.push(digest(source.requestSchema) === digest(target.requestSchema)
+    ? { field: "requestSchemaDigest", result: "PASS", reason: "Schémata požadavku jsou kanonicky shodná." }
+    : { field: "requestSchemaDigest", result: "WARN", reason: "Schémata požadavku mají rozdílný canonical digest; položkové kontroly určují bezpečnost rozdílu." });
+  checks.push(source.protocol === target.protocol
+    ? { field: "protocol", result: "PASS", reason: `Protokol ${source.protocol} je shodný.` }
+    : { field: "protocol", result: "FAIL", reason: `Protokoly se liší (${source.protocol} / ${target.protocol}).` });
+  checks.push(source.transport === target.transport
+    ? { field: "transport", result: "PASS", reason: `Transport ${source.transport} je shodný.` }
+    : { field: "transport", result: "FAIL", reason: `Transporty se liší (${source.transport} / ${target.transport}).` });
+  checks.push(source.authMode === target.authMode
+    ? { field: "authMode", result: "PASS", reason: `Autentizační režim ${source.authMode} je shodný.` }
+    : { field: "authMode", result: "FAIL", reason: `Autentizační režimy se liší (${source.authMode} / ${target.authMode}).` });
+  if (Object.keys(source.responseSchema).length || Object.keys(target.responseSchema).length) {
+    checks.push(...schemaCompatibilityChecks(target.responseSchema, source.responseSchema, "responseSchema"));
+  } else {
+    checks.push({ field: "responseSchema", result: "UNKNOWN", reason: "Odpovědní schéma není v kontraktech deklarováno." });
+  }
+
+  const failed = checks.some((check) => check.result === "FAIL");
+  const unknown = checks.some((check) => check.result === "UNKNOWN");
+  const warned = checks.some((check) => check.result === "WARN");
+  const status: CompatibilityStatus = failed ? "INCOMPATIBLE" : unknown ? "UNKNOWN" : warned ? "COMPATIBLE_WITH_DIFFERENCES" : "EXACT_MATCH";
+  const evidence = {
+    evaluatorVersion: DASHBOARD_COMPATIBILITY_EVALUATOR_VERSION,
+    sourceDigest: source.contractDigest,
+    targetDigest: target.contractDigest,
+    checks
+  };
+  return { status, ...evidence, evidenceDigest: digest(evidence) };
+}
+
+function portFromRow(row: Record<string, unknown>): DashboardPort {
+  const direction = String(row.direction) as DashboardPort["direction"];
+  const source = {
+    id: String(row.id),
+    pulseType: String(row.pulse_type),
+    executionMode: String(row.execution_mode),
+    idempotency: String(row.idempotency),
+    tokenRequired: Boolean(row.token_required),
+    envelopeSchema: row.envelope_schema
+  };
+  const requestSchema = (row.envelope_schema && typeof row.envelope_schema === "object")
+    ? row.envelope_schema as Record<string, unknown>
+    : {};
+  const key = `pulse:${String(row.id)}`;
+  return {
+    key,
+    componentId: String(row.component_id),
+    revisionId: String(row.revision_id),
+    direction,
+    kind: "PULSE",
+    label: `${String(row.pulse_type)} · ${direction === "INCOMING" ? "Příchozí" : "Odchozí"}`,
+    pulseType: String(row.pulse_type),
+    routes: textArray(row.route_acl),
+    scopes: textArray(row.scopes),
+    protocol: "PULSE",
+    transport: "HTTPS",
+    authMode: row.token_required ? "BEARER" : "NONE",
+    requestSchema,
+    responseSchema: {},
+    contractDigest: digest(source),
+    source
+  };
+}
+
+async function listPorts(client: Queryable, componentIds?: string[]): Promise<DashboardPort[]> {
+  const values: unknown[] = [];
+  const filter = componentIds?.length ? "and mask.component_id = any($1::uuid[])" : "";
+  if (componentIds?.length) values.push(componentIds);
+  const result = await client.query(
+    `select mask.*
+       from component_pulse_mask mask
+       join component component on component.id=mask.component_id and component.active_revision_id=mask.revision_id
+      where component.deregistered_at is null ${filter}
+      order by component.code,mask.direction,mask.pulse_type,mask.id`,
+    values
+  );
+  return result.rows.map((row) => portFromRow(row as Record<string, unknown>));
+}
+
+async function findPort(client: Queryable, componentId: string, key: string, expectedDirection: DashboardPort["direction"]): Promise<DashboardPort> {
+  const ports = await listPorts(client, [componentId]);
+  const port = ports.find((item) => item.key === key && item.direction === expectedDirection);
+  if (!port) throw Object.assign(new Error("dashboard_port_not_found"), { statusCode: 404 });
+  return port;
+}
+
+export async function createPreRegistrationDashboardNode(
+  client: pg.PoolClient,
+  input: { integrationTokenId: string; label: string; fingerprint: string; actorId: string; metadata?: Record<string, unknown> }
+): Promise<string> {
+  const existing = await client.query(
+    "select id from dashboard_visual_node where integration_token_id=$1 and deleted_at is null for update",
+    [input.integrationTokenId]
+  );
+  if (existing.rowCount) return String(existing.rows[0].id);
+  const inserted = await client.query(
+    `insert into dashboard_visual_node(integration_token_id,lifecycle_phase,label,token_fingerprint,created_by,metadata)
+     values ($1,'PRE_REGISTRATION',$2,$3,$4,$5::jsonb) returning id`,
+    [input.integrationTokenId, input.label, input.fingerprint, input.actorId, JSON.stringify(input.metadata ?? {})]
+  );
+  return String(inserted.rows[0].id);
+}
+
+export async function handoffDashboardNode(
+  client: pg.PoolClient,
+  input: { integrationTokenId: string; componentId: string; principalId: string; code: string; displayName: string; correlationId: string }
+): Promise<string> {
+  const existingComponent = await client.query(
+    "select id,integration_token_id from dashboard_visual_node where component_id=$1 and deleted_at is null for update",
+    [input.componentId]
+  );
+  if (existingComponent.rowCount && String(existingComponent.rows[0].integration_token_id ?? "") === input.integrationTokenId) {
+    return String(existingComponent.rows[0].id);
+  }
+
+  const tokenNode = await client.query(
+    "select id from dashboard_visual_node where integration_token_id=$1 and lifecycle_phase='PRE_REGISTRATION' and deleted_at is null for update",
+    [input.integrationTokenId]
+  );
+  if (existingComponent.rowCount && tokenNode.rowCount && String(existingComponent.rows[0].id) !== String(tokenNode.rows[0].id)) {
+    const existingId = String(existingComponent.rows[0].id);
+    const tokenNodeId = String(tokenNode.rows[0].id);
+    await client.query(
+      `insert into dashboard_node_position(workspace_id,node_id,x,y)
+       select workspace_id,$2,x,y from dashboard_node_position where node_id=$1
+       on conflict (workspace_id,node_id) do nothing`,
+      [existingId, tokenNodeId]
+    );
+    await client.query(
+      `update dashboard_visual_node
+          set lifecycle_phase='DELETED',deleted_at=now(),updated_at=now(),lock_version=lock_version+1,
+              metadata=metadata || $2::jsonb
+        where id=$1`,
+      [existingId, JSON.stringify({ supersededByStableNodeId: tokenNodeId, handoffCorrelationId: input.correlationId })]
+    );
+  }
+
+  const updated = await client.query(
+    `update dashboard_visual_node
+        set component_id=$2,principal_id=$3,lifecycle_phase='REGISTERED',label=$4,
+            metadata=metadata || $5::jsonb,handed_off_at=coalesce(handed_off_at,now()),updated_at=now(),lock_version=lock_version+1
+      where integration_token_id=$1 and lifecycle_phase='PRE_REGISTRATION' and deleted_at is null
+      returning id`,
+    [input.integrationTokenId, input.componentId, input.principalId, input.code, JSON.stringify({ displayName: input.displayName, handoffCorrelationId: input.correlationId })]
+  );
+  if (updated.rowCount) return String(updated.rows[0].id);
+  if (existingComponent.rowCount) return String(existingComponent.rows[0].id);
+  const inserted = await client.query(
+    `insert into dashboard_visual_node(integration_token_id,component_id,principal_id,lifecycle_phase,label,metadata,handed_off_at)
+     values ($1,$2,$3,'REGISTERED',$4,$5::jsonb,now()) returning id`,
+    [input.integrationTokenId, input.componentId, input.principalId, input.code, JSON.stringify({ displayName: input.displayName, handoffCorrelationId: input.correlationId, recoveredMissingPreRegistrationNode: true })]
+  );
+  return String(inserted.rows[0].id);
+}
+
+async function workspace(client: Queryable, adminId: string) {
+  const result = await client.query(
+    `insert into dashboard_workspace(owner_admin_id,workspace_key)
+     values ($1,'DEFAULT')
+     on conflict (owner_admin_id,workspace_key) do update set owner_admin_id=excluded.owner_admin_id
+     returning *`,
+    [adminId]
+  );
+  return result.rows[0] as Record<string, unknown>;
+}
+
+export async function saveDashboardLayout(db: Db, input: {
+  actorId: string;
+  expectedVersion?: number;
+  viewport: { x: number; y: number; zoom: number };
+  positions: Array<{ nodeId: string; x: number; y: number }>;
+  externalPositions?: Array<{ externalTargetId: string; x: number; y: number }>;
+  correlationId: string;
+}) {
+  return await tx(db, async (client) => {
+    const current = await workspace(client, input.actorId);
+    if (input.expectedVersion !== undefined && Number(current.lock_version) !== input.expectedVersion) {
+      throw Object.assign(new Error("dashboard_layout_version_conflict"), { statusCode: 409 });
+    }
+    for (const position of input.positions) {
+      await client.query(
+        `insert into dashboard_node_position(workspace_id,node_id,x,y)
+         select $1,$2,$3,$4 where exists(select 1 from dashboard_visual_node where id=$2 and deleted_at is null)
+         on conflict (workspace_id,node_id) do update set x=excluded.x,y=excluded.y,updated_at=now()`,
+        [current.id, position.nodeId, position.x, position.y]
+      );
+    }
+    for (const position of input.externalPositions ?? []) {
+      await client.query(
+        `insert into dashboard_external_target_position(workspace_id,external_target_id,x,y)
+         select $1,$2,$3,$4 where exists(select 1 from component_external_target where id=$2)
+         on conflict (workspace_id,external_target_id) do update set x=excluded.x,y=excluded.y,updated_at=now()`,
+        [current.id, position.externalTargetId, position.x, position.y]
+      );
+    }
+    const updated = await client.query(
+      `update dashboard_workspace set viewport=$2::jsonb,lock_version=lock_version+1,updated_at=now()
+        where id=$1 returning id,viewport,lock_version,updated_at`,
+      [current.id, JSON.stringify(input.viewport)]
+    );
+    await appendAudit(client, {
+      eventType: "dashboard.layout.updated", actorType: "admin", actorId: input.actorId,
+      objectType: "dashboard_workspace", objectId: String(current.id),
+      after: { nodeCount: input.positions.length, externalTargetCount: input.externalPositions?.length ?? 0, viewport: input.viewport, lockVersion: updated.rows[0].lock_version },
+      correlationId: input.correlationId
+    });
+    return updated.rows[0] as Record<string, unknown>;
+  });
+}
+
+async function ensurePermission(client: pg.PoolClient, input: {
+  sourceComponentId: string; targetComponentId: string; route: string; scope: string; actorId: string;
+}): Promise<string> {
+  const result = await client.query(
+    `insert into component_permission(source_component_id,target_component_id,route_pattern,scope_name,access_level,granted_by_type,granted_by_id)
+     values ($1,$2,$3,$4,'INVOKE','admin',$5)
+     on conflict (source_component_id,target_component_id,route_pattern,scope_name)
+     do update set revoked_at=null,granted_at=now(),granted_by_type='admin',granted_by_id=excluded.granted_by_id
+     returning id`,
+    [input.sourceComponentId, input.targetComponentId, input.route, input.scope, input.actorId]
+  );
+  const permissionId = String(result.rows[0].id);
+  await client.query(
+    `update pulse_topology_connection set permission_id=$5
+      where source_component_id=$1 and target_component_id=$2 and target_route=$3 and target_scope=$4 and revoked_at is null and authorization_desired is true`,
+    [input.sourceComponentId, input.targetComponentId, input.route, input.scope, permissionId]
+  );
+  await client.query("update component set policy_epoch=policy_epoch+1,updated_at=now() where id = any($1::uuid[])", [[input.sourceComponentId, input.targetComponentId]]);
+  const principal = await client.query("select principal_id from component where id=$1", [input.sourceComponentId]);
+  if (principal.rowCount) await client.query("update principal set policy_epoch=policy_epoch+1,updated_at=now() where id=$1", [principal.rows[0].principal_id]);
+  return permissionId;
+}
+
+async function reconcilePermission(client: pg.PoolClient, edge: Record<string, unknown>, actorId: string): Promise<string | null> {
+  const desired = await client.query(
+    `select 1 from pulse_topology_connection
+      where source_component_id=$1 and target_component_id=$2 and target_route=$3 and target_scope=$4
+        and revoked_at is null and authorization_desired is true limit 1`,
+    [edge.source_component_id, edge.target_component_id, edge.target_route, edge.target_scope]
+  );
+  if (desired.rowCount) {
+    return ensurePermission(client, {
+      sourceComponentId: String(edge.source_component_id), targetComponentId: String(edge.target_component_id),
+      route: String(edge.target_route), scope: String(edge.target_scope), actorId
+    });
+  }
+  const revoked = await client.query(
+    `update component_permission set revoked_at=coalesce(revoked_at,now())
+      where source_component_id=$1 and target_component_id=$2 and route_pattern=$3 and scope_name=$4
+      returning id`,
+    [edge.source_component_id, edge.target_component_id, edge.target_route, edge.target_scope]
+  );
+  await client.query("update component set policy_epoch=policy_epoch+1,updated_at=now() where id = any($1::uuid[])", [[edge.source_component_id, edge.target_component_id]]);
+  const principal = await client.query("select principal_id from component where id=$1", [edge.source_component_id]);
+  if (principal.rowCount) await client.query("update principal set policy_epoch=policy_epoch+1,updated_at=now() where id=$1", [principal.rows[0].principal_id]);
+  return revoked.rowCount ? String(revoked.rows[0].id) : null;
+}
+
+function selectedValue(requested: string | undefined, sourceValues: string[], targetValues: string[], kind: string): string {
+  if (requested) {
+    const allowed = targetValues.some((value) => routeMatches(value, requested)) && (sourceValues.length === 0 || sourceValues.some((value) => routeMatches(value, requested)));
+    if (!allowed) throw Object.assign(new Error(`dashboard_${kind}_not_in_contract`), { statusCode: 409 });
+    return requested;
+  }
+  const candidate = targetValues.find((target) => sourceValues.length === 0 || sourceValues.some((source) => routeMatches(source, target)));
+  if (!candidate) throw Object.assign(new Error(`dashboard_${kind}_required`), { statusCode: 409 });
+  return candidate;
+}
+
+export async function previewDashboardConnection(db: Db, input: {
+  sourceComponentId: string; sourcePortKey: string; targetComponentId: string; targetPortKey: string;
+}) {
+  const [source, target] = await Promise.all([
+    findPort(db, input.sourceComponentId, input.sourcePortKey, "OUTGOING"),
+    findPort(db, input.targetComponentId, input.targetPortKey, "INCOMING")
+  ]);
+  return { source, target, compatibility: evaluateDashboardPortCompatibility(source, target) };
+}
+
+export async function createDashboardConnection(db: Db, input: {
+  sourceComponentId: string; sourcePortKey: string; targetComponentId: string; targetPortKey: string;
+  targetRoute?: string; targetScope?: string; grantAuthorization?: boolean; actorId: string; correlationId: string;
+}) {
+  if (input.sourceComponentId === input.targetComponentId) throw Object.assign(new Error("dashboard_self_connection_forbidden"), { statusCode: 409 });
+  return tx(db, async (client) => {
+    const lockedComponents = await client.query(
+      "select id from component where id = any($1::uuid[]) and deregistered_at is null for update",
+      [[input.sourceComponentId, input.targetComponentId]]
+    );
+    if (lockedComponents.rowCount !== 2) throw Object.assign(new Error("component_not_found"), { statusCode: 404 });
+    const source = await findPort(client, input.sourceComponentId, input.sourcePortKey, "OUTGOING");
+    const target = await findPort(client, input.targetComponentId, input.targetPortKey, "INCOMING");
+    const compatibility = evaluateDashboardPortCompatibility(source, target);
+    const route = selectedValue(input.targetRoute, source.routes, target.routes, "route");
+    const scope = selectedValue(input.targetScope, source.scopes, target.scopes, "scope");
+    const targetComponent = await client.query("select hostname from component where id=$1", [input.targetComponentId]);
+    if (!targetComponent.rowCount) throw Object.assign(new Error("component_not_found"), { statusCode: 404 });
+    const audience = `https://${String(targetComponent.rows[0].hostname).toLowerCase()}`;
+    const authorizationDesired = input.grantAuthorization !== false;
+    const inserted = await client.query(
+      `insert into pulse_topology_connection(
+        source_component_id,source_port_key,source_revision_id,source_contract_digest,
+        target_component_id,target_port_key,target_revision_id,target_contract_digest,target_route,target_scope,audience,
+        compatibility_status,compatibility_evaluator_version,compatibility_evidence,authorization_desired,created_by,correlation_id)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16,$17)
+       on conflict (source_component_id,source_port_key,target_component_id,target_port_key,target_route,target_scope,audience)
+         where revoked_at is null
+       do update set compatibility_status=excluded.compatibility_status,
+         compatibility_evaluator_version=excluded.compatibility_evaluator_version,
+         compatibility_evidence=excluded.compatibility_evidence,
+         authorization_desired=excluded.authorization_desired,
+         lock_version=pulse_topology_connection.lock_version+1
+       returning *`,
+      [input.sourceComponentId, source.key, source.revisionId, source.contractDigest,
+        input.targetComponentId, target.key, target.revisionId, target.contractDigest, route, scope, audience,
+        compatibility.status, compatibility.evaluatorVersion, JSON.stringify(compatibility), authorizationDesired, input.actorId, input.correlationId]
+    );
+    const edge = inserted.rows[0] as Record<string, unknown>;
+    const permissionId = await reconcilePermission(client, edge, input.actorId);
+    if (permissionId) await client.query("update pulse_topology_connection set permission_id=$2 where id=$1", [edge.id, permissionId]);
+    await appendAudit(client, {
+      eventType: "dashboard.connection.created", actorType: "admin", actorId: input.actorId,
+      objectType: "pulse_topology_connection", objectId: String(edge.id),
+      after: { sourceComponentId: input.sourceComponentId, targetComponentId: input.targetComponentId, route, scope, audience, compatibility, authorizationDesired, permissionId },
+      correlationId: input.correlationId
+    });
+    return connectionSnapshot(client, String(edge.id));
+  });
+}
+
+async function connectionSnapshot(client: Queryable, connectionId: string) {
+  const result = await client.query(
+    `select edge.*,permission.revoked_at permission_revoked_at,
+            suspension.id suspension_id,token_envelope.id token_envelope_id,
+            source.code source_code,target.code target_code
+       from pulse_topology_connection edge
+       join component source on source.id=edge.source_component_id
+       join component target on target.id=edge.target_component_id
+       left join component_permission permission on permission.id=edge.permission_id
+       left join principal_permission_suspension suspension on suspension.principal_id=source.principal_id and suspension.resumed_at is null
+       left join lateral (
+         select token.id from principal_access_token token
+          where token.source_principal_id=source.principal_id and token.revoked_at is null and token.expires_at>now()
+            and (token.target_component_id is null or token.target_component_id=edge.target_component_id)
+            and (token.audience='*' or lower(token.audience)=lower(edge.audience))
+            and ('*'=any(token.scope_names) or edge.target_scope=any(token.scope_names))
+          order by token.created_at desc limit 1
+       ) token_envelope on true
+      where edge.id=$1`,
+    [connectionId]
+  );
+  if (!result.rowCount) throw Object.assign(new Error("dashboard_connection_not_found"), { statusCode: 404 });
+  const row = result.rows[0] as Record<string, unknown>;
+  return {
+    ...row,
+    effectiveAuthorization: row.revoked_at || !row.authorization_desired || row.permission_revoked_at || row.suspension_id || !row.token_envelope_id ? "DENIED" : "GRANTED",
+    authorizationReason: row.revoked_at ? "DISCONNECTED" : row.suspension_id ? "IDENTITY_SUSPENDED" : !row.authorization_desired ? "EDGE_PERMISSION_REVOKED" : row.permission_revoked_at ? "PERMISSION_REVOKED" : !row.token_envelope_id ? "TOKEN_SCOPE_OR_AUDIENCE_MISSING" : "PERMISSION_ACTIVE"
+  };
+}
+
+export async function setDashboardConnectionAuthorization(db: Db, input: {
+  connectionId: string; enabled: boolean; actorId: string; correlationId: string;
+}) {
+  return tx(db, async (client) => {
+    const current = await client.query("select * from pulse_topology_connection where id=$1 and revoked_at is null for update", [input.connectionId]);
+    if (!current.rowCount) throw Object.assign(new Error("dashboard_connection_not_found"), { statusCode: 404 });
+    const edge = current.rows[0] as Record<string, unknown>;
+    await client.query("update pulse_topology_connection set authorization_desired=$2,lock_version=lock_version+1 where id=$1", [input.connectionId, input.enabled]);
+    const permissionId = await reconcilePermission(client, { ...edge, authorization_desired: input.enabled }, input.actorId);
+    if (permissionId) await client.query("update pulse_topology_connection set permission_id=$2 where id=$1", [input.connectionId, permissionId]);
+    await appendAudit(client, {
+      eventType: input.enabled ? "dashboard.connection.authorization_granted" : "dashboard.connection.authorization_revoked",
+      actorType: "admin", actorId: input.actorId, objectType: "pulse_topology_connection", objectId: input.connectionId,
+      before: { authorizationDesired: Boolean(edge.authorization_desired) }, after: { authorizationDesired: input.enabled, permissionId }, correlationId: input.correlationId
+    });
+    return connectionSnapshot(client, input.connectionId);
+  });
+}
+
+export async function disconnectDashboardConnection(db: Db, input: { connectionId: string; actorId: string; correlationId: string }) {
+  return tx(db, async (client) => {
+    const current = await client.query("select * from pulse_topology_connection where id=$1 and revoked_at is null for update", [input.connectionId]);
+    if (!current.rowCount) throw Object.assign(new Error("dashboard_connection_not_found"), { statusCode: 404 });
+    const edge = current.rows[0] as Record<string, unknown>;
+    await client.query(
+      "update pulse_topology_connection set state='DISCONNECTED',authorization_desired=false,revoked_at=now(),revoked_by=$2,lock_version=lock_version+1 where id=$1",
+      [input.connectionId, input.actorId]
+    );
+    await reconcilePermission(client, edge, input.actorId);
+    await appendAudit(client, {
+      eventType: "dashboard.connection.disconnected", actorType: "admin", actorId: input.actorId,
+      objectType: "pulse_topology_connection", objectId: input.connectionId,
+      before: { state: edge.state, authorizationDesired: edge.authorization_desired }, after: { state: "DISCONNECTED" }, correlationId: input.correlationId
+    });
+    return { id: input.connectionId, disconnected: true };
+  });
+}
+
+export async function setDashboardNodeSuspension(db: Db, input: {
+  nodeId: string; suspended: boolean; reason: string; actorId: string; correlationId: string;
+}) {
+  return tx(db, async (client) => {
+    const node = await client.query(
+      `select node.*,component.code from dashboard_visual_node node
+       join component component on component.id=node.component_id
+       where node.id=$1 and node.lifecycle_phase='REGISTERED' and node.deleted_at is null for update of node`,
+      [input.nodeId]
+    );
+    if (!node.rowCount || !node.rows[0].principal_id) throw Object.assign(new Error("dashboard_registered_node_not_found"), { statusCode: 404 });
+    const principalId = String(node.rows[0].principal_id);
+    if (input.suspended) {
+      await client.query(
+        `insert into principal_permission_suspension(principal_id,reason,suspended_by,correlation_id)
+         values ($1,$2,$3,$4)
+         on conflict (principal_id) where resumed_at is null do update set reason=excluded.reason,correlation_id=excluded.correlation_id`,
+        [principalId, input.reason, input.actorId, input.correlationId]
+      );
+    } else {
+      await client.query(
+        `update principal_permission_suspension set resumed_at=now(),resumed_by=$2
+          where principal_id=$1 and resumed_at is null`,
+        [principalId, input.actorId]
+      );
+    }
+    await client.query("update principal set policy_epoch=policy_epoch+1,updated_at=now() where id=$1", [principalId]);
+    await client.query("update component set policy_epoch=policy_epoch+1,updated_at=now() where id=$1", [node.rows[0].component_id]);
+    await appendAudit(client, {
+      eventType: input.suspended ? "dashboard.identity.suspended" : "dashboard.identity.resumed", actorType: "admin", actorId: input.actorId,
+      objectType: "component", objectId: String(node.rows[0].component_id), after: { nodeId: input.nodeId, code: node.rows[0].code, reason: input.reason }, correlationId: input.correlationId
+    });
+    return { nodeId: input.nodeId, suspended: input.suspended, reason: input.reason };
+  });
+}
+
+export async function listDashboardIdentityCards(db: Db) {
+  const result = await db.query(
+    `select node.id node_id,node.lifecycle_phase,node.label,node.token_fingerprint,
+            token.id integration_token_id,token.expires_at integration_expires_at,
+            token.revoked_at integration_revoked_at,token.deleted_at integration_deleted_at,token.last_used_at integration_last_used_at,
+            component.id component_id,component.code,component.display_name,component.principal_id,
+            principal.public_id,principal.status,
+            access.fingerprint access_fingerprint,access.last_used_at,access.expires_at access_expires_at
+       from dashboard_visual_node node
+       left join integration_token token on token.id=node.integration_token_id
+       left join component component on component.id=node.component_id
+       left join principal principal on principal.id=node.principal_id
+       left join lateral (
+         select fingerprint,last_used_at,expires_at from principal_access_token
+          where source_principal_id=node.principal_id and revoked_at is null order by created_at desc limit 1
+       ) access on true
+      where node.deleted_at is null
+      order by node.lifecycle_phase,node.label`
+  );
+  return result.rows.map((row) => {
+    const preregistrationStatus = row.integration_deleted_at
+      ? "DELETED"
+      : row.integration_revoked_at
+        ? "REVOKED"
+        : row.integration_expires_at && new Date(row.integration_expires_at).getTime() <= Date.now()
+          ? "EXPIRED"
+          : "ACTIVE";
+    const componentStatus = row.status === "ACTIVE" && row.access_expires_at && new Date(row.access_expires_at).getTime() <= Date.now()
+      ? "EXPIRED"
+      : row.status ?? "UNKNOWN";
+    return {
+      nodeId: String(row.node_id),
+      identityType: row.lifecycle_phase === "PRE_REGISTRATION" ? "INTEGRATION_TOKEN" : "COMPONENT",
+      displayName: row.display_name ?? row.label,
+      code: row.code ?? null,
+      publicId: row.public_id ?? null,
+      status: row.lifecycle_phase === "PRE_REGISTRATION" ? preregistrationStatus : componentStatus,
+      fingerprint: row.access_fingerprint ?? row.token_fingerprint,
+      lastUsedAt: row.last_used_at ?? row.integration_last_used_at ?? null,
+      componentId: row.component_id ?? null,
+      integrationTokenId: row.integration_token_id ?? null
+    };
+  });
+}
+
+export async function grantDashboardSecretToNode(db: Db, input: {
+  secretId: string; nodeId: string; actorId: string; correlationId: string;
+}): Promise<{ status: "CREATED" | "ALREADY_GRANTED"; nodeId: string; secretId: string }> {
+  const node = await db.query(
+    `select node.*,component.code,component.deregistered_at,principal.status principal_status,
+            token.revoked_at token_revoked_at,token.deleted_at token_deleted_at,token.expires_at token_expires_at
+       from dashboard_visual_node node
+       left join component component on component.id=node.component_id
+       left join principal principal on principal.id=node.principal_id
+       left join integration_token token on token.id=node.integration_token_id
+      where node.id=$1 and node.deleted_at is null`,
+    [input.nodeId]
+  );
+  if (!node.rowCount) throw Object.assign(new Error("dashboard_node_not_found"), { statusCode: 404 });
+  const secret = await db.query("select stable_name from secret_record where id=$1 and deleted_at is null", [input.secretId]);
+  if (!secret.rowCount) throw Object.assign(new Error("not_found"), { statusCode: 404 });
+  const row = node.rows[0];
+  if (row.lifecycle_phase === "PRE_REGISTRATION") {
+    const tokenExpired = row.token_expires_at && new Date(row.token_expires_at).getTime() <= Date.now();
+    if (!row.integration_token_id || row.token_revoked_at || row.token_deleted_at || tokenExpired) {
+      throw Object.assign(new Error("dashboard_identity_unavailable"), { statusCode: 409 });
+    }
+    const result = await tx(db, async (client) => {
+      const tokenState = await client.query(
+        `select id from integration_token
+          where id=$1 and revoked_at is null and deleted_at is null and expires_at>now()
+          for update`,
+        [row.integration_token_id]
+      );
+      if (!tokenState.rowCount) throw Object.assign(new Error("dashboard_identity_unavailable"), { statusCode: 409 });
+      const existing = await client.query(
+        `select id from integration_token_secret_grant where token_id=$1 and secret_stable_name=$2 and all_secrets=false and revoked_at is null`,
+        [row.integration_token_id, secret.rows[0].stable_name]
+      );
+      if (!existing.rowCount) {
+        await client.query(
+          `insert into integration_token_secret_grant(token_id,secret_stable_name,all_secrets,granted_by)
+           values ($1,$2,false,$3)`,
+          [row.integration_token_id, secret.rows[0].stable_name, input.actorId]
+        );
+      }
+      await appendAudit(client, {
+        eventType: "dashboard.secret_grant.created", actorType: "admin", actorId: input.actorId,
+        objectType: "secret", objectId: input.secretId,
+        after: { nodeId: input.nodeId, integrationTokenId: row.integration_token_id, stableName: secret.rows[0].stable_name }, correlationId: input.correlationId
+      });
+      return existing.rowCount ? "ALREADY_GRANTED" as const : "CREATED" as const;
+    });
+    return { status: result, nodeId: input.nodeId, secretId: input.secretId };
+  }
+  if (!row.component_id || !row.principal_id || row.deregistered_at || String(row.principal_status) !== "ACTIVE") {
+    throw Object.assign(new Error("dashboard_identity_unavailable"), { statusCode: 409 });
+  }
+  const existing = await db.query(
+    `select 1 from secret_grant where secret_id=$1 and principal_kind='COMPONENT' and principal_id=$2 and revoked_at is null`,
+    [input.secretId, row.component_id]
+  );
+  await grantSecret(db, input.actorId, input.correlationId, input.secretId, {
+    principalKind: "COMPONENT", principalId: String(row.component_id), principalPublicId: String(row.code)
+  });
+  return { status: existing.rowCount ? "ALREADY_GRANTED" : "CREATED", nodeId: input.nodeId, secretId: input.secretId };
+}
+
+export async function previewBulkDashboardSecret(db: Db, secretId: string) {
+  const secret = await db.query("select id,stable_name,status,deleted_at from secret_record where id=$1", [secretId]);
+  if (!secret.rowCount || secret.rows[0].deleted_at) throw Object.assign(new Error("not_found"), { statusCode: 404 });
+  const stableName = String(secret.rows[0].stable_name);
+  const nodes = await db.query(
+    `select node.id,node.lifecycle_phase,node.label,node.integration_token_id,node.component_id,
+            token.revoked_at token_revoked_at,token.deleted_at token_deleted_at,token.expires_at token_expires_at,
+            component.code,component.deregistered_at,principal.status principal_status,
+            exists(select 1 from integration_token_secret_grant grant_row
+              where grant_row.token_id=node.integration_token_id and grant_row.revoked_at is null
+                and (grant_row.all_secrets or grant_row.secret_stable_name=$2)) integration_granted,
+            exists(select 1 from secret_grant grant_row
+              where grant_row.secret_id=$1 and grant_row.principal_kind='COMPONENT'
+                and grant_row.principal_id=node.component_id and grant_row.revoked_at is null) direct_granted,
+            exists(select 1 from integration_token_secret_grant grant_row
+              where grant_row.transferred_component_id=node.component_id and grant_row.revoked_at is null
+                and (grant_row.all_secrets or grant_row.secret_stable_name=$2)) transferred_granted
+       from dashboard_visual_node node
+       left join integration_token token on token.id=node.integration_token_id
+       left join component component on component.id=node.component_id
+       left join principal principal on principal.id=node.principal_id
+      where node.deleted_at is null and node.lifecycle_phase in ('PRE_REGISTRATION','REGISTERED')
+      order by node.created_at,node.id`,
+    [secretId, stableName]
+  );
+  const eligible: Array<{ nodeId: string; label: string; alreadyGranted: boolean }> = [];
+  const skipped: Array<{ nodeId: string; label: string; reason: string }> = [];
+  for (const row of nodes.rows) {
+    const nodeId = String(row.id);
+    const label = String(row.code ?? row.label);
+    if (row.lifecycle_phase === "PRE_REGISTRATION") {
+      if (row.token_deleted_at) skipped.push({ nodeId, label, reason: "INTEGRATION_TOKEN_DELETED" });
+      else if (row.token_revoked_at) skipped.push({ nodeId, label, reason: "INTEGRATION_TOKEN_REVOKED" });
+      else if (!row.token_expires_at || new Date(row.token_expires_at).getTime() <= Date.now()) skipped.push({ nodeId, label, reason: "INTEGRATION_TOKEN_EXPIRED" });
+      else eligible.push({ nodeId, label, alreadyGranted: Boolean(row.integration_granted) });
+    } else if (row.deregistered_at || row.principal_status === "REVOKED") {
+      skipped.push({ nodeId, label, reason: row.deregistered_at ? "COMPONENT_DEREGISTERED" : "PRINCIPAL_REVOKED" });
+    } else {
+      eligible.push({ nodeId, label, alreadyGranted: Boolean(row.direct_granted || row.transferred_granted) });
+    }
+  }
+  return {
+    secretId,
+    stableName,
+    secretStatus: String(secret.rows[0].status),
+    eligibleCount: eligible.length,
+    alreadyGrantedCount: eligible.filter((target) => target.alreadyGranted).length,
+    createCount: eligible.filter((target) => !target.alreadyGranted).length,
+    eligible,
+    skipped
+  };
+}
+
+export async function bulkGrantDashboardSecret(db: Db, input: { secretId: string; actorId: string; correlationId: string }) {
+  const preview = await previewBulkDashboardSecret(db, input.secretId);
+  const results: Array<{ nodeId: string; status: "CREATED" | "ALREADY_GRANTED" | "SKIPPED" | "FAILED"; reason?: string }> =
+    preview.skipped.map((target) => ({ nodeId: target.nodeId, status: "SKIPPED", reason: target.reason }));
+  for (const target of preview.eligible) {
+    try {
+      const result = await grantDashboardSecretToNode(db, { ...input, nodeId: target.nodeId });
+      results.push({ nodeId: target.nodeId, status: result.status });
+    } catch (error) {
+      results.push({ nodeId: target.nodeId, status: "FAILED", reason: error instanceof Error ? error.message : "operation_failed" });
+    }
+  }
+  return { secretId: input.secretId, targetCount: preview.eligibleCount, skippedCount: preview.skipped.length, results, correlationId: input.correlationId };
+}
+
+export async function revokeDashboardSecretFromNode(db: Db, input: { secretId: string; nodeId: string; actorId: string; correlationId: string }) {
+  return tx(db, async (client) => {
+    const node = await client.query("select * from dashboard_visual_node where id=$1 and deleted_at is null for update", [input.nodeId]);
+    if (!node.rowCount) throw Object.assign(new Error("dashboard_node_not_found"), { statusCode: 404 });
+    const secret = await client.query("select stable_name from secret_record where id=$1", [input.secretId]);
+    if (!secret.rowCount) throw Object.assign(new Error("not_found"), { statusCode: 404 });
+    if (node.rows[0].lifecycle_phase === "PRE_REGISTRATION") {
+      await client.query(
+        `update integration_token_secret_grant set revoked_at=coalesce(revoked_at,now()),revoked_by=$3
+          where token_id=$1 and secret_stable_name=$2 and revoked_at is null`,
+        [node.rows[0].integration_token_id, secret.rows[0].stable_name, input.actorId]
+      );
+    } else {
+      await client.query(
+        `update secret_grant set revoked_at=coalesce(revoked_at,now()),revoked_by=$3
+          where secret_id=$1 and principal_kind='COMPONENT' and principal_id=$2 and revoked_at is null`,
+        [input.secretId, node.rows[0].component_id, input.actorId]
+      );
+      await client.query(
+        `update integration_token_secret_grant set revoked_at=coalesce(revoked_at,now()),revoked_by=$3
+          where transferred_component_id=$1 and all_secrets=false and secret_stable_name=$2 and revoked_at is null`,
+        [node.rows[0].component_id, secret.rows[0].stable_name, input.actorId]
+      );
+    }
+    await appendAudit(client, {
+      eventType: "dashboard.secret_grant.revoked", actorType: "admin", actorId: input.actorId,
+      objectType: "secret", objectId: input.secretId, after: { nodeId: input.nodeId, stableName: secret.rows[0].stable_name }, correlationId: input.correlationId
+    });
+    return { nodeId: input.nodeId, secretId: input.secretId, revoked: true };
+  });
+}
+
+export async function dashboardDeregistrationPreview(db: Db, nodeId: string) {
+  const result = await db.query(
+    `select node.id node_id,component.id component_id,component.code,component.display_name,
+      (select count(*) from principal_access_token token where token.source_principal_id=component.principal_id and token.revoked_at is null)::int token_count,
+      (select count(*) from secret_grant grant_row where grant_row.principal_kind='COMPONENT' and grant_row.principal_id=component.id and grant_row.revoked_at is null)::int direct_secret_grant_count,
+      (select count(*) from integration_token_secret_grant grant_row where grant_row.transferred_component_id=component.id and grant_row.revoked_at is null)::int transferred_secret_grant_count,
+      (select count(*) from pulse_topology_connection edge where edge.revoked_at is null and (edge.source_component_id=component.id or edge.target_component_id=component.id))::int connection_count
+      from dashboard_visual_node node join component component on component.id=node.component_id
+      where node.id=$1 and node.lifecycle_phase='REGISTERED' and node.deleted_at is null`,
+    [nodeId]
+  );
+  if (!result.rowCount) throw Object.assign(new Error("dashboard_registered_node_not_found"), { statusCode: 404 });
+  const row = result.rows[0];
+  return { ...(row as Record<string, unknown>), requiresMfa: true, typedConfirmation: String(row.code), requiresCompleteOnboarding: true };
+}
+
+async function verifyDashboardDeregistrationReauthentication(
+  db: Db,
+  config: Pick<AppServerConfig, "MFA_ENCRYPTION_KEY_BASE64" | "MFA_ALLOW_PLAINTEXT_LEGACY">,
+  input: { actorId: string; password: string; totp: string; nodeId: string; correlationId: string }
+): Promise<void> {
+  const account = await db.query(
+    "select password_hash,mfa_enabled,mfa_secret,active from admin_account where id=$1",
+    [input.actorId]
+  );
+  const row = account.rows[0];
+  const passwordOk = Boolean(account.rowCount && row?.active && row?.password_hash)
+    && await argon2.verify(String(row.password_hash), input.password);
+  let mfaOk = false;
+  if (passwordOk && row.mfa_enabled && row.mfa_secret) {
+    const secret = decryptMfaSecret(String(row.mfa_secret), config.MFA_ENCRYPTION_KEY_BASE64, {
+      allowLegacyPlaintext: config.MFA_ALLOW_PLAINTEXT_LEGACY,
+      subjectId: input.actorId,
+      purpose: "admin_totp"
+    });
+    mfaOk = authenticator.check(input.totp.trim(), secret);
+  }
+  if (!passwordOk || !mfaOk) {
+    await appendAudit(db, {
+      eventType: "dashboard.deregistration.reauthentication_failed",
+      actorType: "admin",
+      actorId: input.actorId,
+      objectType: "dashboard_visual_node",
+      objectId: input.nodeId,
+      after: { passwordVerified: passwordOk, mfaVerified: mfaOk },
+      correlationId: input.correlationId
+    });
+    throw Object.assign(new Error("reauthentication_failed"), { statusCode: 403 });
+  }
+}
+
+export async function deregisterDashboardNode(
+  db: Db,
+  config: Pick<AppServerConfig, "MFA_ENCRYPTION_KEY_BASE64" | "MFA_ALLOW_PLAINTEXT_LEGACY">,
+  input: {
+    nodeId: string;
+    actorId: string;
+    password: string;
+    totp: string;
+    reason: string;
+    confirmedCode: string;
+    idempotencyKey: string;
+    correlationId: string;
+  }
+): Promise<Record<string, unknown>> {
+  const reason = input.reason.trim();
+  const confirmedCode = input.confirmedCode.trim();
+  const idempotencyKey = input.idempotencyKey.trim();
+  if (reason.length < 10 || reason.length > 1000) throw Object.assign(new Error("invalid_deregistration_reason"), { statusCode: 400 });
+  if (!idempotencyKey || idempotencyKey.length > 200) throw Object.assign(new Error("invalid_idempotency_key"), { statusCode: 400 });
+  await verifyDashboardDeregistrationReauthentication(db, config, input);
+
+  const requestDigest = digest({ nodeId: input.nodeId, actorId: input.actorId, reason, confirmedCode });
+  return tx(db, async (client) => {
+    const previousRequest = await client.query(
+      `select * from dashboard_deregistration_request where node_id=$1 and idempotency_key=$2 for update`,
+      [input.nodeId, idempotencyKey]
+    );
+    if (previousRequest.rowCount) {
+      if (String(previousRequest.rows[0].request_digest) !== requestDigest) {
+        throw Object.assign(new Error("idempotency_key_reused_with_different_request"), { statusCode: 409 });
+      }
+      if (previousRequest.rows[0].status === "COMPLETED" && previousRequest.rows[0].result) {
+        return previousRequest.rows[0].result as Record<string, unknown>;
+      }
+    }
+    const node = await client.query(
+      `select node.id,node.lifecycle_phase,node.deleted_at,node.component_id,node.principal_id,
+              component.code,component.display_name,component.lifecycle_state,component.deregistered_at
+         from dashboard_visual_node node
+         join component component on component.id=node.component_id
+        where node.id=$1 for update of node,component`,
+      [input.nodeId]
+    );
+    if (!node.rowCount || node.rows[0].lifecycle_phase !== "REGISTERED") {
+      throw Object.assign(new Error("dashboard_registered_node_not_found"), { statusCode: 404 });
+    }
+    const current = node.rows[0] as Record<string, unknown>;
+    if (confirmedCode !== String(current.code)) throw Object.assign(new Error("deregistration_confirmation_mismatch"), { statusCode: 409 });
+
+    if (!previousRequest.rowCount) {
+      await client.query(
+        `insert into dashboard_deregistration_request(node_id,idempotency_key,request_digest,actor_id,correlation_id)
+         values ($1,$2,$3,$4,$5)`,
+        [input.nodeId, idempotencyKey, requestDigest, input.actorId, input.correlationId]
+      );
+    }
+
+    const componentId = String(current.component_id);
+    const principalId = String(current.principal_id);
+    const accessTokens = await client.query(
+      `update principal_access_token set revoked_at=coalesce(revoked_at,now()),rotation_reason='DASHBOARD_DEREGISTRATION'
+        where source_principal_id=$1 and revoked_at is null`,
+      [principalId]
+    );
+    const principalCredentials = await client.query(
+      `update principal_credential set revoked_at=coalesce(revoked_at,now()),revocation_epoch=revocation_epoch+1
+        where principal_id=$1 and revoked_at is null`,
+      [principalId]
+    );
+    const componentCredentials = await client.query(
+      `update component_credential set status='REVOKED',revoked_at=coalesce(revoked_at,now())
+        where component_id=$1 and revoked_at is null`,
+      [componentId]
+    );
+    const legacyTokens = await client.query(
+      `update component_access_token set revoked_at=coalesce(revoked_at,now())
+        where source_component_id=$1 and revoked_at is null`,
+      [componentId]
+    );
+    const externalTokens = await client.query(
+      `update component_external_access_token set revoked_at=coalesce(revoked_at,now())
+        where source_component_id=$1 and revoked_at is null`,
+      [componentId]
+    );
+    const edges = await client.query(
+      `update pulse_topology_connection
+          set state='ARCHIVED',authorization_desired=false,revoked_at=coalesce(revoked_at,now()),
+              revoked_by=$2,lock_version=lock_version+1
+        where (source_component_id=$1 or target_component_id=$1) and revoked_at is null`,
+      [componentId, input.actorId]
+    );
+    const permissions = await client.query(
+      `update component_permission set revoked_at=coalesce(revoked_at,now())
+        where (source_component_id=$1 or target_component_id=$1) and revoked_at is null`,
+      [componentId]
+    );
+    const principalPermissions = await client.query(
+      `update principal_component_permission set revoked_at=coalesce(revoked_at,now())
+        where (source_principal_id=$1 or target_component_id=$2) and revoked_at is null`,
+      [principalId, componentId]
+    );
+    const directGrants = await client.query(
+      `update secret_grant set revoked_at=coalesce(revoked_at,now()),revoked_by=$2
+        where principal_kind='COMPONENT' and principal_id=$1 and revoked_at is null`,
+      [componentId, input.actorId]
+    );
+    const transferredGrants = await client.query(
+      `update integration_token_secret_grant set revoked_at=coalesce(revoked_at,now()),revoked_by=$2
+        where transferred_component_id=$1 and revoked_at is null`,
+      [componentId, input.actorId]
+    );
+    await client.query(
+      `update principal_permission_suspension set resumed_at=coalesce(resumed_at,now()),resumed_by=coalesce(resumed_by,$2)
+        where principal_id=$1 and resumed_at is null`,
+      [principalId, input.actorId]
+    );
+    await client.query(
+      `update component
+          set lifecycle_state='DEREGISTERED',activation_state='INACTIVE',operational_state='RETIRED',
+              enabled=false,ingress_enabled=false,pulse_enabled=false,egress_enabled=false,
+              retired_at=coalesce(retired_at,now()),deregistered_at=coalesce(deregistered_at,now()),
+              policy_epoch=policy_epoch+1,lock_version=lock_version+1,updated_at=now()
+        where id=$1`,
+      [componentId]
+    );
+    await client.query(
+      `update principal set status='REVOKED',policy_epoch=policy_epoch+1,revocation_epoch=revocation_epoch+1,updated_at=now()
+        where id=$1`,
+      [principalId]
+    );
+    await client.query(
+      `update dashboard_visual_node
+          set lifecycle_phase='DELETED',deleted_at=coalesce(deleted_at,now()),updated_at=now(),lock_version=lock_version+1
+        where id=$1`,
+      [input.nodeId]
+    );
+
+    const result = {
+      nodeId: input.nodeId,
+      componentId,
+      componentCode: String(current.code),
+      deregistered: true,
+      requiresCompleteOnboarding: true,
+      cleanup: {
+        accessTokens: accessTokens.rowCount ?? 0,
+        principalCredentials: principalCredentials.rowCount ?? 0,
+        componentCredentials: componentCredentials.rowCount ?? 0,
+        legacyTokens: legacyTokens.rowCount ?? 0,
+        externalTokens: externalTokens.rowCount ?? 0,
+        connections: edges.rowCount ?? 0,
+        componentPermissions: permissions.rowCount ?? 0,
+        principalPermissions: principalPermissions.rowCount ?? 0,
+        directSecretGrants: directGrants.rowCount ?? 0,
+        transferredSecretGrants: transferredGrants.rowCount ?? 0
+      },
+      correlationId: input.correlationId
+    };
+    await appendAudit(client, {
+      eventType: "dashboard.component.deregistered",
+      actorType: "admin",
+      actorId: input.actorId,
+      objectType: "component",
+      objectId: componentId,
+      before: {
+        nodeId: input.nodeId,
+        code: current.code,
+        displayName: current.display_name,
+        lifecycleState: current.lifecycle_state,
+        deregisteredAt: current.deregistered_at
+      },
+      after: { ...result, reason, idempotencyKey },
+      correlationId: input.correlationId
+    });
+    await client.query(
+      `update dashboard_deregistration_request
+          set status='COMPLETED',result=$3::jsonb,completed_at=now()
+        where node_id=$1 and idempotency_key=$2`,
+      [input.nodeId, idempotencyKey, JSON.stringify(result)]
+    );
+    return result;
+  });
+}
+
+export async function listDashboardTopology(db: Db, adminId: string) {
+  const currentWorkspace = await workspace(db, adminId);
+  const [
+    nodesResult,
+    positionsResult,
+    ports,
+    edgeRows,
+    secretRows,
+    operationRows,
+    eventRows,
+    activeProcessRows,
+    externalPositionRows,
+    externalTargetRows,
+    externalPermissionRows,
+    externalEventRows
+  ] = await Promise.all([
+    db.query(
+      `select node.*,token.expires_at integration_token_expires_at,token.revoked_at integration_token_revoked_at,token.deleted_at integration_token_deleted_at,
+              component.code,component.display_name,component.description,component.category,component.component_role,component.lifecycle_state,
+              component.activation_state,component.operational_state,component.monitoring_state,component.recertification_state,
+              component.enabled,component.ingress_enabled,component.pulse_enabled,component.egress_enabled,component.policy_epoch,
+              component.active_revision_id,component.created_at component_created_at,component.updated_at component_updated_at,
+              principal.status principal_status,suspension.id suspension_id,suspension.reason suspension_reason,
+              access.fingerprint access_fingerprint,access.last_used_at access_last_used_at
+         from dashboard_visual_node node
+         left join integration_token token on token.id=node.integration_token_id
+         left join component component on component.id=node.component_id
+         left join principal principal on principal.id=node.principal_id
+         left join principal_permission_suspension suspension on suspension.principal_id=node.principal_id and suspension.resumed_at is null
+         left join lateral (
+           select fingerprint,last_used_at from principal_access_token
+            where source_principal_id=node.principal_id and revoked_at is null order by created_at desc limit 1
+         ) access on true
+        where node.deleted_at is null
+        order by node.lifecycle_phase,node.label`
+    ),
+    db.query("select * from dashboard_node_position where workspace_id=$1", [currentWorkspace.id]),
+    listPorts(db),
+    db.query(
+      `select edge.*,permission.revoked_at permission_revoked_at,suspension.id suspension_id,token_envelope.id token_envelope_id,
+              source.code source_code,target.code target_code
+         from pulse_topology_connection edge
+         join component source on source.id=edge.source_component_id
+         join component target on target.id=edge.target_component_id
+         left join component_permission permission on permission.id=edge.permission_id
+         left join principal_permission_suspension suspension on suspension.principal_id=source.principal_id and suspension.resumed_at is null
+         left join lateral (
+           select token.id from principal_access_token token
+            where token.source_principal_id=source.principal_id and token.revoked_at is null and token.expires_at>now()
+              and (token.target_component_id is null or token.target_component_id=edge.target_component_id)
+              and (token.audience='*' or lower(token.audience)=lower(edge.audience))
+              and ('*'=any(token.scope_names) or edge.target_scope=any(token.scope_names))
+            order by token.created_at desc limit 1
+         ) token_envelope on true
+        where edge.revoked_at is null order by edge.created_at,edge.id`
+    ),
+    db.query(
+      `select secret.id,secret.stable_name,secret.display_name,secret.description,secret.owner_kind,secret.owner_id,secret.status,
+              secret.active_version_id,version.version_number,version.fingerprint,secret.lock_version,secret.deleted_at,
+              ((select count(*) from secret_grant direct_grant
+                  where direct_grant.secret_id=secret.id and direct_grant.revoked_at is null)
+               +(select count(*) from integration_token_secret_grant onboarding_grant
+                  where onboarding_grant.revoked_at is null
+                    and (onboarding_grant.all_secrets or onboarding_grant.secret_stable_name=secret.stable_name)))::int grant_count
+         from secret_record secret
+         left join secret_version version on version.id=secret.active_version_id
+        order by secret.stable_name`
+    ),
+    db.query(
+      `select component_id,count(*)::int call_count,
+              count(*) filter(where success)::int success_count,
+              count(*) filter(where not success)::int failure_count,
+              max(occurred_at) last_run_at,
+              max(occurred_at) filter(where not success) last_failure_at
+         from component_operation_event where occurred_at >= now()-interval '24 hours' group by component_id`
+    ),
+    db.query(
+      `select event.id,event.component_id,component.code,event.pulse_type,event.direction,event.operation_key,event.success,
+              event.process_trace,event.correlation_id,event.trace_id,event.occurred_at,event.received_at
+         from component_operation_event event join component on component.id=event.component_id
+        order by event.occurred_at desc limit 160`
+    ),
+    db.query(
+      `select lease.id,lease.target_component_id,component.code,lease.operation_kind,lease.operation_name,
+              lease.process_trace,lease.started_at,lease.expires_at,lease.correlation_id,lease.trace_id
+         from component_operation_lease lease
+         join component on component.id=lease.target_component_id
+        where lease.finished_at is null and lease.expires_at>now()
+        order by lease.started_at`
+    ),
+    db.query("select * from dashboard_external_target_position where workspace_id=$1", [currentWorkspace.id]),
+    db.query(
+      `select target.*,
+              count(call.id) filter(where call.created_at>=now()-interval '24 hours')::int call_count,
+              count(call.id) filter(where call.created_at>=now()-interval '24 hours' and call.status='SUCCEEDED')::int success_count,
+              count(call.id) filter(where call.created_at>=now()-interval '24 hours' and call.status='FAILED')::int failure_count,
+              count(call.id) filter(where call.created_at>=now()-interval '24 hours' and call.status='BLOCKED')::int blocked_count,
+              max(coalesce(call.completed_at,call.created_at)) last_run_at,
+              max(coalesce(call.completed_at,call.created_at)) filter(where call.status in ('FAILED','BLOCKED')) last_failure_at
+         from component_external_target target
+         left join component_external_gateway_call call on call.external_target_id=target.id
+        group by target.id
+        order by target.display_name,target.target_key`
+    ),
+    db.query(
+      `select permission.*,component.code source_code,target.target_key,target.display_name target_display_name,
+              target.base_url,target.status target_status,target.circuit_state,suspension.id suspension_id
+         from component_external_permission permission
+         join component on component.id=permission.component_id
+         join component_external_target target on target.id=permission.external_target_id
+         left join principal_permission_suspension suspension on suspension.principal_id=component.principal_id and suspension.resumed_at is null
+        where permission.component_id is not null
+        order by permission.granted_at,permission.id`
+    ),
+    db.query(
+      `select call.id,call.source_component_id,component.code,call.external_target_id,target.target_key,target.base_url,
+              call.route_path,call.scope_name,call.status,call.http_status,call.error_code,call.attempt_count,
+              call.correlation_id,call.created_at,call.completed_at
+         from component_external_gateway_call call
+         join component on component.id=call.source_component_id
+         join component_external_target target on target.id=call.external_target_id
+        order by coalesce(call.completed_at,call.created_at) desc limit 160`
+    )
+  ]);
+
+  const positionByNode = new Map(positionsResult.rows.map((row) => [String(row.node_id), { x: Number(row.x), y: Number(row.y) }]));
+  const externalPositionByTarget = new Map(externalPositionRows.rows.map((row) => [String(row.external_target_id), { x: Number(row.x), y: Number(row.y) }]));
+  type DashboardOperationStatsRow = {
+    component_id: string;
+    call_count: number | string;
+    success_count: number | string;
+    failure_count: number | string;
+    last_run_at: string | null;
+    last_failure_at: string | null;
+  };
+  const operationByComponent = new Map<string, DashboardOperationStatsRow>(
+    operationRows.rows.map((row) => [String(row.component_id), row as DashboardOperationStatsRow])
+  );
+  const secretsByNode = new Map<string, Array<Record<string, unknown>>>();
+  const grants = await db.query(
+    `select node.id node_id,secret.id secret_id,secret.stable_name,secret.status,'DIRECT' source
+       from dashboard_visual_node node
+       join secret_grant grant_row on grant_row.principal_kind='COMPONENT' and grant_row.principal_id=node.component_id and grant_row.revoked_at is null
+       join secret_record secret on secret.id=grant_row.secret_id
+      where node.deleted_at is null
+     union all
+     select node.id,secret.id,secret.stable_name,secret.status,'INTEGRATION_TOKEN'
+       from dashboard_visual_node node
+       join integration_token_secret_grant grant_row on grant_row.token_id=node.integration_token_id and grant_row.revoked_at is null and grant_row.all_secrets=false
+       join secret_record secret on secret.stable_name=grant_row.secret_stable_name
+      where node.deleted_at is null
+     union all
+     select node.id,secret.id,secret.stable_name,secret.status,'TRANSFERRED'
+       from dashboard_visual_node node
+       join integration_token_secret_grant grant_row on grant_row.transferred_component_id=node.component_id and grant_row.revoked_at is null and grant_row.all_secrets=false
+       join secret_record secret on secret.stable_name=grant_row.secret_stable_name
+      where node.deleted_at is null`
+  );
+  for (const row of grants.rows) {
+    const key = String(row.node_id);
+    const current = secretsByNode.get(key) ?? [];
+    if (!current.some((item) => item.secretId === String(row.secret_id))) {
+      current.push({ secretId: String(row.secret_id), stableName: String(row.stable_name), status: String(row.status), source: String(row.source) });
+      secretsByNode.set(key, current);
+    }
+  }
+
+  const nodes = nodesResult.rows.map((row, index) => {
+    const componentId = row.component_id ? String(row.component_id) : null;
+    const stats = componentId ? operationByComponent.get(componentId) : null;
+    const tokenExpired = row.integration_token_expires_at && new Date(row.integration_token_expires_at).getTime() <= Date.now();
+    const identityUnavailable = row.lifecycle_phase === "PRE_REGISTRATION" && Boolean(row.integration_token_revoked_at || row.integration_token_deleted_at || tokenExpired);
+    const preregistrationState = row.integration_token_deleted_at ? "TOKEN_DELETED" : row.integration_token_revoked_at ? "TOKEN_REVOKED" : tokenExpired ? "TOKEN_EXPIRED" : "ČEKÁ_NA_ONBOARDING";
+    const critical = ["UNHEALTHY", "QUARANTINED"].includes(String(row.operational_state)) || ["FAILED"].includes(String(row.monitoring_state));
+    return {
+      id: String(row.id), lifecyclePhase: String(row.lifecycle_phase), label: String(row.label),
+      integrationTokenId: row.integration_token_id ? String(row.integration_token_id) : null,
+      componentId, principalId: row.principal_id ? String(row.principal_id) : null,
+      code: row.code ?? null, displayName: row.display_name ?? row.label, description: row.description ?? "",
+      category: row.category ?? "PŘEDREGISTRAČNÍ", role: row.component_role ?? null,
+      lifecycleState: row.lifecycle_state ?? preregistrationState, activationState: row.activation_state ?? "INACTIVE",
+      operationalState: row.operational_state ?? "NOT_REGISTERED", monitoringState: row.monitoring_state ?? "NOT_CONFIGURED",
+      recertificationState: row.recertification_state ?? "NOT_DUE", enabled: Boolean(row.enabled),
+      runtimeAvailable: row.lifecycle_phase === "REGISTERED" && Boolean(row.enabled),
+      identityUnavailable,
+      suspended: Boolean(row.suspension_id), suspensionReason: row.suspension_reason ?? null,
+      tokenFingerprint: row.access_fingerprint ?? row.token_fingerprint ?? null,
+      tokenLastUsedAt: row.access_last_used_at ?? null,
+      integrationTokenExpiresAt: row.integration_token_expires_at ?? null,
+      critical,
+      position: positionByNode.get(String(row.id)) ?? { x: 60 + (index % 4) * 330, y: 80 + Math.floor(index / 4) * 300 },
+      secrets: secretsByNode.get(String(row.id)) ?? [],
+      statistics: {
+        period: "24h", callCount: Number(stats?.call_count ?? 0), successCount: Number(stats?.success_count ?? 0),
+        failureCount: Number(stats?.failure_count ?? 0), errorRate: Number(stats?.call_count ?? 0) ? Number(stats?.failure_count ?? 0) / Number(stats?.call_count ?? 0) : 0,
+        lastRunAt: stats?.last_run_at ?? null, lastFailureAt: stats?.last_failure_at ?? null
+      }
+    };
+  });
+
+  const edges = edgeRows.rows.map((row) => ({
+    id: String(row.id), sourceComponentId: String(row.source_component_id), sourcePortKey: String(row.source_port_key),
+    targetComponentId: String(row.target_component_id), targetPortKey: String(row.target_port_key),
+    route: String(row.target_route), scope: String(row.target_scope), audience: String(row.audience),
+    compatibilityStatus: String(row.compatibility_status), compatibilityEvidence: row.compatibility_evidence,
+    authorizationDesired: Boolean(row.authorization_desired),
+    effectiveAuthorization: !row.authorization_desired || row.permission_revoked_at || row.suspension_id || !row.token_envelope_id ? "DENIED" : "GRANTED",
+    authorizationReason: row.suspension_id ? "IDENTITY_SUSPENDED" : !row.authorization_desired ? "EDGE_PERMISSION_REVOKED" : row.permission_revoked_at ? "PERMISSION_REVOKED" : !row.token_envelope_id ? "TOKEN_SCOPE_OR_AUDIENCE_MISSING" : "PERMISSION_ACTIVE",
+    sourceCode: String(row.source_code), targetCode: String(row.target_code), createdAt: row.created_at, correlationId: row.correlation_id
+  }));
+
+  const externalNodes = externalTargetRows.rows.map((row, index) => {
+    const callCount = Number(row.call_count ?? 0);
+    const failureCount = Number(row.failure_count ?? 0) + Number(row.blocked_count ?? 0);
+    return {
+      id: String(row.id), targetKey: String(row.target_key), displayName: String(row.display_name), baseUrl: String(row.base_url),
+      status: String(row.status), circuitState: String(row.circuit_state), circuitFailureCount: Number(row.circuit_failure_count ?? 0),
+      circuitFailureThreshold: Number(row.circuit_failure_threshold ?? 0), allowedPathPrefixes: textArray(row.allowed_path_prefixes),
+      auditRequired: Boolean(row.audit_required),
+      position: externalPositionByTarget.get(String(row.id)) ?? { x: 1380 + (index % 2) * 310, y: 100 + Math.floor(index / 2) * 250 },
+      statistics: {
+        period: "24h", callCount, successCount: Number(row.success_count ?? 0), failureCount: Number(row.failure_count ?? 0),
+        blockedCount: Number(row.blocked_count ?? 0), errorRate: callCount ? failureCount / callCount : 0,
+        lastRunAt: row.last_run_at ?? null, lastFailureAt: row.last_failure_at ?? null
+      }
+    };
+  });
+
+  const externalEdges = externalPermissionRows.rows.map((row) => ({
+    id: String(row.id), sourceComponentId: String(row.component_id), externalTargetId: String(row.external_target_id),
+    route: String(row.route_pattern), scope: String(row.scope_name), audience: String(row.base_url),
+    effectiveAuthorization: row.revoked_at || row.suspension_id || row.target_status !== "ACTIVE" ? "DENIED" : "GRANTED",
+    authorizationReason: row.suspension_id ? "IDENTITY_SUSPENDED" : row.revoked_at ? "PERMISSION_REVOKED" : row.target_status !== "ACTIVE" ? "TARGET_NOT_ACTIVE" : "PERMISSION_ACTIVE",
+    sourceCode: String(row.source_code), targetKey: String(row.target_key), targetDisplayName: String(row.target_display_name),
+    targetStatus: String(row.target_status), circuitState: String(row.circuit_state), createdAt: row.granted_at
+  }));
+
+  const activeProcesses = activeProcessRows.rows.map((row) => ({
+    id: String(row.id), componentId: String(row.target_component_id), componentCode: String(row.code), kind: String(row.operation_kind),
+    name: String(row.operation_name), state: "RUNNING" as const, startedAt: row.started_at, expiresAt: row.expires_at,
+    correlationId: String(row.correlation_id), traceId: row.trace_id ? String(row.trace_id) : null
+  }));
+
+  const events = [
+    ...activeProcessRows.rows.map((row) => dashboardRuntimeEventFromLeaseRow(row as Record<string, unknown>)),
+    ...eventRows.rows.map((row) => dashboardRuntimeEventFromOperationRow(row as Record<string, unknown>)),
+    ...externalEventRows.rows.map((row) => dashboardRuntimeEventFromExternalRow(row as Record<string, unknown>))
+  ].sort((left, right) => new Date(String(right.occurredAt)).getTime() - new Date(String(left.occurredAt)).getTime()).slice(0, 240);
+
+  const nodeAlarms = nodes.filter((node) => node.critical || node.suspended || node.identityUnavailable).map((node) => ({
+    id: `node:${node.id}`, severity: node.critical ? "CRITICAL" as const : "HIGH" as const, objectKind: "NODE" as const, objectId: node.id,
+    title: node.critical
+      ? `${node.code ?? node.label}: kritický provozní stav`
+      : node.identityUnavailable
+        ? `${node.code ?? node.label}: onboardingová identita není použitelná`
+        : `${node.code ?? node.label}: oprávnění pozastavena`,
+    impact: node.critical
+      ? `Provozní stav ${node.operationalState}, monitoring ${node.monitoringState}.`
+      : node.identityUnavailable
+        ? `Stav integračního tokenu: ${node.lifecycleState}. Runtime i nové Secret granty jsou fail-closed.`
+        : "Směrová oprávnění a Secret resolve jsou fail-closed.",
+    recommendedAction: "Otevřete detail prvku, ověřte audit a příčinu stavu.",
+    occurredAt: node.statistics.lastFailureAt ?? null
+  }));
+  const externalAlarms = externalNodes.filter((node) => node.status !== "ACTIVE" || node.circuitState !== "CLOSED").map((node) => ({
+    id: `external:${node.id}`, severity: node.circuitState === "OPEN" ? "CRITICAL" as const : "HIGH" as const,
+    objectKind: "EXTERNAL_TARGET" as const, objectId: node.id,
+    title: `${node.displayName}: externí služba vyžaduje zásah`,
+    impact: `Stav ${node.status}, circuit breaker ${node.circuitState}, selhání ${node.circuitFailureCount}/${node.circuitFailureThreshold}.`,
+    recommendedAction: "Otevřete detail externí služby a ověřte dostupnost, oprávnění a poslední gateway volání.",
+    occurredAt: node.statistics.lastFailureAt
+  }));
+
+  return {
+    generatedAt: new Date().toISOString(),
+    live: { source: "persisted_component_operation_lease+component_operation_event+component_external_gateway_call", connected: true, lastEventAt: events[0]?.occurredAt ?? null, stale: false },
+    workspace: { id: String(currentWorkspace.id), viewport: currentWorkspace.viewport, lockVersion: Number(currentWorkspace.lock_version) },
+    nodes, ports, edges, externalNodes, externalEdges, activeProcesses,
+    secrets: secretRows.rows.map((row) => ({
+      id: String(row.id), stableName: String(row.stable_name), displayName: String(row.display_name), description: String(row.description),
+      ownerKind: String(row.owner_kind), ownerId: row.owner_id ? String(row.owner_id) : null, status: String(row.status),
+      version: row.version_number === null ? null : Number(row.version_number), fingerprint: row.fingerprint ?? null,
+      expiresAt: null, grantCount: Number(row.grant_count ?? 0), lockVersion: Number(row.lock_version), deletedAt: row.deleted_at ?? null
+    })),
+    alarms: [...nodeAlarms, ...externalAlarms],
+    events
+  };
+}
