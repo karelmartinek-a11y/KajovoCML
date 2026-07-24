@@ -93,6 +93,23 @@ export type ComponentManifest = JsonRecord & {
   secretPolicy: JsonRecord;
 };
 
+export type RepositoryComponentDescriptor = JsonRecord & {
+  catalogVersion: "1.1";
+  repositoryKey: string;
+  kind: string;
+  displayName: string;
+  businessPurpose: string;
+  owners: JsonRecord;
+  runtime: string;
+  entrypoint: string;
+  maintenanceMode: string;
+  registration: JsonRecord;
+};
+
+export type ComponentOnboardingSubmission =
+  | { phase: "FINAL"; manifest: ComponentManifest }
+  | { phase: "SOURCE"; manifest: RepositoryComponentDescriptor };
+
 type GateResult = {
   gate: typeof ACTIVATION_GATES[number];
   status: "PASS" | "FAIL";
@@ -300,6 +317,51 @@ export function validateComponentManifest(input: unknown): ComponentManifest {
   const manifest = input as ComponentManifest;
   rejectIncompleteContract(manifest);
   return manifest;
+}
+
+export function validateRepositoryComponentDescriptor(input: unknown): RepositoryComponentDescriptor {
+  const descriptor = record(input);
+  const owners = record(descriptor?.owners);
+  const registration = record(descriptor?.registration);
+  const valid = descriptor?.catalogVersion === "1.1"
+    && /^[a-z0-9][a-z0-9-]{2,62}$/.test(text(descriptor.repositoryKey))
+    && ["AI_AGENT", "MCP_COMPONENT", "MICROSTEP", "API_COMPONENT", "EVENT_PROCESSOR"].includes(text(descriptor.kind))
+    && text(descriptor.displayName).length >= 2
+    && text(descriptor.businessPurpose).length >= 20
+    && owners
+    && text(owners.service).length >= 2
+    && text(owners.technical).length >= 2
+    && text(descriptor.runtime) === "nodejs24-typescript"
+    && text(descriptor.entrypoint) === "src/index.ts"
+    && ["EXTERNAL", "IN_REPOSITORY"].includes(text(descriptor.maintenanceMode))
+    && registration
+    && text(registration.manifest) === "manifest.kcml.json"
+    && text(registration.intake) === "/v2/component-onboardings"
+    && text(registration.identityAssignedBy) === "KCML";
+  if (!valid) throw Object.assign(new Error("invalid_manifest"), { statusCode: 400 });
+  return descriptor as RepositoryComponentDescriptor;
+}
+
+export function validateComponentOnboardingSubmission(input: unknown): ComponentOnboardingSubmission {
+  try {
+    return { phase: "FINAL", manifest: validateComponentManifest(input) };
+  } catch (error) {
+    try {
+      return { phase: "SOURCE", manifest: validateRepositoryComponentDescriptor(input) };
+    } catch {
+      // Fall through to the combined error response below.
+    }
+    if (error instanceof Error && error.message === "invalid_manifest") {
+      throw Object.assign(new Error("invalid_manifest"), {
+        statusCode: 400,
+        errors: {
+          finalManifest: validateCatalogComponentManifest.errors ?? [],
+          repositoryComponentDescriptor: "validation_failed"
+        }
+      });
+    }
+    throw error;
+  }
 }
 
 function evidenceDigest(value: unknown): string {
@@ -1131,10 +1193,10 @@ async function replaceDerivedComponentContracts(client: pg.PoolClient, component
 export async function createComponentOnboarding(db: Db, params: {
   integrationTokenId: string;
   idempotencyKey: string;
-  manifest: ComponentManifest;
+  manifest: ComponentOnboardingSubmission;
   correlationId: string;
 }): Promise<Record<string, unknown>> {
-  const digest = componentManifestDigest(params.manifest);
+  const digest = createHash("sha256").update(canonicalJson(params.manifest.manifest)).digest("hex");
   return tx(db, async (client) => {
     const token = await client.query(
       `select id,token_kind,release_version,max_child_jobs
@@ -1185,41 +1247,58 @@ export async function createComponentOnboarding(db: Db, params: {
     const category = "EXTERNAL_SERVICE";
     const registrationType = "GENERIC_COMPONENT";
     const role = "SERVICE";
-    const capabilities = manifestCapabilities(params.manifest);
-    const protocols = manifestProtocols(params.manifest);
-    const transports = manifestTransports(params.manifest);
+    const finalManifest = params.manifest.phase === "FINAL" ? params.manifest.manifest : null;
+    const sourceManifest = params.manifest.phase === "SOURCE" ? params.manifest.manifest : null;
+    const capabilities = finalManifest ? manifestCapabilities(finalManifest) : [];
+    const protocols = finalManifest ? manifestProtocols(finalManifest) : [];
+    const transports = finalManifest ? manifestTransports(finalManifest) : [];
     const authorizationSnapshot = {
       tokenId: params.integrationTokenId,
       tokenKind: String(tokenRow.token_kind),
       releaseVersion: COMPONENT_CATALOG_VERSION,
       manifestDigest: digest,
+      manifestPhase: params.manifest.phase,
+      repositoryKey: sourceManifest?.repositoryKey ?? null,
       registrationType,
-      componentKind: params.manifest.kind,
+      componentKind: finalManifest?.kind ?? sourceManifest?.kind ?? null,
       category,
       capturedAt: new Date().toISOString()
     };
     await client.query(
       `insert into principal(id,kind,public_id,status,policy_epoch,revocation_epoch,metadata)
        values ($1,'COMPONENT',$2,'SUSPENDED',1,1,$3::jsonb)`,
-      [principalId, code, JSON.stringify({ componentId, assignedBy: "component_onboarding" })]
+      [principalId, code, JSON.stringify({
+        componentId,
+        assignedBy: "component_onboarding",
+        repositoryKey: sourceManifest?.repositoryKey ?? null,
+        onboardingPhase: params.manifest.phase
+      })]
     );
     await client.query(
       `insert into component(
         id,principal_id,kcml_number,code,hostname,display_name,description,category,registration_type,component_role,owners,contacts,
         lifecycle_state,activation_state,operational_state,monitoring_state,enabled,release_version
       ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,'REVIEW','INACTIVE','UNKNOWN',$13,false,$14)`,
-      [componentId, principalId, number, code, hostname, params.manifest.displayName, params.manifest.businessPurpose, category,
-        registrationType, role, JSON.stringify(params.manifest.owners), JSON.stringify(params.manifest.contacts),
+      [componentId, principalId, number, code, hostname,
+        finalManifest?.displayName ?? sourceManifest?.displayName ?? code,
+        finalManifest?.businessPurpose ?? sourceManifest?.businessPurpose ?? "",
+        category, registrationType, role,
+        JSON.stringify(finalManifest?.owners ?? sourceManifest?.owners ?? []),
+        JSON.stringify(finalManifest?.contacts ?? []),
         "PENDING", COMPONENT_CATALOG_VERSION]
     );
-    const revision = await client.query(
-      `insert into component_revision(
-        component_id,revision,manifest,manifest_digest,capabilities,protocols,transports,derived_gates
-      ) values ($1,$2,$3::jsonb,$4,$5::text[],$6::text[],$7::text[],$8::jsonb) returning id`,
-      [componentId, manifestRevision(params.manifest), JSON.stringify(params.manifest), digest, capabilities,
-        protocols, transports, JSON.stringify(ACTIVATION_GATES)]
-    );
-    await replaceDerivedComponentContracts(client, componentId, String(revision.rows[0].id), params.manifest, hostname);
+    let revisionId: string | null = null;
+    if (finalManifest) {
+      const revision = await client.query(
+        `insert into component_revision(
+          component_id,revision,manifest,manifest_digest,capabilities,protocols,transports,derived_gates
+        ) values ($1,$2,$3::jsonb,$4,$5::text[],$6::text[],$7::text[],$8::jsonb) returning id`,
+        [componentId, manifestRevision(finalManifest), JSON.stringify(finalManifest), digest, capabilities,
+          protocols, transports, JSON.stringify(ACTIVATION_GATES)]
+      );
+      revisionId = String(revision.rows[0].id);
+      await replaceDerivedComponentContracts(client, componentId, revisionId, finalManifest, hostname);
+    }
     await client.query("insert into component_audit_stream(component_id) values ($1)", [componentId]);
     const inserted = await client.query(
       `insert into component_onboarding_job(
@@ -1227,14 +1306,23 @@ export async function createComponentOnboarding(db: Db, params: {
         release_version,authorization_snapshot
       ) values ($1,$2,$3,$4,$5,$6,$7::jsonb,$4,'IN_REVIEW',$8,$9::jsonb) returning *`,
       [params.integrationTokenId, componentId, params.idempotencyKey, digest, category, registrationType,
-        JSON.stringify(params.manifest), COMPONENT_CATALOG_VERSION, JSON.stringify(authorizationSnapshot)]
+        JSON.stringify(params.manifest.manifest), COMPONENT_CATALOG_VERSION, JSON.stringify(authorizationSnapshot)]
     );
-    await client.query("update component set active_revision_id=$2 where id=$1", [componentId, revision.rows[0].id]);
+    if (revisionId) {
+      await client.query("update component set active_revision_id=$2 where id=$1", [componentId, revisionId]);
+    }
     await transferIntegrationTokenSecretGrants(client, params.integrationTokenId, componentId, code);
     await appendAudit(client, {
       eventType: "component_onboarding.created", actorType: "integration_token", actorId: params.integrationTokenId,
       objectType: "component", objectId: componentId,
-      after: { code, hostname, catalogVersion: COMPONENT_CATALOG_VERSION, componentKind: params.manifest.kind },
+      after: {
+        code,
+        hostname,
+        catalogVersion: COMPONENT_CATALOG_VERSION,
+        componentKind: finalManifest?.kind ?? sourceManifest?.kind ?? null,
+        repositoryKey: sourceManifest?.repositoryKey ?? null,
+        manifestPhase: params.manifest.phase
+      },
       correlationId: params.correlationId
     });
     return componentOnboardingView(inserted.rows[0]);

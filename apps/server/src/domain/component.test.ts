@@ -1,9 +1,10 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { canonicalJson, componentManifestDigest, validateComponentManifest } from "./component.js";
+import { canonicalJson, componentManifestDigest, validateComponentManifest, validateComponentOnboardingSubmission } from "./component.js";
 import { KCML_RELEASE } from "./release.js";
 
 const example = JSON.parse(readFileSync(new URL(`../../../../docs/onboarding-manifest-${KCML_RELEASE.manifestSchemaVersion}.example.json`, import.meta.url), "utf8")) as Record<string, unknown>;
+const repositoryComponentSourceManifest = JSON.parse(readFileSync(new URL(`../../../../components/mail-vectorizace/component.kcml.json`, import.meta.url), "utf8")) as Record<string, unknown>;
 const manifest = (overrides: Record<string, unknown> = {}) => ({ ...structuredClone(example), ...overrides });
 
 describe(`generic component manifest ${KCML_RELEASE.catalogVersion}`, () => {
@@ -37,5 +38,11 @@ describe(`generic component manifest ${KCML_RELEASE.catalogVersion}`, () => {
 
   it("rejects older schema versions", () => {
     expect(() => validateComponentManifest(manifest({ schemaVersion: "2026.07.24" }))).toThrow("invalid_manifest");
+  });
+
+  it("accepts repository component source onboarding submissions", () => {
+    const parsed = validateComponentOnboardingSubmission(repositoryComponentSourceManifest);
+    expect(parsed.phase).toBe("SOURCE");
+    expect(parsed.manifest.repositoryKey).toBe("mail-vectorizace");
   });
 });

@@ -15,10 +15,12 @@ import {
   rotateComponentAccessToken,
   setComponentLifecycle,
   setComponentPermissionEnabled,
+  validateComponentOnboardingSubmission,
   validateComponentManifest
 } from "./component.js";
 import { KCML_RELEASE } from "./release.js";
 import { authorizePlatformWorkerCall, ensurePlatformWorkerAccessToken, rotatePlatformWorkerAccessToken } from "./platform-worker-access.js";
+import { issueRepositoryComponentRuntimeSecretToken } from "./repository-component-runtime-auth.js";
 
 const sourceId = "91000000-0000-4000-8000-000000000001";
 const targetId = "91000000-0000-4000-8000-000000000002";
@@ -33,6 +35,7 @@ const auditPrincipalId = "91000000-0000-4000-8000-000000000010";
 const clientSecret = "component-secret-for-current-policy-tests";
 const enabled = process.env.KCML_TEST_DATABASE === "1";
 const exampleManifest = JSON.parse(readFileSync(new URL(`../../../../docs/onboarding-manifest-${KCML_RELEASE.manifestSchemaVersion}.example.json`, import.meta.url), "utf8")) as Record<string, unknown>;
+const repositoryComponentDescriptor = JSON.parse(readFileSync(new URL(`../../../../components/mail-vectorizace/component.kcml.json`, import.meta.url), "utf8")) as Record<string, unknown>;
 let db: Db;
 let accessHmacKey: Buffer;
 let config: AppConfig;
@@ -280,7 +283,12 @@ describe.skipIf(!enabled)("component authorization and audit persistence", () =>
       displayName: "Self-service test",
       businessPurpose: "Validate component onboarding access token handoff safely."
     });
-    const input = { integrationTokenId, idempotencyKey: `component-${integrationTokenId}`, manifest, correlationId: randomUUID() };
+    const input = {
+      integrationTokenId,
+      idempotencyKey: `component-${integrationTokenId}`,
+      manifest: { phase: "FINAL" as const, manifest },
+      correlationId: randomUUID()
+    };
     const created = await createComponentOnboarding(db, input);
     expect((await createComponentOnboarding(db, input)).id).toBe(created.id);
     const mcpPermissions = await db.query("select route_pattern,scope_name from component_permission where source_component_id=$1 and target_component_id=$1 and scope_name like 'mcp.%' and revoked_at is null order by scope_name", [created.componentId]);
@@ -325,6 +333,46 @@ describe.skipIf(!enabled)("component authorization and audit persistence", () =>
     expect(pendingToken.rows[0].principal_access_token_handed_off_at).toBeNull();
     expect(Number((await db.query("select count(*)::int count from principal where public_id like 'KCML-READINESS-%'")).rows[0].count)).toBe(0);
     expect((await db.query("select revoked_at is null as reusable from integration_token where id=$1", [integrationTokenId])).rows[0].reusable).toBe(true);
+  });
+
+  it("reserves repository component identity from source-phase onboarding and resolves runtime bootstrap by repository key", async () => {
+    const integrationTokenId = randomUUID();
+    const admin = await db.query("select id from admin_account order by created_at limit 1");
+    await db.query(`insert into integration_token(
+      id,label,lookup_digest,key_id,fingerprint,created_by,initial_expires_at,expires_at,max_expires_at,descriptor,
+      token_kind,release_version,max_child_jobs
+    ) values ($1,'Repository source onboarding test',$2,'test','repository-source-test',$3,now()+interval '24 hours',now()+interval '24 hours',now()+interval '24 hours',$4::jsonb,
+      'SINGLE_COMPONENT',$5,1)`,
+    [integrationTokenId, hmacToken(integrationTokenId, accessHmacKey), admin.rows[0].id, JSON.stringify({
+      summary: "Repository component bootstrap test",
+      businessPurpose: "Validate source-phase onboarding reservation for repository components.",
+      serviceOwner: "KCML",
+      technicalOwner: "KCML",
+      criticality: "LOW"
+    }), KCML_RELEASE.catalogVersion]);
+    const submission = validateComponentOnboardingSubmission(repositoryComponentDescriptor);
+    expect(submission.phase).toBe("SOURCE");
+    const created = await createComponentOnboarding(db, {
+      integrationTokenId,
+      idempotencyKey: `repository-source-${integrationTokenId}`,
+      manifest: submission,
+      correlationId: randomUUID()
+    });
+    const component = await db.query(
+      `select c.active_revision_id,p.metadata
+         from component c join principal p on p.id=c.principal_id
+        where c.id=$1`,
+      [created.componentId]
+    );
+    expect(component.rows[0]?.active_revision_id ?? null).toBeNull();
+    expect(component.rows[0]?.metadata).toMatchObject({ repositoryKey: "mail-vectorizace", onboardingPhase: "SOURCE" });
+    const runtimeToken = await issueRepositoryComponentRuntimeSecretToken(db, {
+      repositoryKey: "mail-vectorizace",
+      accessTokenHmacKey: accessHmacKey,
+      accessTokenHmacKeyId: config.ACCESS_TOKEN_HMAC_KEY_ID
+    });
+    expect(runtimeToken.componentId).toBe(created.componentId);
+    expect(runtimeToken.token.startsWith("kca_")).toBe(true);
   });
 
   it("keeps lifecycle, permission and access-token revocation as separate audited operations", async () => {

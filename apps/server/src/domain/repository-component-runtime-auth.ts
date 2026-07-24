@@ -14,7 +14,15 @@ export async function issueRepositoryComponentRuntimeSecretToken(db: Db, params:
       `select c.id,p.id as principal_id,p.public_id,p.policy_epoch,p.revocation_epoch
          from component c
          join principal p on p.id=c.principal_id
-        where c.code=$1
+        where c.deregistered_at is null
+          and (
+            lower(c.code::text)=lower($1)
+            or lower(coalesce(p.metadata->>'repositoryKey',''))=lower($1)
+          )
+        order by
+          case when lower(coalesce(p.metadata->>'repositoryKey',''))=lower($1) then 0 else 1 end,
+          c.created_at desc
+        limit 1
         for update of c,p`,
       [params.repositoryKey]
     );

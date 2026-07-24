@@ -29,6 +29,7 @@ import {
   setComponentLifecycle,
   setComponentPermissionEnabled,
   type ComponentPulseEnvelope,
+  validateComponentOnboardingSubmission,
   validateComponentManifest
 } from "../domain/component.js";
 import { authenticateIntegrationToken } from "../domain/onboarding.js";
@@ -245,7 +246,7 @@ export function registerComponentRoutes(app: FastifyInstance, db: Db, config: Ap
     const key = request.headers["idempotency-key"];
     if (typeof key !== "string" || !idempotencyKeyPattern.test(key)) return sendError(reply, 400, "invalid_idempotency_key", undefined, correlationId);
     try {
-      const manifest = validateComponentManifest(request.body);
+      const manifest = validateComponentOnboardingSubmission(request.body);
       const job = await createComponentOnboarding(db, {
         integrationTokenId: principal.id, idempotencyKey: key, manifest, correlationId
       });
