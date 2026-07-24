@@ -16,6 +16,40 @@ async function repositoryComponentTarget(client: Queryable, repositoryKey: strin
   principalPublicId: string;
   policyEpoch: number;
   revocationEpoch: number;
+}> {
+  const component = await client.query(
+    `select c.id,p.id as principal_id,p.public_id,p.policy_epoch,p.revocation_epoch
+       from component c
+       join principal p on p.id=c.principal_id
+      where c.deregistered_at is null
+        and (
+          lower(c.code::text)=lower($1)
+          or lower(coalesce(p.metadata->>'repositoryKey',''))=lower($1)
+        )
+      order by
+        case when lower(coalesce(p.metadata->>'repositoryKey',''))=lower($1) then 0 else 1 end,
+        c.created_at desc
+      limit 1
+      for update of c,p`,
+    [repositoryKey]
+  );
+  if (!component.rowCount) throw new Error("repository_component_not_registered");
+  const row = component.rows[0];
+  return {
+    componentId: String(row.id),
+    principalId: String(row.principal_id),
+    principalPublicId: String(row.public_id),
+    policyEpoch: Number(row.policy_epoch),
+    revocationEpoch: Number(row.revocation_epoch)
+  };
+}
+
+async function activeRepositoryComponentTarget(client: Queryable, repositoryKey: string): Promise<{
+  componentId: string;
+  principalId: string;
+  principalPublicId: string;
+  policyEpoch: number;
+  revocationEpoch: number;
   manifest: ComponentManifest;
 }> {
   const component = await client.query(
@@ -105,7 +139,7 @@ export async function issueRepositoryComponentRuntimeSecretToken(db: Db, params:
 
 export async function issueRepositoryComponentRuntimeEgressCapability(db: Db, config: EgressClientConfig, repositoryKey: string): Promise<string | null> {
   return tx(db, async (client) => {
-    const component = await repositoryComponentTarget(client, repositoryKey);
+    const component = await activeRepositoryComponentTarget(client, repositoryKey);
     const runtime = component.manifest.runtime as { egressGrants?: unknown };
     const egressGrants = Array.isArray(runtime.egressGrants)
       ? runtime.egressGrants as Array<
