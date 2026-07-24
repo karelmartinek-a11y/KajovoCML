@@ -239,6 +239,10 @@ jobs:
       contents: read
       packages: read
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.discover.outputs.source_sha }}
+          persist-credentials: false
       - name: Deploy repository component runtime
         env:
           RECEIPT_PATH: ${{ runner.temp }}/repository-component-receipt.json
