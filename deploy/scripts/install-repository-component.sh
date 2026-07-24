@@ -129,6 +129,7 @@ start_container() {
   podman_args=(
     run --detach --replace
     --name "$name"
+    --user 0:0
     --label "cz.hcasc.kcml.repository-component=true"
     --label "cz.hcasc.kcml.repository-key=${repository_key}"
     --label "cz.hcasc.kcml.image-digest=${image_digest}"
