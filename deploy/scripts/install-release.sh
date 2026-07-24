@@ -481,7 +481,9 @@ fi
 wait_for_sql_equals "baseline_migration_row" "1" "select count(*) from schema_migration where version='001_pre_production_baseline.sql'"
 wait_for_sql_equals "secret_broker_process_role_migration_row" "1" "select count(*) from schema_migration where version='002_secret_broker_process_role.sql'"
 wait_for_sql_equals "component_onboarding_v1_1_migration_row" "1" "select count(*) from schema_migration where version='003_component_onboarding_v1_1.sql'"
-wait_for_sql_equals "baseline_migration_count" "3" "select count(*) from schema_migration"
+wait_for_sql_equals "dashboard_topology_migration_row" "1" "select count(*) from schema_migration where version='004_dashboard_topology.sql'"
+wait_for_sql_equals "dashboard_identity_delete_guards_migration_row" "1" "select count(*) from schema_migration where version='005_dashboard_identity_delete_guards.sql'"
+wait_for_sql_equals "baseline_migration_count" "5" "select count(*) from schema_migration"
 
 step verify-stable-runtime-health
 require_stable_runtime_health "$admin_host"
