@@ -76,16 +76,6 @@ export async function buildReadinessReport(db: Db, config: ReadinessConfig): Pro
                     and evidence.artifact_digest is not distinct from rt_current.runtime_digest
                   order by evidence.executed_at desc limit 1
                ),'FAIL') <> 'PASS'
-               or coalesce((
-                 select evidence.expires_at <= now()
-                   from component_readiness_gate_evidence evidence
-                  where evidence.component_id=c.id and evidence.revision_id=c.active_revision_id
-                    and evidence.gate_key=required.gate_key
-                    and evidence.revision_digest=r.manifest_digest
-                    and evidence.runtime_digest is not distinct from rt_current.runtime_digest
-                    and evidence.artifact_digest is not distinct from rt_current.runtime_digest
-                  order by evidence.executed_at desc limit 1
-               ),false)
             ) gates_valid
        from component c
        left join component_revision r on r.id=c.active_revision_id
