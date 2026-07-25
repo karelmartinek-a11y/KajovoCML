@@ -734,8 +734,8 @@ async function enqueueControlDispatch(client: pg.PoolClient, params: {
   const dispatch = await client.query(
     `insert into component_control_dispatch(
       id,component_id,revision_id,command_contract_id,command_type,target_hostname,endpoint_path,request_body,request_digest,
-      requested_policy_epoch,expected_state_key,correlation_id,causation_id,deadline_at,retry_policy
-    ) values ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12,$13,now()+interval '5 minutes',$14::jsonb)
+      requested_policy_epoch,expected_state_key,correlation_id,causation_id,deadline_at,retry_policy,state
+    ) values ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12,$13,now()+interval '5 minutes',$14::jsonb,'QUEUED')
     returning *`,
     [
       dispatchId,

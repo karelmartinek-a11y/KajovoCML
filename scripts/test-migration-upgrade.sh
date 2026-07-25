@@ -31,7 +31,7 @@ run_migrations
 
 psql "$KCML_UPGRADE_DATABASE_URL" --no-psqlrc --set ON_ERROR_STOP=1 --tuples-only --no-align <<SQL | grep -Fx 'baseline-clean-install-ok'
 select case when
-  (select count(*) from schema_migration) = 5
+  (select count(*) from schema_migration) = 6
   and exists (
     select 1
       from schema_migration
@@ -65,6 +65,13 @@ select case when
       from schema_migration
      where version='005_dashboard_identity_delete_guards.sql'
        and sequence_number=5
+       and checksum_sha256 ~ '^[0-9a-f]{64}$'
+  )
+  and exists (
+    select 1
+      from schema_migration
+     where version='006_component_control_queue_state.sql'
+       and sequence_number=6
        and checksum_sha256 ~ '^[0-9a-f]{64}$'
   )
   and (select count(*) from release_epoch) = 1
@@ -133,7 +140,7 @@ run_migrations
 
 psql "$KCML_UPGRADE_DATABASE_URL" --no-psqlrc --set ON_ERROR_STOP=1 --tuples-only --no-align <<SQL | grep -Fx 'baseline-compaction-ok'
 select case when
-  (select count(*) from schema_migration) = 5
+  (select count(*) from schema_migration) = 6
   and exists (
     select 1
       from schema_migration
@@ -169,6 +176,13 @@ select case when
        and sequence_number=5
        and checksum_sha256 ~ '^[0-9a-f]{64}$'
   )
+  and exists (
+    select 1
+      from schema_migration
+     where version='006_component_control_queue_state.sql'
+       and sequence_number=6
+       and checksum_sha256 ~ '^[0-9a-f]{64}$'
+  )
   and (select count(*) from release_epoch) = 1
   and not exists (
     select 1
@@ -195,12 +209,19 @@ run_migrations
 
 psql "$KCML_UPGRADE_DATABASE_URL" --no-psqlrc --set ON_ERROR_STOP=1 --tuples-only --no-align <<SQL | grep -Fx 'baseline-retired-dashboard-ledger-ok'
 select case when
-  (select count(*) from schema_migration) = 5
+  (select count(*) from schema_migration) = 6
   and exists (
     select 1
       from schema_migration
      where version='005_dashboard_identity_delete_guards.sql'
        and sequence_number=5
+       and checksum_sha256 ~ '^[0-9a-f]{64}$'
+  )
+  and exists (
+    select 1
+      from schema_migration
+     where version='006_component_control_queue_state.sql'
+       and sequence_number=6
        and checksum_sha256 ~ '^[0-9a-f]{64}$'
   )
   and not exists (
