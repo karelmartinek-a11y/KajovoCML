@@ -87,7 +87,8 @@ grep -Fq "where version='003_component_onboarding_v1_1.sql'" "$install_script"
 grep -Fq 'wait_for_sql_equals "dashboard_topology_migration_row" "1" "select count(*) from schema_migration where version='\''004_dashboard_topology.sql'\''"' "$install_script"
 grep -Fq 'wait_for_sql_equals "dashboard_identity_delete_guards_migration_row" "1" "select count(*) from schema_migration where version='\''005_dashboard_identity_delete_guards.sql'\''"' "$install_script"
 grep -Fq 'wait_for_sql_equals "component_control_queue_state_migration_row" "1" "select count(*) from schema_migration where version='\''006_component_control_queue_state.sql'\''"' "$install_script"
-grep -Fq 'wait_for_sql_equals "baseline_migration_count" "6" "select count(*) from schema_migration"' "$install_script"
+grep -Fq 'wait_for_sql_equals "watchdog_health_transition_policy_epoch_migration_row" "1" "select count(*) from schema_migration where version='\''007_watchdog_health_transition_policy_epoch.sql'\''"' "$install_script"
+grep -Fq 'wait_for_sql_equals "baseline_migration_count" "7" "select count(*) from schema_migration"' "$install_script"
 grep -Fq -- "--exclude-table='public.admin_account_manual_fix_backup_*'" deploy/scripts/backup.sh
 grep -Fq "grant usage on schema public to %I" deploy/scripts/configure-db-roles.sh
 grep -Fq "grant select on all tables in schema public to %I" deploy/scripts/configure-db-roles.sh
