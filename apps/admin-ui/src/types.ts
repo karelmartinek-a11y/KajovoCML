@@ -519,7 +519,7 @@ export type DashboardPort = {
   requestSchema: Record<string, unknown>;
   responseSchema: Record<string, unknown>;
   contractDigest: string;
-  source: Record<string, unknown>;
+  source: Record<string, unknown> & { externalSources?: Array<{ publicId: string; routePattern: string; scopeName: string }> };
 };
 export type DashboardNode = {
   id: string;

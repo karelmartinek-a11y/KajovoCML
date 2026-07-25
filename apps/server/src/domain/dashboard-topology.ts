@@ -29,7 +29,7 @@ export type DashboardPort = {
   requestSchema: Record<string, unknown>;
   responseSchema: Record<string, unknown>;
   contractDigest: string;
-  source: Record<string, unknown>;
+  source: Record<string, unknown> & { externalSources?: Array<{ publicId: string; routePattern: string; scopeName: string }> };
 };
 
 export type CompatibilityStatus = "EXACT_MATCH" | "COMPATIBLE_WITH_DIFFERENCES" | "INCOMPATIBLE" | "UNKNOWN";
@@ -176,7 +176,29 @@ async function listPorts(client: Queryable, componentIds?: string[]): Promise<Da
       order by component.code,mask.direction,mask.pulse_type,mask.id`,
     values
   );
-  return result.rows.map((row) => portFromRow(row as Record<string, unknown>));
+  const ports = result.rows.map((row) => portFromRow(row as Record<string, unknown>));
+  if (!ports.length) return ports;
+
+  const componentIdsWithPorts = [...new Set(ports.map((port) => port.componentId))];
+  const externalPermissions = await client.query(
+    `select permission.target_component_id,permission.route_pattern,permission.scope_name,external.public_id
+       from principal_component_permission permission
+       join component_external_principal external on external.principal_id=permission.source_principal_id
+      where permission.target_component_id = any($1::uuid[])
+        and permission.revoked_at is null
+        and external.status = 'ACTIVE'
+      order by external.public_id,permission.route_pattern,permission.scope_name`,
+    [componentIdsWithPorts]
+  );
+  for (const port of ports.filter((item) => item.direction === "INCOMING")) {
+    const externalSources = externalPermissions.rows
+      .filter((row) => String(row.target_component_id) === port.componentId
+        && (port.routes.length === 0 || port.routes.some((route) => routeMatches(String(row.route_pattern), route)))
+        && (port.scopes.length === 0 || port.scopes.includes(String(row.scope_name)) || port.scopes.includes("*") || String(row.scope_name) === "*"))
+      .map((row) => ({ publicId: String(row.public_id), routePattern: String(row.route_pattern), scopeName: String(row.scope_name) }));
+    if (externalSources.length) port.source.externalSources = externalSources;
+  }
+  return ports;
 }
 
 async function findPort(client: Queryable, componentId: string, key: string, expectedDirection: DashboardPort["direction"]): Promise<DashboardPort> {

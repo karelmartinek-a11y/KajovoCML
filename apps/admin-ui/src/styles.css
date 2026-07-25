@@ -928,22 +928,31 @@ input[type="checkbox"] { width: 17px; height: 17px; min-height: 17px; padding: 0
 .dashboard-node-secrets button { min-height: 23px; max-width: 112px; padding: 0 5px; gap: 3px; overflow: hidden; border: 1px solid #c5d7d5; background: var(--teal-soft); color: #27635f; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
 .dashboard-node-secrets button span { margin-left: 2px; color: #a52c25; }
 .dashboard-node-secrets > span, .dashboard-node-secrets > small { color: var(--muted); font-size: 8px; }
-.dashboard-node-ports { min-height: 50px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 7px 0; }
+.dashboard-node-ports { min-height: 56px; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 8px 0; }
 .dashboard-port-column { display: grid; gap: 4px; align-content: start; }
-.dashboard-port-column > span { padding: 0 8px; color: var(--muted); font-size: 8px; text-transform: uppercase; letter-spacing: 0.06em; }
-.dashboard-port { position: relative; width: calc(100% - 10px); min-height: 25px; padding: 0 7px; overflow: hidden; border: 1px solid #b8c2cc; background: #fff; color: #485564; font-size: 8.5px; text-overflow: ellipsis; white-space: nowrap; }
+.dashboard-port-column > span { padding: 0 10px; color: var(--muted); font-size: 8px; text-transform: uppercase; letter-spacing: 0.06em; }
+.dashboard-port { position: relative; width: calc(100% - 14px); min-height: 28px; padding: 0 9px; overflow: visible; border: 1px solid #b8c2cc; background: #fff; color: #485564; font-size: 8.5px; text-overflow: ellipsis; white-space: nowrap; }
 .dashboard-port:hover, .dashboard-port.target-candidate { border-color: var(--teal); background: var(--teal-soft); color: var(--teal-dark); }
 .dashboard-port.compatible { border-color: #63ad82; background: #f2faf5; color: #1e6b3f; }
 .dashboard-port.incompatible { border-color: #d65a52; background: #fff4f3; color: #9b2923; }
 .dashboard-port.unknown { border-color: #9aa6b2; background: #f5f7f9; color: #5a6875; }
+.dashboard-port.external { border-color: #9675c5; background: #f7f2ff; color: #5d3d8c; }
+.dashboard-port.empty { display: flex; align-items: center; color: #7b8794; border-style: dashed; background: #f7f9fa; cursor: default; }
+.dashboard-port.empty small { font-size: 8px; }
 .dashboard-port.compatible .port-socket, .dashboard-port.compatible .port-connector { background: #1b9a56; box-shadow: 0 0 0 1px #147342; }
 .dashboard-port.incompatible .port-socket, .dashboard-port.incompatible .port-connector { background: #d33b33; box-shadow: 0 0 0 1px #a32b2b; }
 .dashboard-port.unknown .port-socket, .dashboard-port.unknown .port-connector { background: #84909d; }
-.dashboard-port-column.incoming .dashboard-port { margin-left: -5px; justify-content: flex-start; border-radius: 0 4px 4px 0; }
-.dashboard-port-column.outgoing .dashboard-port { margin-left: auto; margin-right: -5px; justify-content: flex-end; border-radius: 4px 0 0 4px; cursor: grab; }
-.port-socket, .port-connector { position: absolute; top: 50%; width: 10px; height: 10px; border: 2px solid #fff; border-radius: 50%; background: #7b8794; box-shadow: 0 0 0 1px #617080; transform: translateY(-50%); }
-.port-socket { left: -6px; }
-.port-connector { right: -6px; }
+.dashboard-port.external .port-socket { background: #7b53ae; box-shadow: 0 0 0 2px #5d3d8c, 0 2px 4px rgba(50, 31, 74, 0.24); }
+.dashboard-port-column.incoming .dashboard-port { margin-left: -9px; justify-content: flex-start; border-radius: 0 5px 5px 0; }
+.dashboard-port-column.outgoing .dashboard-port { margin-left: auto; margin-right: -9px; justify-content: flex-end; border-radius: 5px 0 0 5px; cursor: grab; }
+.port-socket, .port-connector { position: absolute; top: 50%; z-index: 4; width: 15px; height: 15px; border: 2px solid #fff; background: #7b8794; box-shadow: 0 0 0 2px #617080, 0 2px 4px rgba(27, 41, 54, 0.2); transform: translateY(-50%); }
+.port-socket { left: -11px; border-radius: 3px; }
+.port-socket::after { content: ""; position: absolute; inset: 3px; border-radius: 1px; background: #f8fbfc; box-shadow: 0 0 0 1px rgba(38, 51, 62, 0.18); }
+.port-connector { right: -11px; border-radius: 50% 50% 3px 3px; }
+.port-connector::after { content: ""; position: absolute; left: 3px; right: 3px; top: -5px; height: 5px; border: 2px solid #617080; border-bottom: 0; border-radius: 3px 3px 0 0; background: #7b8794; }
+.dashboard-port-column.outgoing .dashboard-port.unconnected .port-connector::before { content: ""; position: absolute; top: 5px; left: 11px; width: 23px; height: 3px; border-radius: 2px; background: #7b8794; box-shadow: 0 0 0 1px #617080; }
+.dashboard-port.external .port-socket::before { content: ""; position: absolute; top: 5px; right: 11px; width: 20px; height: 3px; border-radius: 2px; background: repeating-linear-gradient(90deg, #7b53ae 0 4px, transparent 4px 7px); }
+.port-external-label { margin-right: 3px; color: inherit; font-size: 6.5px; font-weight: 850; letter-spacing: .05em; }
 .dashboard-node footer { min-height: 31px; display: flex; align-items: center; gap: 6px; padding: 5px 8px; border-top: 1px solid var(--line); }
 .dashboard-node footer code { min-width: 0; flex: 1; overflow: hidden; color: #697583; font-size: 7.5px; text-overflow: ellipsis; }
 .dashboard-node footer button { width: 25px; min-width: 25px; min-height: 23px; padding: 0; background: #fff; border-color: var(--line); color: var(--muted); }
