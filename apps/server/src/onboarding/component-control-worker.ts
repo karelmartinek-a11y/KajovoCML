@@ -36,6 +36,7 @@ type ClaimedDispatch = {
   onboarding_job_id: string | null;
   callback_token_ciphertext: string | null;
   callback_token_key_id: string | null;
+  persisted_ack_payload: unknown;
 };
 
 const ajv = new Ajv2020({ strict: false, allErrors: true, validateFormats: false });
@@ -72,7 +73,8 @@ async function claim(db: Db, workerId: string): Promise<ClaimedDispatch | null> 
               p.public_id as principal_public_id,
               onboarding.id onboarding_job_id,onboarding.principal_access_token_ciphertext callback_token_ciphertext,onboarding.principal_access_token_key_id callback_token_key_id,
               sq.id as state_query_id,sq.challenge_nonce as state_query_nonce,
-              hb.id as heartbeat_challenge_id,hb.challenge_nonce as heartbeat_nonce
+              hb.id as heartbeat_challenge_id,hb.challenge_nonce as heartbeat_nonce,
+              ack.response_body as persisted_ack_payload
          from component_control_dispatch d
          join component c on c.id=d.component_id
          join principal p on p.id=c.principal_id
@@ -81,11 +83,18 @@ async function claim(db: Db, workerId: string): Promise<ClaimedDispatch | null> 
          left join component_state_query_run sq on sq.dispatch_id=d.id
          left join component_heartbeat_challenge hb on hb.dispatch_id=d.id
          left join lateral (
+           select response_body
+             from component_control_dispatch_attempt
+            where dispatch_id=d.id and status='ACKED'
+            order by attempt_number desc
+            limit 1
+         ) ack on true
+         left join lateral (
            select job.id,job.principal_access_token_ciphertext,job.principal_access_token_key_id
              from component_onboarding_job job where job.component_id=d.component_id and job.principal_access_token_handed_off_at is null
              order by job.created_at desc limit 1
          ) onboarding on true
-        where d.state in ('QUEUED','CLAIMED')
+        where d.state in ('QUEUED','CLAIMED','ACK_PENDING')
           and d.deadline_at > now()
           and d.next_attempt_at <= now()
           and (rt.circuit_open_until is null or rt.circuit_open_until<=now())
@@ -183,8 +192,21 @@ async function failAttempt(db: Db, dispatch: ClaimedDispatch, errorCode: string)
 export async function processNextComponentControlDispatch(db: Db, config: WorkerConfig, workerId: string): Promise<boolean> {
   const dispatch = await claim(db, workerId);
   if (!dispatch) return false;
-  let acknowledgementPersisted = false;
+  let acknowledgementPersisted = dispatch.persisted_ack_payload != null;
   try {
+    if (acknowledgementPersisted) {
+      await recordComponentControlAck(db, dispatch.component_id, {
+        commandId: dispatch.id,
+        commandType: dispatch.command_type,
+        status: "ACKED",
+        ackPayload: dispatch.persisted_ack_payload,
+        correlationId: dispatch.correlation_id,
+        declaredClientId: dispatch.principal_public_id,
+        declaredComponentCode: typeof dispatch.request_body.componentCode === "string" ? dispatch.request_body.componentCode : "",
+        policyEpoch: Number(dispatch.requested_policy_epoch)
+      });
+      return true;
+    }
     const authorization = await authorizePlatformWorkerCall(db, config, {
       hostname: dispatch.target_hostname,
       scope: `platform.control.${dispatch.command_type}`,
