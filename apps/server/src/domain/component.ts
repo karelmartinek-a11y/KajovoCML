@@ -2020,6 +2020,9 @@ export async function recordComponentMonitoringWatchdog(db: Db, params: {
       requestDigest: evidenceDigest({ componentId: params.componentId, probe: "runtime_watchdog" }),
       responseDigest: evidenceDigest(params.evidence), variant: "runtime_health"
     });
+    // Monitoring health is fail-closed at authorization time, but must not
+    // invalidate an in-flight control callback's policy epoch.
+    await client.query("select set_config('kcml.watchdog_health_transition','true',true)");
     await client.query("update component set monitoring_state=$2,updated_at=now() where id=$1", [params.componentId, params.pass ? "HEALTHY" : "FAILED"]);
   });
 }
