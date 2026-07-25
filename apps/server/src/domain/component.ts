@@ -1468,10 +1468,14 @@ export async function evaluateComponentReadiness(db: Db, params: {
     const gates = await gateResults(client as unknown as Db, String(job.component_id), manifest, authorizationSnapshot);
     await persistGateEvidence(client, String(job.component_id), activeRevisionId, gates, params.correlationId);
     const passed = gates.every((gate) => gate.status === "PASS");
-    if (!passed) await queueReadinessControlProbes(client, {
-      componentId: String(job.component_id), revisionId: activeRevisionId,
-      policyEpoch: Number(componentCurrent.rows[0].component_policy_epoch), correlationId: params.correlationId, gates
-    });
+    if (!passed) {
+      const currentPolicy = await client.query("select policy_epoch from component where id=$1 for update", [job.component_id]);
+      if (!currentPolicy.rowCount) throw Object.assign(new Error("not_found"), { statusCode: 404 });
+      await queueReadinessControlProbes(client, {
+        componentId: String(job.component_id), revisionId: activeRevisionId,
+        policyEpoch: Number(currentPolicy.rows[0].policy_epoch), correlationId: params.correlationId, gates
+      });
+    }
     const accessToken = passed && !job.principal_access_token_handed_off_at ? pendingAccessToken : undefined;
     const updated = await client.query(
       `update component_onboarding_job
