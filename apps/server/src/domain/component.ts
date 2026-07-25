@@ -1829,6 +1829,7 @@ export async function ingestComponentOperationEvent(db: Db, componentId: string,
         event.traceId ?? null, event.accessTokenFingerprint ?? null, event.occurredAt]
     );
     if (!event.success) {
+      await client.query("select set_config('kcml.watchdog_health_transition','true',true)");
       await client.query("update component set operational_state='UNHEALTHY',monitoring_state='FAILED',updated_at=now() where id=$1", [componentId]);
     }
     return { accepted: true };
@@ -1906,6 +1907,7 @@ export async function recordComponentHeartbeat(db: Db, componentId: string, hear
       ]
     );
     if (validationState === "REJECTED") {
+      await client.query("select set_config('kcml.watchdog_health_transition','true',true)");
       await client.query("update component set monitoring_state='DEGRADED',updated_at=now() where id=$1", [componentId]);
       return { accepted: false, policyEpoch, failClosed: true, rejectionReason: rejectionReason ?? "heartbeat_rejected" };
     }
@@ -2094,6 +2096,7 @@ export async function recordComponentStateObservation(db: Db, componentId: strin
       }
     }
     if (validationState === "REJECTED") {
+      await client.query("select set_config('kcml.watchdog_health_transition','true',true)");
       await client.query("update component set monitoring_state='DEGRADED',updated_at=now() where id=$1", [componentId]);
     }
     await appendAudit(client, { eventType: validationState === "ACCEPTED" ? "component.state.accepted" : "component.state.rejected",
@@ -2169,6 +2172,7 @@ export async function recordComponentStateSnapshot(db: Db, componentId: string, 
       await recordActiveGateEvidence(client, { ...shared, gate: "STATE_FULL_SNAPSHOT", reasonCode: "full_state_snapshot_verified", evidence: { queryId: input.queryId, keys: actualKeys }, variant: "all_declared_states" });
       await recordActiveGateEvidence(client, { ...shared, gate: "EACH_STATE_SCHEMA", reasonCode: "each_state_schema_validated", evidence: { queryId: input.queryId, validatedStateKeys: actualKeys }, variant: "all_declared_states" });
     } else {
+      await client.query("select set_config('kcml.watchdog_health_transition','true',true)");
       await client.query("update component set monitoring_state='DEGRADED',updated_at=now() where id=$1", [componentId]);
     }
     await appendAudit(client, { eventType: validationState === "ACCEPTED" ? "component.state_snapshot.accepted" : "component.state_snapshot.rejected",
@@ -2211,6 +2215,7 @@ export async function recordComponentControlAck(db: Db, componentId: string, inp
       [input.commandId, nextState, evidenceDigest(input.ackPayload), JSON.stringify(input.ackPayload), input.status === "FAILED" ? "component_ack_failed" : null]
     );
     if (input.status === "FAILED") {
+      await client.query("select set_config('kcml.watchdog_health_transition','true',true)");
       await client.query(
         `update component
             set activation_state=case when $2='disable' then 'DISABLE_UNCONFIRMED' else 'BLOCKED' end,
