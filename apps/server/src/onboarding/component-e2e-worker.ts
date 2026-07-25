@@ -104,7 +104,7 @@ async function invoke(config: WorkerConfig, run: E2ERun, fixture: Fixture, token
   const upstream = new URL(run.upstream);
   if (upstream.protocol !== "https:" || upstream.hostname !== run.expected_tls_identity) throw new Error("e2e_tls_identity_invalid");
   const response = await fetchThroughEgress(config, { url: new URL(invocation.path, upstream).toString(), method: "POST",
-    headers: { authorization: `Bearer ${token}`, ...(callbackToken ? { "x-kcml-callback-authorization": `Bearer ${callbackToken}` } : {}), "content-type": invocation.mediaType, "x-kcml-platform-operation": "e2e" }, body: invocation.body,
+    headers: { authorization: `Bearer ${token}`, ...(callbackToken ? { "x-kcml-callback-authorization": `Bearer ${callbackToken}` } : {}), "content-type": invocation.mediaType, "x-kcml-platform-operation": "e2e", "x-kcml-target-hostname": run.hostname }, body: invocation.body,
     allowlist: [upstream.hostname], purpose: "component.e2e.execute", correlationId: run.correlation_id,
     ttlSeconds: Math.max(15, Math.ceil(Number(fixture.timeout_ms) / 1000) + 5) });
   return { status: response.status, body: response.body };

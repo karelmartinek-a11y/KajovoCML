@@ -125,7 +125,7 @@ async function send(config: WorkerConfig, dispatch: ClaimedDispatch, token: stri
   const response = await fetchThroughEgress(config, {
     url: new URL(dispatch.endpoint_path, upstream).toString(),
     method: "POST",
-    headers: { authorization: `Bearer ${token}`, ...(callbackToken ? { "x-kcml-callback-authorization": `Bearer ${callbackToken}` } : {}), "content-type": "application/json" },
+    headers: { authorization: `Bearer ${token}`, ...(callbackToken ? { "x-kcml-callback-authorization": `Bearer ${callbackToken}` } : {}), "content-type": "application/json", "x-kcml-target-hostname": dispatch.target_hostname },
     body,
     allowlist: [upstream.hostname],
     purpose: "component.control.dispatch",

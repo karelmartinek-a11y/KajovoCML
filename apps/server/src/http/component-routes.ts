@@ -61,6 +61,7 @@ const externalStatusSchema = z.object({ status: z.enum(["ACTIVE", "DISABLED", "R
 const externalPermissionSchema = z.object({ componentId: z.string().uuid().optional(), externalPrincipalId: z.string().uuid().optional(), externalTargetId: z.string().uuid(), routePattern: z.string().min(1).max(500), scopeName: z.string().min(2).max(200), enabled: z.boolean() }).strict();
 const externalInboundPermissionSchema = z.object({ externalPrincipalId: z.string().uuid(), targetComponentId: z.string().uuid(), routePattern: z.string().startsWith("/").max(500), scopeName: z.string().min(2).max(200), enabled: z.boolean() }).strict();
 const outboundGatewaySchema = z.object({ targetKey: z.string().min(3).max(120), routePath: z.string().startsWith("/").max(500), scopeName: z.string().min(2).max(200), payload: requiredJson }).strict();
+const platformWorkerAuthorizationSchema = z.object({ hostname: z.string().min(3).max(255), scope: z.string().min(2).max(200), route: z.string().startsWith("/").max(500) }).strict();
 const identitySchema = z.object({
   clientId: z.string().min(3).max(160),
   componentCode: z.string().min(3).max(120),
@@ -237,6 +238,26 @@ function assertTargetIdentity(
 }
 
 export function registerComponentRoutes(app: FastifyInstance, db: Db, config: AppServerConfig): void {
+  app.post("/v2/platform-worker/authorize", { config: { rateLimit: { max: 120, timeWindow: "1 minute" } } }, async (request, reply) => {
+    const correlationId = randomUUID();
+    if (hostOf(request.headers.host) !== config.REGISTER_HOST) return sendError(reply, 404, "not_found", undefined, correlationId);
+    const token = bearer(request);
+    if (!token) return sendError(reply, 401, "invalid_token", undefined, correlationId);
+    try {
+      const body = platformWorkerAuthorizationSchema.parse(request.body);
+      const decision = await authorizeComponentCall(db, {
+        token, audience: `https://${body.hostname}`, host: body.hostname, scope: body.scope, route: body.route,
+        hmacKey: config.ACCESS_TOKEN_HMAC_KEY_BASE64, correlationId, allowOnboardingProbe: true
+      });
+      if (!decision.allow || decision.sourceClientId !== "KCML-PLATFORM-WORKER") {
+        return sendError(reply, 403, decision.reasonCode, undefined, correlationId);
+      }
+      return reply.header("cache-control", "no-store").send({ allowed: true, decisionId: decision.decisionId, targetComponentCode: decision.targetComponentCode, policyEpoch: decision.policyEpoch, correlationId });
+    } catch (error) {
+      return routeError(reply, error, correlationId);
+    }
+  });
+
   app.post("/v2/component-onboardings", async (request, reply) => {
     const correlationId = randomUUID();
     if (hostOf(request.headers.host) !== config.REGISTER_HOST) return sendError(reply, 404, "not_found", undefined, correlationId);
