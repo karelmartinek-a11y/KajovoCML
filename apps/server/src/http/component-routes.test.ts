@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadConfig, type AppConfig } from "../config.js";
 import type { Db } from "../db.js";
 import { KCML_RELEASE } from "../domain/release.js";
-import { registerComponentRoutes } from "./component-routes.js";
+import { registerComponentRoutes, runtimeAuthorizationHostname } from "./component-routes.js";
 
 const secret = (byte: number) => Buffer.alloc(32, byte).toString("base64");
 
@@ -109,5 +109,10 @@ describe("component public route protection", () => {
     const response = await app.inject({ method: "POST", url: "/v2/component-mcp", headers: { host: "kcml0002.kajovocml.hcasc.cz" }, payload: { method: "tools/list" } });
     expect(response.statusCode).toBe(410);
     expect(response.json()).toMatchObject({ error: "component_mcp_moved" });
+  });
+
+  it("binds central callback authorization to its declared KCML target hostname", () => {
+    expect(runtimeAuthorizationHostname({ host: "register.hcasc.cz", "x-kcml-target-hostname": "kcml0002.kajovocml.hcasc.cz" })).toBe("kcml0002.kajovocml.hcasc.cz");
+    expect(runtimeAuthorizationHostname({ host: "register.hcasc.cz" })).toBe("register.hcasc.cz");
   });
 });

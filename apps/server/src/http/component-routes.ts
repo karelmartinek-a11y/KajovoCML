@@ -200,9 +200,14 @@ async function adminPrincipal(db: Db, config: AppServerConfig, request: FastifyR
   return session.accountId;
 }
 
+export function runtimeAuthorizationHostname(headers: { host?: string; "x-kcml-target-hostname"?: string | string[] }): string {
+  const declaredTargetHostname = headers["x-kcml-target-hostname"];
+  return typeof declaredTargetHostname === "string" ? hostOf(declaredTargetHostname) : hostOf(headers.host);
+}
+
 async function authorizeRuntime(db: Db, config: AppServerConfig, request: FastifyRequest, scope: string, route: string, correlationId: string) {
   const token = bearer(request);
-  const host = hostOf(request.headers.host);
+  const host = runtimeAuthorizationHostname(request.headers);
   if (!token) return null;
   return authorizeComponentCall(db, {
     token,
