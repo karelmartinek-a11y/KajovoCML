@@ -285,7 +285,9 @@ export class MonitoringScheduler {
           const upstream = new URL(String(component.upstream));
           if (upstream.protocol !== "https:" || upstream.hostname !== String(component.expected_tls_identity)) throw new Error("component_tls_identity_invalid");
           const response = await fetchThroughEgress(this.config, {
-            url: new URL("/health", upstream).toString(), method: "GET",
+            // Component readiness is the monitored contract: a generic root
+            // health route may be reserved by the external reverse proxy.
+            url: new URL("/health/ready", upstream).toString(), method: "GET",
             allowlist: [String(component.expected_tls_identity)],
             purpose: "component.monitoring.health", correlationId, ttlSeconds: 30
           });
