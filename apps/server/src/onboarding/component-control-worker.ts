@@ -183,6 +183,7 @@ async function failAttempt(db: Db, dispatch: ClaimedDispatch, errorCode: string)
 export async function processNextComponentControlDispatch(db: Db, config: WorkerConfig, workerId: string): Promise<boolean> {
   const dispatch = await claim(db, workerId);
   if (!dispatch) return false;
+  let acknowledgementPersisted = false;
   try {
     const authorization = await authorizePlatformWorkerCall(db, config, {
       hostname: dispatch.target_hostname,
@@ -223,6 +224,7 @@ export async function processNextComponentControlDispatch(db: Db, config: Worker
         [dispatch.id, attempt]
       );
     });
+    acknowledgementPersisted = true;
     await recordComponentControlAck(db, dispatch.component_id, {
       commandId: dispatch.id,
       commandType: dispatch.command_type,
@@ -234,6 +236,16 @@ export async function processNextComponentControlDispatch(db: Db, config: Worker
       policyEpoch: Number(dispatch.requested_policy_epoch)
     });
   } catch (error) {
+    if (acknowledgementPersisted) {
+      // The response is durably recorded. Retrying it as a transport failure
+      // would duplicate the attempt row and crash the worker.
+      console.error("component_control_ack_finalization_failed", {
+        dispatchId: dispatch.id,
+        commandType: dispatch.command_type,
+        error: error instanceof Error ? error.message : "control_ack_finalization_failed"
+      });
+      return true;
+    }
     await failAttempt(db, dispatch, error instanceof Error ? error.message : "control_dispatch_failed");
   }
   return true;
