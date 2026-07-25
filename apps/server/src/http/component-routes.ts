@@ -238,7 +238,7 @@ function assertTargetIdentity(
 }
 
 export function registerComponentRoutes(app: FastifyInstance, db: Db, config: AppServerConfig): void {
-  app.post("/v2/platform-worker/authorize", async (request, reply) => {
+  app.post("/v2/platform-worker/authorize", { config: { rateLimit: { max: 120, timeWindow: "1 minute" } } }, async (request, reply) => {
     const correlationId = randomUUID();
     if (hostOf(request.headers.host) !== config.REGISTER_HOST) return sendError(reply, 404, "not_found", undefined, correlationId);
     const token = bearer(request);
