@@ -521,7 +521,13 @@ async function recordActiveGateEvidence(client: pg.PoolClient, params: {
     `insert into component_readiness_gate_evidence(
       component_id,revision_id,gate_key,evaluator_version,status,reason_code,evidence,evidence_digest,correlation_id,expires_at,
       revision_digest,runtime_digest,artifact_digest,request_digest,response_digest,variant
-    ) values ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,now()+interval '15 minutes',$10,$11,$11,$12,$13,$14)`,
+    ) values ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,now()+interval '15 minutes',$10,$11,$11,$12,$13,$14)
+    on conflict (component_id,revision_id,gate_key,correlation_id) do update set
+      evaluator_version=excluded.evaluator_version,status=excluded.status,reason_code=excluded.reason_code,
+      evidence=excluded.evidence,evidence_digest=excluded.evidence_digest,correlation_id=excluded.correlation_id,
+      expires_at=excluded.expires_at,revision_digest=excluded.revision_digest,runtime_digest=excluded.runtime_digest,
+      artifact_digest=excluded.artifact_digest,request_digest=excluded.request_digest,response_digest=excluded.response_digest,
+      variant=excluded.variant`,
     [params.componentId, params.revisionId, params.gate, COMPONENT_CATALOG_VERSION, params.pass ? "PASS" : "FAIL", params.reasonCode,
       JSON.stringify(params.evidence), evidenceDigest(params.evidence), params.correlationId, digests.rows[0].manifest_digest, runtimeDigest,
       params.requestDigest ?? null, params.responseDigest ?? null, params.variant]
