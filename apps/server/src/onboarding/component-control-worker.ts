@@ -167,6 +167,9 @@ async function failAttempt(db: Db, dispatch: ClaimedDispatch, errorCode: string)
       objectType: "component_control_dispatch", objectId: dispatch.id,
       after: { attempt, errorCode: errorCode.slice(0, 160), terminal, retryDelayMs }, correlationId: dispatch.correlation_id });
     if (terminal) {
+      // A terminal dispatch failure fails closed through component state, but
+      // must not invalidate the epoch of its in-flight evidence callback.
+      await client.query("select set_config('kcml.watchdog_health_transition','true',true)");
       await client.query(
         `update component set enabled=false,ingress_enabled=false,pulse_enabled=false,egress_enabled=false,
                 activation_state='BLOCKED',operational_state='UNHEALTHY',monitoring_state='FAILED',updated_at=now()
