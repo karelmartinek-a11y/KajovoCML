@@ -205,7 +205,7 @@ export async function processNextComponentE2ERun(db: Db, config: WorkerConfig, w
     await db.query(`insert into component_readiness_gate_evidence(
       component_id,revision_id,gate_key,evaluator_version,status,reason_code,evidence,evidence_digest,correlation_id,expires_at,
       revision_digest,runtime_digest,artifact_digest,request_digest,response_digest,variant
-    ) values ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,now()+interval '15 minutes',$10,$11,$11,$12,$13,$14)
+    ) values ($1,$2,$3,$4,$5,$6,$7::jsonb,$8,$9,$10,$11,$12,$12,$13,$14,$15)
       on conflict (component_id,revision_id,gate_key,correlation_id) do update
         set evaluator_version=excluded.evaluator_version,status=excluded.status,reason_code=excluded.reason_code,
             evidence=excluded.evidence,evidence_digest=excluded.evidence_digest,expires_at=excluded.expires_at,
@@ -213,7 +213,11 @@ export async function processNextComponentE2ERun(db: Db, config: WorkerConfig, w
             request_digest=excluded.request_digest,response_digest=excluded.response_digest,variant=excluded.variant`,
     [run.component_id, run.revision_id, gate.gate, KCML_RELEASE.catalogVersion, gate.pass ? "PASS" : "FAIL",
       gate.pass ? gate.reason : `${gate.gate.toLowerCase()}_failed`, JSON.stringify(gateEvidenceBody), digest(Buffer.from(canonicalJson(gateEvidenceBody))),
-      run.correlation_id, run.revision_digest, run.runtime_digest, requestDigest, responseDigest, gate.variant]);
+      // Exact E2E evidence is bound to the immutable active revision and runtime
+      // digests. Runtime changes invalidate it through those bindings; applying a
+      // wall-clock expiry would make an already-handed-off component unready even
+      // though its onboarding-only scenario cannot safely be replayed.
+      run.correlation_id, null, run.revision_digest, run.runtime_digest, requestDigest, responseDigest, gate.variant]);
   }
   return true;
 }
