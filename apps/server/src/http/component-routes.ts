@@ -252,7 +252,7 @@ export function registerComponentRoutes(app: FastifyInstance, db: Db, config: Ap
       if (!decision.allow || decision.sourceClientId !== "KCML-PLATFORM-WORKER") {
         return sendError(reply, 403, decision.reasonCode, undefined, correlationId);
       }
-      return reply.header("cache-control", "no-store").send({ allowed: true, decisionId: decision.decisionId, targetComponentCode: decision.targetComponentCode, policyEpoch: decision.policyEpoch, correlationId });
+      return reply.header("cache-control", "no-store").send({ allowed: true, decisionId: decision.decisionId, targetComponentCode: decision.targetComponentCode, targetHostname: decision.targetHostname, policyEpoch: decision.policyEpoch, correlationId });
     } catch (error) {
       return routeError(reply, error, correlationId);
     }

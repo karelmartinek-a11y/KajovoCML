@@ -27,6 +27,7 @@ export type ComponentAuthorizationDecision = {
   sourceClientId: string | null;
   sourceComponentCode: string | null;
   targetComponentCode: string | null;
+  targetHostname: string | null;
   audience: string | null;
   scopes: string[];
   policyEpoch: number | null;
@@ -53,6 +54,7 @@ function denied(reasonCode: ComponentAuthorizationReason, correlationId: string,
     sourceClientId: null,
     sourceComponentCode: null,
     targetComponentCode: null,
+    targetHostname: null,
     audience: null,
     scopes: [],
     policyEpoch: null,
@@ -112,6 +114,7 @@ export async function authorizeComponentCall(db: Db, params: {
         sourceClientId: String(row.source_client_id),
         sourceComponentCode: row.source_component_code ? String(row.source_component_code) : String(row.source_client_id),
         targetComponentCode: String(row.target_component_code),
+        targetHostname: String(row.target_hostname),
         audience: params.audience,
         scopes: row.scope_names as string[],
         policyEpoch: Number(row.policy_epoch),
