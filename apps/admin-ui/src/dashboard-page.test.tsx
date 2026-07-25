@@ -83,7 +83,8 @@ const topology: DashboardTopology = {
   ],
   ports: [
     { key: "pulse:out", componentId: "00000000-0000-0000-0000-000000000121", revisionId: "00000000-0000-0000-0000-000000000141", direction: "OUTGOING", kind: "PULSE", label: "ORDER", pulseType: "ORDER", routes: ["/v1/order"], scopes: ["order.write"], protocol: "PULSE", transport: "HTTPS", authMode: "BEARER", requestSchema: { type: "object" }, responseSchema: {}, contractDigest: "sha256:out", source: {} },
-    { key: "pulse:in", componentId: "00000000-0000-0000-0000-000000000122", revisionId: "00000000-0000-0000-0000-000000000142", direction: "INCOMING", kind: "PULSE", label: "ORDER", pulseType: "ORDER", routes: ["/v1/order"], scopes: ["order.write"], protocol: "PULSE", transport: "HTTPS", authMode: "BEARER", requestSchema: { type: "object" }, responseSchema: {}, contractDigest: "sha256:in", source: {} }
+    { key: "pulse:out-unconnected", componentId: "00000000-0000-0000-0000-000000000121", revisionId: "00000000-0000-0000-0000-000000000141", direction: "OUTGOING", kind: "PULSE", label: "EVENT", pulseType: "EVENT", routes: ["/v1/event"], scopes: ["event.write"], protocol: "PULSE", transport: "HTTPS", authMode: "BEARER", requestSchema: { type: "object" }, responseSchema: {}, contractDigest: "sha256:out-unconnected", source: {} },
+    { key: "pulse:in", componentId: "00000000-0000-0000-0000-000000000122", revisionId: "00000000-0000-0000-0000-000000000142", direction: "INCOMING", kind: "PULSE", label: "ORDER", pulseType: "ORDER", routes: ["/v1/order"], scopes: ["order.write"], protocol: "PULSE", transport: "HTTPS", authMode: "BEARER", requestSchema: { type: "object" }, responseSchema: {}, contractDigest: "sha256:in", source: { externalSources: [{ publicId: "PARTNER_API", routePattern: "/v1/order", scopeName: "order.write" }] } }
   ],
   edges: [{
     id: "00000000-0000-0000-0000-000000000161", sourceComponentId: "00000000-0000-0000-0000-000000000121", sourcePortKey: "pulse:out",
@@ -116,13 +117,26 @@ afterEach(() => {
 });
 
 describe("Aktivní Dashboard", () => {
-  it("odlišuje předregistrační node, kompatibilitu portu a neautorizované vlákno", async () => {
+  it("zobrazuje zásuvky, visící výstup, externí vstup a neautorizované vlákno", async () => {
     const { container } = render(<DashboardPage releaseInfo={null} onOpenStandardPage={vi.fn()} />);
     expect(await screen.findByRole("heading", { name: "Aktivní Dashboard" })).toBeTruthy();
     expect(screen.getAllByText("Čeká na onboarding").length).toBeGreaterThan(0);
     expect(screen.getByText("Provozní akce jsou neaktivní do dokončení onboardingu.")).toBeTruthy();
     await waitFor(() => expect(container.querySelectorAll(".dashboard-port.compatible").length).toBe(2));
+    expect(container.querySelector(".dashboard-port.unconnected .port-connector")).toBeTruthy();
+    expect(container.querySelector(".dashboard-port.external .port-socket")).toBeTruthy();
+    expect(screen.getByText("EXTERNÍ")).toBeTruthy();
     expect(container.querySelector(".dashboard-edge.denied")).toBeTruthy();
+  });
+
+  it("ponechá na každém registrovaném prvku viditelnou zásuvku a zástrčku i bez deklarovaného PULSE kontraktu", async () => {
+    vi.mocked(loadDashboardTopology).mockResolvedValue({ ...structuredClone(topology), ports: [], edges: [] });
+    const { container } = render(<DashboardPage releaseInfo={null} onOpenStandardPage={vi.fn()} />);
+    await screen.findByRole("heading", { name: "Aktivní Dashboard" });
+    expect(screen.getAllByText("Bez vstupu").length).toBe(2);
+    expect(screen.getAllByText("Bez výstupu").length).toBe(2);
+    expect(container.querySelectorAll(".dashboard-port.empty .port-socket").length).toBe(2);
+    expect(container.querySelectorAll(".dashboard-port.empty .port-connector").length).toBe(2);
   });
 
   it("nabízí oprávnění a rozpojení jako dvě oddělené operace", async () => {

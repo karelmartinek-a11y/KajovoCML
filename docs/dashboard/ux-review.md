@@ -5,6 +5,8 @@
 - Dashboard je první OWNER položkou navigace a výchozí OWNER landing page.
 - Předregistrační a registrované uzly jsou rozlišeny textem, ikonou a stavem, nikoli jen barvou.
 - Porty zobrazují kompatibilitu, vlákna účinnou autorizaci.
+- Každý registrovaný PULSE vstup je vykreslen jako zásuvka na levé hraně prvku a každý výstup jako zástrčka na pravé hraně; PULSE vlákno končí přímo v odpovídajícím portu.
+- Nepřipojený výstup zůstává viditelný jako visící konektor. Vstup s aktivním externím inbound oprávněním je označen jako externí a uvádí veřejnou identitu zdroje.
 - Edge lze ovládat myší, klávesami Enter/Space a kontextovou klávesou nebo Shift+F10.
 - Secret knihovna je opakovaně použitelná; drop vytvoří grant a zdrojová karta zůstává.
 - Canvas má zoom, fit-to-view, drag layout, minimapu a seznamovou alternativu.

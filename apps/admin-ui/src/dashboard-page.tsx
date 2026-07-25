@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -92,6 +92,7 @@ type RevealState = {
 
 const NODE_WIDTH = 294;
 const NODE_HEADER_HEIGHT = 92;
+type CanvasPoint = { x: number; y: number };
 
 function formatDate(value: string | null): string {
   if (!value) return "není k dispozici";
@@ -141,11 +142,17 @@ function portCompatibilityClass(port: DashboardPort, edges: DashboardConnection[
   return "compatible";
 }
 
-function edgePath(source: DashboardNode, target: DashboardNode): string {
-  const sx = source.position.x + NODE_WIDTH;
-  const sy = source.position.y + NODE_HEADER_HEIGHT;
-  const tx = target.position.x;
-  const ty = target.position.y + NODE_HEADER_HEIGHT;
+function externalPortHelp(port: DashboardPort): string | null {
+  const sources = port.source.externalSources;
+  if (!sources?.length) return null;
+  return `Externí vstup: ${sources.map((source) => source.publicId).join(", ")}.`;
+}
+
+function edgePath(source: DashboardNode, target: DashboardNode, sourceAnchor?: CanvasPoint, targetAnchor?: CanvasPoint): string {
+  const sx = sourceAnchor?.x ?? source.position.x + NODE_WIDTH;
+  const sy = sourceAnchor?.y ?? source.position.y + NODE_HEADER_HEIGHT;
+  const tx = targetAnchor?.x ?? target.position.x;
+  const ty = targetAnchor?.y ?? target.position.y + NODE_HEADER_HEIGHT;
   const bend = Math.max(90, Math.abs(tx - sx) * 0.45);
   return `M ${sx} ${sy} C ${sx + bend} ${sy}, ${tx - bend} ${ty}, ${tx} ${ty}`;
 }
@@ -310,6 +317,9 @@ export function DashboardPage({ releaseInfo, onOpenStandardPage }: {
   const [reveal, setReveal] = useState<RevealState | null>(null);
   const [deregistrationNode, setDeregistrationNode] = useState<DashboardNode | null>(null);
   const canvasRef = useRef<HTMLDivElement | null>(null);
+  const canvasTransformRef = useRef<HTMLDivElement | null>(null);
+  const portAnchorRefs = useRef(new Map<string, HTMLSpanElement>());
+  const [portAnchorPoints, setPortAnchorPoints] = useState<Map<string, CanvasPoint>>(new Map());
   const dragRef = useRef<{ nodeId: string; startX: number; startY: number; originX: number; originY: number } | null>(null);
 
   const refresh = useCallback(async () => {
@@ -366,6 +376,27 @@ export function DashboardPage({ releaseInfo, onOpenStandardPage }: {
     for (const port of topology?.ports ?? []) map.set(port.componentId, [...(map.get(port.componentId) ?? []), port]);
     return map;
   }, [topology]);
+
+  useLayoutEffect(() => {
+    const transform = canvasTransformRef.current;
+    if (!transform) return;
+    const transformBounds = transform.getBoundingClientRect();
+    const next = new Map<string, CanvasPoint>();
+    for (const [key, anchor] of portAnchorRefs.current) {
+      const bounds = anchor.getBoundingClientRect();
+      next.set(key, {
+        x: (bounds.left + bounds.width / 2 - transformBounds.left) / zoom,
+        y: (bounds.top + bounds.height / 2 - transformBounds.top) / zoom
+      });
+    }
+    setPortAnchorPoints((current) => {
+      if (current.size === next.size && [...next].every(([key, point]) => {
+        const previous = current.get(key);
+        return previous && Math.abs(previous.x - point.x) < 0.5 && Math.abs(previous.y - point.y) < 0.5;
+      })) return current;
+      return next;
+    });
+  }, [nodes, topology?.ports, zoom, draggingNodeId, runtimeMotions]);
   const selectedNode = topology?.nodes.find((node) => node.id === selectedNodeId) ?? null;
   const selectedEdge = topology?.edges.find((edge) => edge.id === selectedEdgeId) ?? null;
   const motions = Object.values(runtimeMotions);
@@ -501,16 +532,17 @@ export function DashboardPage({ releaseInfo, onOpenStandardPage }: {
 
           {listMode ? <div className="dashboard-accessible-list">{nodes.map((node) => <article key={node.id}><header><strong>{node.code ?? node.label} · {node.displayName}</strong><span>{node.lifecyclePhase === "PRE_REGISTRATION" ? "Čeká na onboarding" : node.operationalState}</span></header><p>{node.description || "Popis není v manifestu uveden."}</p><button onClick={() => { setSelectedNodeId(node.id); setListMode(false); }}>Otevřít na plátně</button></article>)}</div> : <div className="dashboard-canvas-viewport" ref={canvasRef}>
             <div className="dashboard-canvas" style={{ width: contentWidth * zoom, height: contentHeight * zoom }}>
-              <div className="dashboard-canvas-transform" style={{ width: contentWidth, height: contentHeight, transform: `scale(${zoom})` }}>
+              <div className="dashboard-canvas-transform" ref={canvasTransformRef} style={{ width: contentWidth, height: contentHeight, transform: `scale(${zoom})` }}>
                 <svg className="dashboard-edge-layer" width={contentWidth} height={contentHeight} aria-label="PULSE spojení">
                   {topology.edges.map((edge) => {
                     const source = nodeByComponent.get(edge.sourceComponentId);
                     const target = nodeByComponent.get(edge.targetComponentId);
                     if (!source || !target || !visibleNodeIds.has(source.id) || !visibleNodeIds.has(target.id)) return null;
+                    const path = edgePath(source, target, portAnchorPoints.get(`outgoing:${edge.sourceComponentId}:${edge.sourcePortKey}`), portAnchorPoints.get(`incoming:${edge.targetComponentId}:${edge.targetPortKey}`));
                     const motion = liveConnected ? activeMotionForEdge(edge) : undefined;
                     const active = motion?.phase === "travelling";
                     return <g key={edge.id} className={`dashboard-edge ${edge.effectiveAuthorization === "GRANTED" ? "authorized" : "denied"} ${active ? "runtime-active" : ""} ${motion?.phase === "success" ? "runtime-success" : ""} ${motion?.phase === "failure" ? "runtime-failure" : ""}`} onClick={() => { setSelectedEdgeId(edge.id); setSelectedNodeId(null); }} role="button" tabIndex={0} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " " || (event.shiftKey && event.key === "F10") || event.key === "ContextMenu") { event.preventDefault(); setSelectedEdgeId(edge.id); setSelectedNodeId(null); } }} aria-label={`${edge.sourceCode} do ${edge.targetCode}. ${authorizationLabel(edge)}. ${compatibilityLabel(edge.compatibilityStatus)}.`}>
-                      <path className="dashboard-edge-hit" d={edgePath(source, target)} /><path className="dashboard-edge-line" d={edgePath(source, target)} /><path className="dashboard-edge-flow" d={edgePath(source, target)} /><circle className="dashboard-runtime-pulse" r="6"><animateMotion dur="1.6s" repeatCount={active ? "2" : "0"} path={edgePath(source, target)} /></circle><circle className="dashboard-runtime-result" r="9" cx={target.position.x} cy={target.position.y + NODE_HEADER_HEIGHT} />
+                      <path className="dashboard-edge-hit" d={path} /><path className="dashboard-edge-line" d={path} /><path className="dashboard-edge-flow" d={path} /><circle className="dashboard-runtime-pulse" r="6"><animateMotion dur="1.6s" repeatCount={active ? "2" : "0"} path={path} /></circle><circle className="dashboard-runtime-result" r="9" cx={portAnchorPoints.get(`incoming:${edge.targetComponentId}:${edge.targetPortKey}`)?.x ?? target.position.x} cy={portAnchorPoints.get(`incoming:${edge.targetComponentId}:${edge.targetPortKey}`)?.y ?? target.position.y + NODE_HEADER_HEIGHT} />
                     </g>;
                   })}
                 </svg>
@@ -530,7 +562,14 @@ export function DashboardPage({ releaseInfo, onOpenStandardPage }: {
                     <div className="dashboard-node-state"><span><strong>{node.operationalState}</strong><small>provoz</small></span><span><strong>{node.statistics.callCount}</strong><small>volání / 24 h</small></span><span><strong>{Math.round(node.statistics.errorRate * 100)} %</strong><small>chybovost</small></span></div>
                     {node.lifecyclePhase === "PRE_REGISTRATION" ? <div className="dashboard-node-locked"><PauseCircle size={16} /> Provozní akce jsou neaktivní do dokončení onboardingu.</div> : null}
                     <div className="dashboard-node-secrets" aria-label="Připnuté Secrets">{node.secrets.slice(0, 4).map((secret) => <button key={secret.secretId} title={`Secret ${secret.stableName}; zdroj grantu ${secret.source}`} onClick={(event) => { event.stopPropagation(); void mutate("revoke-secret", () => revokeDashboardSecret(secret.secretId, node.id)); }}><Lock size={12} />{secret.stableName}<span aria-hidden="true">×</span></button>)}{node.secrets.length > 4 ? <span>+{node.secrets.length - 4} dalších</span> : null}{node.secrets.length === 0 ? <small>Přetáhněte sem Secret kartičku</small> : null}</div>
-                    {node.lifecyclePhase === "REGISTERED" ? <div className="dashboard-node-ports"><div className="dashboard-port-column incoming"><span>Příchozí</span>{incoming.map((port) => <button key={port.key} className={`dashboard-port ${portCompatibilityClass(port, topology.edges)} ${pendingSource ? "target-candidate" : ""} ${dragTargetKey === port.key ? "drag-over" : ""}`} title={portHelp(port)} aria-label={portHelp(port)} onDragOver={(event) => { if (event.dataTransfer.types.includes("application/x-kcml-port")) { event.preventDefault(); setDragTargetKey(port.key); } }} onDragLeave={() => setDragTargetKey((current) => current === port.key ? null : current)} onDrop={(event) => { const raw = event.dataTransfer.getData("application/x-kcml-port"); if (!raw) return; event.preventDefault(); setDragTargetKey(null); void connect(JSON.parse(raw) as DashboardPort, port); }} onClick={(event) => { event.stopPropagation(); if (pendingSource) void connect(pendingSource, port); }}><span className="port-socket" />{port.pulseType}</button>)}</div><div className="dashboard-port-column outgoing"><span>Odchozí</span>{outgoing.map((port) => <button key={port.key} className={`dashboard-port ${portCompatibilityClass(port, topology.edges)}`} draggable title={portHelp(port)} aria-label={portHelp(port)} onDragStart={(event) => event.dataTransfer.setData("application/x-kcml-port", JSON.stringify(port))} onClick={(event) => { event.stopPropagation(); setPendingSource(port); }}><span className="port-connector" />{port.pulseType}</button>)}</div></div> : null}
+                    {node.lifecyclePhase === "REGISTERED" ? <div className="dashboard-node-ports" aria-label="PULSE vstupy a výstupy"><div className="dashboard-port-column incoming"><span>Příchozí zásuvky</span>{incoming.length === 0 ? <div className="dashboard-port empty" title="Komponenta nemá deklarovaný příchozí PULSE kontrakt."><span className="port-socket" aria-hidden="true" /><small>Bez vstupu</small></div> : null}{incoming.map((port) => {
+                      const anchorKey = `incoming:${port.componentId}:${port.key}`;
+                      const externalHelp = externalPortHelp(port);
+                      return <button key={port.key} className={`dashboard-port ${portCompatibilityClass(port, topology.edges)} ${externalHelp ? "external" : ""} ${pendingSource ? "target-candidate" : ""} ${dragTargetKey === port.key ? "drag-over" : ""}`} title={`${portHelp(port)}${externalHelp ? ` ${externalHelp}` : ""}`} aria-label={`${portHelp(port)}${externalHelp ? ` ${externalHelp}` : ""}`} onDragOver={(event) => { if (event.dataTransfer.types.includes("application/x-kcml-port")) { event.preventDefault(); setDragTargetKey(port.key); } }} onDragLeave={() => setDragTargetKey((current) => current === port.key ? null : current)} onDrop={(event) => { const raw = event.dataTransfer.getData("application/x-kcml-port"); if (!raw) return; event.preventDefault(); setDragTargetKey(null); void connect(JSON.parse(raw) as DashboardPort, port); }} onClick={(event) => { event.stopPropagation(); if (pendingSource) void connect(pendingSource, port); }}><span className="port-socket" ref={(element) => { if (element) portAnchorRefs.current.set(anchorKey, element); else portAnchorRefs.current.delete(anchorKey); }} aria-hidden="true" />{externalHelp ? <small className="port-external-label">EXTERNÍ</small> : null}{port.pulseType}</button>;
+                    })}</div><div className="dashboard-port-column outgoing"><span>Odchozí zástrčky</span>{outgoing.length === 0 ? <div className="dashboard-port empty" title="Komponenta nemá deklarovaný odchozí PULSE kontrakt."><small>Bez výstupu</small><span className="port-connector" aria-hidden="true" /></div> : null}{outgoing.map((port) => {
+                      const anchorKey = `outgoing:${port.componentId}:${port.key}`;
+                      return <button key={port.key} className={`dashboard-port ${portCompatibilityClass(port, topology.edges)}`} draggable title={portHelp(port)} aria-label={portHelp(port)} onDragStart={(event) => event.dataTransfer.setData("application/x-kcml-port", JSON.stringify(port))} onClick={(event) => { event.stopPropagation(); setPendingSource(port); }}><span className="port-connector" ref={(element) => { if (element) portAnchorRefs.current.set(anchorKey, element); else portAnchorRefs.current.delete(anchorKey); }} aria-hidden="true" />{port.pulseType}</button>;
+                    })}</div></div> : null}
                     <footer><code>{node.tokenFingerprint ?? "credential zatím nevydán"}</code><button onClick={(event) => { event.stopPropagation(); setSelectedNodeId(node.id); }} aria-label={`Otevřít detail ${node.code ?? node.label}`}><Focus size={14} /></button></footer>
                   </article>;
                 })}
