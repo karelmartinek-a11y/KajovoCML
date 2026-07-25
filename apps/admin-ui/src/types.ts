@@ -80,6 +80,12 @@ export type ComponentAccessToken = {
   rotated_at: string | null;
   rotation_reason: string | null;
 };
+export type ComponentOnboardingToken = {
+  label: string;
+  fingerprint: string;
+  expires_at: string;
+  state: string;
+};
 export type Component = {
   id: string;
   code: string;
@@ -122,6 +128,7 @@ export type Component = {
   updatedAt: string;
   permissions?: ComponentPermission[];
   accessTokens?: ComponentAccessToken[];
+  currentOnboardingToken?: ComponentOnboardingToken | null;
   readinessGates?: Array<{
     gate_key: string;
     status: string;

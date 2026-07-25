@@ -2327,6 +2327,15 @@ export async function listComponents(db: Db): Promise<Record<string, unknown>[]>
     select c.*,r.revision,r.capabilities,r.protocols,r.transports,
       (select count(*)::int from component_permission p where (p.source_component_id=c.id or p.target_component_id=c.id) and p.revoked_at is null) permission_count,
       (select count(*)::int from principal_access_token token where token.source_principal_id=c.principal_id and token.revoked_at is null) credential_count,
+      coalesce((
+        select jsonb_agg(jsonb_build_object(
+          'id',token.id,'fingerprint',token.fingerprint,'audience',token.audience,'scope_names',token.scope_names,
+          'issued_at',token.created_at,'last_used_at',token.last_used_at,'revoked_at',token.revoked_at,
+          'rotated_at',token.rotated_at,'rotation_reason',token.rotation_reason
+        ) order by token.created_at desc)
+          from principal_access_token token
+         where token.source_principal_id=c.principal_id
+      ), '[]'::jsonb) access_tokens,
       stream.gap_state,stream.highest_received_sequence,stream.highest_acknowledged_sequence,
       stream.current_event_hash,stream.integrity_state,stream.integrity_reason
     from component c
@@ -2355,6 +2364,18 @@ export async function getComponent(db: Db, id: string): Promise<Record<string, u
        join component c on c.principal_id=token.source_principal_id
       where c.id=$1
       order by token.created_at desc`,
+    [id]
+  );
+  const onboardingToken = await db.query(
+    `select token.label,token.fingerprint,token.expires_at,job.state
+       from component_onboarding_job job
+       join integration_token token on token.id=job.integration_token_id
+      where job.component_id=$1
+        and job.principal_access_token_handed_off_at is null
+        and token.revoked_at is null
+        and token.expires_at>now()
+      order by job.created_at desc
+      limit 1`,
     [id]
   );
   const [readinessGates, controlDispatches, stateObservations, heartbeats, runtimeTargets, tools, endpoints, pulseMasks,
@@ -2411,6 +2432,7 @@ export async function getComponent(db: Db, id: string): Promise<Record<string, u
     ...componentView(result.rows[0]),
     permissions: permissions.rows,
     accessTokens: accessTokens.rows,
+    currentOnboardingToken: onboardingToken.rowCount ? onboardingToken.rows[0] : null,
     readinessGates: readinessGates.rows,
     controlDispatches: controlDispatches.rows,
     stateObservations: stateObservations.rows,
@@ -2460,6 +2482,7 @@ function componentView(row: Record<string, unknown>): Record<string, unknown> {
     ingressEnabled: Boolean(row.ingress_enabled), pulseEnabled: Boolean(row.pulse_enabled), egressEnabled: Boolean(row.egress_enabled),
     revision: optionalText(row.revision), capabilities: row.capabilities ?? [], protocols: row.protocols ?? [], transports: row.transports ?? [],
     permissionCount: Number(row.permission_count ?? 0), credentialCount: Number(row.credential_count ?? 0), policyEpoch: Number(row.policy_epoch),
+    accessTokens: row.access_tokens ?? [],
     audit: {
       gapState: optionalText(row.gap_state) ?? "UNAVAILABLE",
       highestReceivedSequence: Number(row.highest_received_sequence ?? 0),
