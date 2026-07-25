@@ -134,9 +134,10 @@ describe.skipIf(!enabled)("component authorization and audit persistence", () =>
       [targetId]
     );
     await db.query("delete from component_heartbeat where component_id=$1", [targetId]);
-    expect(await markStaleComponentHeartbeats(db, 1, 10, randomUUID())).toBeGreaterThanOrEqual(1);
+    const correlationId = randomUUID();
+    expect(await markStaleComponentHeartbeats(db, 1, 10, correlationId)).toBeGreaterThanOrEqual(1);
     const disabled = await db.query(
-      "select operational_state,monitoring_state,enabled,ingress_enabled,pulse_enabled,egress_enabled from component where id=$1",
+      "select operational_state,monitoring_state,enabled,ingress_enabled,pulse_enabled,egress_enabled,policy_epoch from component where id=$1",
       [targetId]
     );
     expect(disabled.rows[0]).toMatchObject({
@@ -147,6 +148,12 @@ describe.skipIf(!enabled)("component authorization and audit persistence", () =>
       pulse_enabled: false,
       egress_enabled: false
     });
+    const watchdogAudit = await db.query(
+      "select before_json,after_json from audit_event where correlation_id=$1 and object_id=$2 order by id desc limit 1",
+      [correlationId, targetId]
+    );
+    expect(watchdogAudit.rowCount).toBe(1);
+    expect(Number(watchdogAudit.rows[0].before_json.policyEpoch)).toBe(Number(watchdogAudit.rows[0].after_json.policyEpoch));
     await db.query(
       `update component
           set activated_at=now(),operational_state='HEALTHY',monitoring_state='HEALTHY',

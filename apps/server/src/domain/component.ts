@@ -1933,8 +1933,12 @@ export async function recordComponentHeartbeat(db: Db, componentId: string, hear
 
 export async function markStaleComponentHeartbeats(db: Db, staleAfterSeconds: number, disableAfterSeconds: number, correlationId: string): Promise<number> {
   return tx(db, async (client) => {
+    // The watchdog must fail closed without invalidating control callbacks it is
+    // concurrently waiting for. The database trigger still advances the epoch
+    // for every other state-changing transaction.
+    await client.query("select set_config('kcml.watchdog_health_transition','true',true)");
     const lockedComponents = await client.query(
-      `select id
+      `select id,policy_epoch
          from component
         where lifecycle_state='ACTIVE' and enabled=true
           and registration_type='GENERIC_COMPONENT'
@@ -1943,6 +1947,7 @@ export async function markStaleComponentHeartbeats(db: Db, staleAfterSeconds: nu
     );
     if (!lockedComponents.rowCount) return 0;
     const componentIds = lockedComponents.rows.map((row) => String(row.id));
+    const policyEpochs = new Map(lockedComponents.rows.map((row) => [String(row.id), Number(row.policy_epoch)]));
     const stale = await client.query(
       `select c.id,
               max(h.heartbeat_at) as last_heartbeat,
@@ -1966,7 +1971,7 @@ export async function markStaleComponentHeartbeats(db: Db, staleAfterSeconds: nu
       if (elapsedMs <= rowStaleAfter * 1000) continue;
       staleCount += 1;
       const disable = elapsedMs > rowDisableAfter * 1000;
-      await client.query(
+      const updated = await client.query(
         `update component
             set operational_state=case when $2 then 'DISABLED' else 'UNHEALTHY' end,
                 monitoring_state='FAILED',
@@ -1974,17 +1979,24 @@ export async function markStaleComponentHeartbeats(db: Db, staleAfterSeconds: nu
                 ingress_enabled=case when $2 then false else ingress_enabled end,
                 pulse_enabled=case when $2 then false else pulse_enabled end,
                 egress_enabled=case when $2 then false else egress_enabled end,
-                policy_epoch=policy_epoch+1,
                 updated_at=now()
-          where id=$1`,
+          where id=$1
+          returning policy_epoch`,
         [row.id, disable]
       );
+      const policyEpochBefore = policyEpochs.get(String(row.id));
+      const policyEpochAfter = Number(updated.rows[0].policy_epoch);
       await appendAudit(client, {
         eventType: disable ? "component.heartbeat.disabled" : "component.heartbeat.stale",
         actorType: "system",
         objectType: "component",
         objectId: String(row.id),
-        after: { lastHeartbeat: row.last_heartbeat ?? null, activatedAt: row.activated_at ?? null, staleAfterSeconds: rowStaleAfter, disableAfterSeconds: rowDisableAfter },
+        before: { policyEpoch: policyEpochBefore },
+        after: {
+          lastHeartbeat: row.last_heartbeat ?? null, activatedAt: row.activated_at ?? null,
+          staleAfterSeconds: rowStaleAfter, disableAfterSeconds: rowDisableAfter,
+          policyEpoch: policyEpochAfter
+        },
         correlationId
       });
     }
