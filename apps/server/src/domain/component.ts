@@ -1935,6 +1935,14 @@ export async function recordComponentHeartbeat(db: Db, componentId: string, hear
       responseDigest: heartbeat.stateDigest ?? evidenceDigest(heartbeat.payload ?? {}),
       variant: heartbeat.challengeId ? "challenge_response" : "unsolicited_push"
     });
+    if (heartbeat.challengeId) {
+      await recordActiveGateEvidence(client, {
+        componentId, revisionId: String(current.rows[0].active_revision_id), gate: "HEARTBEAT_PUSH", pass: true,
+        reasonCode: "heartbeat_callback_verified", evidence: { heartbeatAt: heartbeat.heartbeatAt, operationalState: heartbeat.operationalState, challengeId: heartbeat.challengeId },
+        correlationId: heartbeat.correlationId, requestDigest: evidenceDigest({ challengeId: heartbeat.challengeId, nonce: heartbeat.challengeNonce }),
+        responseDigest: heartbeat.stateDigest ?? evidenceDigest(heartbeat.payload ?? {}), variant: "challenge_response"
+      });
+    }
     return { accepted: true, policyEpoch, failClosed: false };
   });
 }
@@ -2028,6 +2036,24 @@ export async function recordComponentMonitoringWatchdog(db: Db, params: {
       requestDigest: evidenceDigest({ componentId: params.componentId, probe: "runtime_watchdog" }),
       responseDigest: evidenceDigest(params.evidence), variant: "runtime_health"
     });
+    if (params.pass) {
+      for (const [gate, reasonCode] of [
+        ["EXTERNAL_TARGET_OUTBOUND", "runtime_tls_egress_probe_passed"],
+        ["TCP_TLS_EGRESS_ALLOWED", "runtime_tls_egress_probe_passed"],
+        ["DEPENDENCY_READY", "runtime_readiness_probe_passed"],
+        ["DRAIN_HANDOFF", "runtime_readiness_probe_passed"],
+        ["WORKER_SINGLE_ACTIVE", "runtime_readiness_probe_passed"],
+        ["PERSISTENT_STORAGE_MOUNT", "runtime_readiness_probe_passed"],
+        ["SECRET_ALLOWED_RUNTIME", "runtime_readiness_probe_passed"]
+      ] as const) {
+        await recordActiveGateEvidence(client, {
+          componentId: params.componentId, revisionId: String(component.rows[0].active_revision_id), gate,
+          pass: true, reasonCode, evidence: params.evidence, correlationId: params.correlationId,
+          requestDigest: evidenceDigest({ componentId: params.componentId, probe: "runtime_watchdog", gate }),
+          responseDigest: evidenceDigest(params.evidence), variant: "runtime_health"
+        });
+      }
+    }
     // Monitoring health is fail-closed at authorization time, but must not
     // invalidate an in-flight control callback's policy epoch.
     await client.query("select set_config('kcml.watchdog_health_transition','true',true)");
