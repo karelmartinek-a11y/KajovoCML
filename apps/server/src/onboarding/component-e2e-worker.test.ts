@@ -75,5 +75,8 @@ describe("KCML E2E worker", () => {
     expect(resultWrite?.params.slice(4, 7)).toEqual([true, "PASS", null]);
     const completed = writes.find((write) => write.sql.includes("set status=$2,completed_at"));
     expect(completed?.params[1]).toBe("PASS");
+    const evidenceWrite = writes.find((write) => write.sql.includes("insert into component_readiness_gate_evidence"));
+    expect(evidenceWrite?.params[9]).toBeNull();
+    expect(evidenceWrite?.sql).not.toContain("now()+interval '15 minutes'");
   });
 });
