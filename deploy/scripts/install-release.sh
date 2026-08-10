@@ -12,13 +12,6 @@ test -f "$source_dir/release-manifest.json"
 test -f /etc/kcml/kcml.env
 : "${PASS:?PASS is required}"
 
-onboarding_catalog="$source_dir/docs/onboarding-catalogs/onboarding-1.1.json"
-test -f "$onboarding_catalog"
-component_hostname_pattern="$(jq -er '.identityAssignment.hostnamePattern' "$onboarding_catalog")"
-component_hostname_suffix="$(printf '%s\n' "$component_hostname_pattern" | sed -n 's/^kcml####\.//p')"
-test -n "$component_hostname_suffix"
-[[ "$component_hostname_suffix" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]]
-
 set -a
 # shellcheck source=/dev/null
 . /etc/kcml/kcml.env
@@ -28,6 +21,8 @@ export BUILD_ID="$release_id"
 # only missing values from their configured base domain during the upgrade.
 # shellcheck source=/dev/null
 . "$source_dir/deploy/scripts/control-plane-hosts.sh"
+component_hostname_suffix="${KCML_COMPONENT_HOST_SUFFIX:-$PUBLIC_BASE_DOMAIN}"
+[[ "$component_hostname_suffix" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]]
 
 release_dir="/opt/kcml/releases/$release_id"
 previous_release="$(readlink -f /opt/kcml/current 2>/dev/null || true)"
@@ -41,32 +36,9 @@ else
 fi
 switched=false
 current_step="init"
-registry_auth_staged=false
 step() {
   current_step="$1"
   echo "release-step:$current_step"
-}
-cleanup_registry_auth() {
-  if [ "$registry_auth_staged" = "true" ]; then
-    rm -f /var/lib/kcml/podman/auth.json /var/lib/kcml/podman/.docker/config.json
-  fi
-}
-stage_registry_auth() {
-  if [ -z "${GHCR_TOKEN:-}" ]; then
-    return 0
-  fi
-  local ghcr_actor="${GHCR_ACTOR:-${GITHUB_ACTOR:-}}"
-  test -n "$ghcr_actor"
-  [[ "$ghcr_actor" =~ ^[A-Za-z0-9-]{1,39}$ ]]
-  install -d -m 0700 -o kcml -g kcml /var/lib/kcml/podman /var/lib/kcml/podman/.docker
-  local encoded_auth
-  encoded_auth="$(printf '%s:%s' "$ghcr_actor" "$GHCR_TOKEN" | base64 -w0)"
-  printf '{"auths":{"ghcr.io":{"auth":"%s"}}}\n' "$encoded_auth" > /var/lib/kcml/podman/auth.json
-  unset encoded_auth
-  chown kcml:kcml /var/lib/kcml/podman/auth.json
-  chmod 0600 /var/lib/kcml/podman/auth.json
-  install -m 0600 -o kcml -g kcml /var/lib/kcml/podman/auth.json /var/lib/kcml/podman/.docker/config.json
-  registry_auth_staged=true
 }
 render_nginx_config() {
   local template="$1" target="$2"
@@ -108,7 +80,6 @@ rollback_on_error() {
   exit_code=$?
   trap - ERR
   echo "release-failed:$current_step" >&2
-  cleanup_registry_auth
   if [ -n "$previous_release_id" ] && [ -d "$previous_release" ]; then
     if [ "$switched" = "true" ]; then
       restore_script="$release_dir/deploy/scripts/release-config.sh"
@@ -125,7 +96,7 @@ restart_core_services() {
   systemctl restart kcml
   systemctl restart kcml-egress-proxy
   systemctl restart kcml-secret-broker
-  systemctl restart kcml-onboarding-worker
+  systemctl restart kcml-generation-worker
   systemctl restart kcml-component-control-worker
   systemctl restart kcml-component-e2e-worker
   systemctl restart kcml-monitor
@@ -162,7 +133,7 @@ wait_for_runtime_health() {
       && systemctl is-active --quiet kcml \
       && systemctl is-active --quiet kcml-egress-proxy \
       && systemctl is-active --quiet kcml-secret-broker \
-      && systemctl is-active --quiet kcml-onboarding-worker \
+      && systemctl is-active --quiet kcml-generation-worker \
       && systemctl is-active --quiet kcml-component-control-worker \
       && systemctl is-active --quiet kcml-component-e2e-worker \
       && systemctl is-active --quiet kcml-monitor \
@@ -179,8 +150,8 @@ wait_for_runtime_health() {
   done
 
   if [ "$healthy" != "true" ]; then
-    systemctl status kcml kcml-egress-proxy kcml-secret-broker kcml-onboarding-worker kcml-component-control-worker kcml-component-e2e-worker kcml-monitor kcml-alert-primary kcml-alert-backup --no-pager -l || true
-    for service in kcml kcml-egress-proxy kcml-secret-broker kcml-onboarding-worker kcml-component-control-worker kcml-component-e2e-worker kcml-monitor; do
+    systemctl status kcml kcml-egress-proxy kcml-secret-broker kcml-generation-worker kcml-component-control-worker kcml-component-e2e-worker kcml-monitor kcml-alert-primary kcml-alert-backup --no-pager -l || true
+    for service in kcml kcml-egress-proxy kcml-secret-broker kcml-generation-worker kcml-component-control-worker kcml-component-e2e-worker kcml-monitor; do
       echo "==== journal:$service ====" >&2
       journalctl -u "$service" --no-pager -n 80 || true
     done
@@ -202,36 +173,23 @@ require_stable_runtime_health() {
 
 render_nginx_config "$source_dir/deploy/nginx/kcml.conf" /etc/nginx/sites-available/kcml.conf
 ln -sfn /etc/nginx/sites-available/kcml.conf /etc/nginx/sites-enabled/kcml.conf
-install -m 0755 "$source_dir/deploy/scripts/kcml-deploy-wrapper.sh" /usr/local/sbin/kcml-deploy-wrapper
-install -m 0755 "$source_dir/deploy/scripts/kcml-repository-component-deploy-wrapper.sh" /usr/local/sbin/kcml-repository-component-deploy-wrapper
-install -m 0755 "$source_dir/deploy/scripts/kcml-handler-preload-wrapper.sh" /usr/local/sbin/kcml-handler-preload-wrapper
-if id kcml-deploy >/dev/null 2>&1 && [ -d /opt/actions-runner/kcml-deploy/_work ]; then
-  install -d -m 0755 -o kcml-deploy -g kcml-deploy /opt/actions-runner/kcml-deploy/_work/_temp
-  chown -R kcml-deploy:kcml-deploy /opt/actions-runner/kcml-deploy/_work/_temp
-fi
-cat >/etc/sudoers.d/kcml-deploy-wrappers <<'EOF'
-Defaults:kcml-deploy !requiretty
-Defaults:kcml-deploy env_keep += "PASS GHCR_TOKEN GHCR_ACTOR KCML_FACTORY_RESET_CONFIRM"
-kcml-deploy ALL=(root) NOPASSWD:SETENV: /usr/local/sbin/kcml-deploy-wrapper
-kcml-deploy ALL=(root) NOPASSWD:SETENV: /usr/local/sbin/kcml-repository-component-deploy-wrapper
-kcml-deploy ALL=(root) NOPASSWD:SETENV: /usr/local/sbin/kcml-handler-preload-wrapper
+install -m 0755 "$source_dir/deploy/scripts/kcml-generated-runtime-helper" /usr/local/sbin/kcml-generated-runtime-helper
+cat >/etc/sudoers.d/kcml-generated-runtime <<'EOF'
+Defaults:kcml !requiretty
+kcml ALL=(root) NOPASSWD: /usr/local/sbin/kcml-generated-runtime-helper *
 EOF
-chmod 0440 /etc/sudoers.d/kcml-deploy-wrappers
-visudo -cf /etc/sudoers.d/kcml-deploy-wrappers
-install -d -m 0755 /usr/local/libexec
-install -m 0755 "$source_dir/deploy/scripts/install-repository-component.sh" /usr/local/libexec/kcml-install-repository-component
-for unit in kcml.service kcml-onboarding-worker.service kcml-component-control-worker.service kcml-component-e2e-worker.service kcml-monitor.service kcml-egress-proxy.service kcml-alert-primary.service kcml-alert-backup.service kcml-secret-broker.service; do
+chmod 0440 /etc/sudoers.d/kcml-generated-runtime
+visudo -cf /etc/sudoers.d/kcml-generated-runtime
+for unit in kcml.service kcml-generation-worker.service kcml-generated-component@.service kcml-component-control-worker.service kcml-component-e2e-worker.service kcml-monitor.service kcml-egress-proxy.service kcml-alert-primary.service kcml-alert-backup.service kcml-secret-broker.service; do
   install -m 0644 "$source_dir/deploy/systemd/$unit" "/etc/systemd/system/$unit"
 done
 install -d -m 0755 /opt/kcml/alert-sink
 install -m 0755 "$source_dir/deploy/alert-sink/receiver.mjs" /opt/kcml/alert-sink/receiver.mjs
 install -d -m 0700 -o kcml -g kcml /var/lib/kcml/alert-primary-sink /var/lib/kcml/alert-backup-sink
-install -d -m 0750 -o kcml -g kcml /var/lib/kcml/repository-components /var/lib/kcml/secret-broker
+install -d -m 0750 -o kcml -g kcml /var/lib/kcml/generation /var/lib/kcml/generated-components /var/lib/kcml/secret-broker
+if ! id kcml-runtime >/dev/null 2>&1; then useradd --system --gid kcml --home-dir /nonexistent --shell /usr/sbin/nologin kcml-runtime; fi
+install -d -m 0770 -o kcml-runtime -g kcml /var/lib/kcml/runtime
 kcml_uid="$(id -u kcml)"
-install -d -m 0755 /etc/systemd/system/kcml-onboarding-worker.service.d
-sed "s/@KCML_UID@/${kcml_uid}/g" "$source_dir/deploy/systemd/kcml-onboarding-worker-runtime.conf.in" \
-  > /etc/systemd/system/kcml-onboarding-worker.service.d/runtime-user.conf
-chmod 0644 /etc/systemd/system/kcml-onboarding-worker.service.d/runtime-user.conf
 install -d -m 0755 /etc/systemd/system/kcml-monitor.service.d
 sed "s/@KCML_UID@/${kcml_uid}/g" "$source_dir/deploy/systemd/kcml-monitor-runtime.conf.in" \
   > /etc/systemd/system/kcml-monitor.service.d/runtime-user.conf
@@ -267,7 +225,6 @@ DATABASE_APP_URL="$(cat /etc/kcml/database-app.url)"
 export DATABASE_APP_URL
 step split-config-final
 bash "$source_dir/deploy/scripts/split-service-config.sh" "$release_id"
-stage_registry_auth
 
 step import-operational-config
 KCML_PROCESS_ROLE=admin-sync \
@@ -322,7 +279,7 @@ switched=true
 
 step activate-services
 systemctl daemon-reload
-systemctl enable kcml kcml-onboarding-worker kcml-component-control-worker kcml-component-e2e-worker kcml-monitor kcml-egress-proxy kcml-secret-broker kcml-alert-primary kcml-alert-backup
+systemctl enable kcml kcml-generation-worker kcml-component-control-worker kcml-component-e2e-worker kcml-monitor kcml-egress-proxy kcml-secret-broker kcml-alert-primary kcml-alert-backup
 systemctl restart kcml-alert-primary
 systemctl restart kcml-alert-backup
 nginx -t
@@ -428,11 +385,11 @@ curl -fsS -H "Host: secrets.${PUBLIC_BASE_DOMAIN:?PUBLIC_BASE_DOMAIN is required
   "http://127.0.0.1:${PORT:-3010}/.well-known/kcml-secret-api" \
   | jq -e --arg issuer "https://secrets.${PUBLIC_BASE_DOMAIN}" \
       --arg resolve "https://secrets.${PUBLIC_BASE_DOMAIN}/v1/secrets/resolve" \
-      '.issuer == $issuer and .resolveEndpoint == $resolve and (.auth | sort) == ["access_token_bearer", "integration_token_bearer"]' >/dev/null
+      '.issuer == $issuer and .resolveEndpoint == $resolve and (.auth | sort) == ["access_token_bearer"]' >/dev/null
 curl -fsS "https://secrets.${PUBLIC_BASE_DOMAIN}/.well-known/kcml-secret-api" \
   | jq -e --arg issuer "https://secrets.${PUBLIC_BASE_DOMAIN}" \
       --arg resolve "https://secrets.${PUBLIC_BASE_DOMAIN}/v1/secrets/resolve" \
-      '.issuer == $issuer and .resolveEndpoint == $resolve and (.auth | sort) == ["access_token_bearer", "integration_token_bearer"]' >/dev/null
+      '.issuer == $issuer and .resolveEndpoint == $resolve and (.auth | sort) == ["access_token_bearer"]' >/dev/null
 curl -fsS "https://secrets.${PUBLIC_BASE_DOMAIN}/health" \
   | jq -e '.status == "ok"' >/dev/null
 test "$(curl -sS -o /dev/null -w '%{http_code}' -H 'Host: unknown.invalid' \
@@ -465,7 +422,7 @@ wait_for_sql_equals "canonical_component_identity" "0" "select count(*) from com
 wait_for_sql_equals "canonical_managed_service_identity" "0" "select count(*) from managed_service service join component on component.id=service.component_id where service.public_hostname is distinct from component.hostname or service.resource_uri is distinct from case when service.service_kind='MCP' then 'https://' || component.hostname || '/mcp' else 'https://' || component.hostname end" 1 1
 wait_for_sql_equals "retired_component_credentials" "0" "select count(*) from component_credential where status='ACTIVE' and revoked_at is null" 1 1
 wait_for_sql_equals "integration_secret_grants" "0" "select count(*) from secret_grant where principal_kind='INTEGRATION_TOKEN' and revoked_at is null" 1 1
-wait_for_sql_equals "integration_token_lifetime" "0" "select count(*) from integration_token where revoked_at is null and (initial_expires_at <> issued_at + interval '24 hours' or expires_at <> issued_at + interval '24 hours' or max_expires_at <> issued_at + interval '24 hours')" 1 1
+wait_for_sql_equals "legacy_integration_tokens_revoked" "0" "select count(*) from integration_token where revoked_at is null" 1 1
 canonical_component_hostname="$(psql "$app_database_url" --no-psqlrc --tuples-only --no-align --quiet --command \
   "select component.hostname from component join component_revision revision on revision.id=component.active_revision_id and revision.component_id=component.id where component.deregistered_at is null order by component.kcml_number limit 1")"
 if [ -n "$canonical_component_hostname" ]; then
@@ -485,7 +442,12 @@ wait_for_sql_equals "dashboard_topology_migration_row" "1" "select count(*) from
 wait_for_sql_equals "dashboard_identity_delete_guards_migration_row" "1" "select count(*) from schema_migration where version='005_dashboard_identity_delete_guards.sql'"
 wait_for_sql_equals "component_control_queue_state_migration_row" "1" "select count(*) from schema_migration where version='006_component_control_queue_state.sql'"
 wait_for_sql_equals "watchdog_health_transition_policy_epoch_migration_row" "1" "select count(*) from schema_migration where version='007_watchdog_health_transition_policy_epoch.sql'"
-wait_for_sql_equals "baseline_migration_count" "7" "select count(*) from schema_migration"
+wait_for_sql_equals "immutable_e2e_evidence_migration_row" "1" "select count(*) from schema_migration where version='008_retain_immutable_component_e2e_evidence.sql'"
+wait_for_sql_equals "internal_generation_migration_row" "1" "select count(*) from schema_migration where version='009_internal_generation.sql'"
+wait_for_sql_equals "generation_repair_webhook_migration_row" "1" "select count(*) from schema_migration where version='010_generation_repair_webhooks.sql'"
+wait_for_sql_equals "generation_integration_egress_secrets_migration_row" "1" "select count(*) from schema_migration where version='011_generation_integration_egress_secrets.sql'"
+wait_for_sql_equals "readiness_gate_evidence_idempotency_migration_row" "1" "select count(*) from schema_migration where version='012_readiness_gate_evidence_idempotency.sql'"
+wait_for_sql_equals "schema_migration_count" "12" "select count(*) from schema_migration"
 
 step verify-stable-runtime-health
 require_stable_runtime_health "$admin_host"

@@ -123,7 +123,6 @@ function authorizationLabel(edge: DashboardConnection): string {
 function nodeStatusClass(node: DashboardNode): string {
   if (node.critical) return "critical";
   if (node.suspended) return "suspended";
-  if (node.lifecyclePhase === "PRE_REGISTRATION") return "preregistration";
   if (node.operationalState === "HEALTHY") return "healthy";
   return "neutral";
 }
@@ -274,14 +273,13 @@ function DeregistrationModal({ node, onClose, onCompleted }: {
     <div className="modal-backdrop dashboard-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !submitting) onClose(); }}>
       <section className="modal dashboard-deregistration-modal" role="dialog" aria-modal="true" aria-labelledby="dashboard-deregister-title">
         <header><div><span className="eyebrow">Vysoce destruktivní operace</span><h2 id="dashboard-deregister-title">Smazat prvek a registraci</h2></div><button className="icon-only" aria-label="Zavřít" disabled={submitting} onClick={onClose}><XCircle size={20} /></button></header>
-        <div className="notice error"><ShieldAlert size={18} /><span>Prvek zmizí z aktivního Dashboardu, credentialy a Secret granty budou zneplatněny a obnova bude vyžadovat kompletní nový onboarding.</span></div>
+        <div className="notice error"><ShieldAlert size={18} /><span>Prvek zmizí z aktivního Dashboardu, credentialy a Secret granty budou zneplatněny a obnova bude vyžadovat novou generaci nebo opětovnou registraci komponenty.</span></div>
         {loading ? <div className="dashboard-loading"><RefreshCw className="spin" size={18} /> Načítám autoritativní dopad…</div> : null}
         {preview ? <>
           <div className="dashboard-impact-grid" aria-label="Přehled dopadu odregistrace">
             <div><strong>{preview.token_count}</strong><span>aktivních tokenů</span></div>
             <div><strong>{preview.connection_count}</strong><span>PULSE spojení</span></div>
             <div><strong>{preview.direct_secret_grant_count}</strong><span>přímých Secret grantů</span></div>
-            <div><strong>{preview.transferred_secret_grant_count}</strong><span>přenesených grantů</span></div>
           </div>
           <label>Důvod odregistrace<textarea rows={3} value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Uveďte konkrétní provozní nebo bezpečnostní důvod (min. 10 znaků)." /></label>
           <label>Pro potvrzení napište přesný kód <code>{preview.typedConfirmation}</code><input value={confirmedCode} onChange={(event) => setConfirmedCode(event.target.value)} autoComplete="off" /></label>
@@ -297,7 +295,7 @@ function DeregistrationModal({ node, onClose, onCompleted }: {
 
 export function DashboardPage({ releaseInfo, onOpenStandardPage }: {
   releaseInfo: ReleaseInfo | null;
-  onOpenStandardPage: (page: "components" | "integration" | "identities" | "secrets" | "tokens" | "audit") => void;
+  onOpenStandardPage: (page: "components" | "identities" | "secrets" | "tokens" | "audit") => void;
 }) {
   const [topology, setTopology] = useState<DashboardTopology | null>(null);
   const [loading, setLoading] = useState(true);
@@ -362,7 +360,6 @@ export function DashboardPage({ releaseInfo, onOpenStandardPage }: {
     return topology.nodes.filter((node) => {
       const matchesText = !normalized || `${node.code ?? ""} ${node.displayName} ${node.category} ${node.operationalState}`.toLowerCase().includes(normalized);
       const matchesStatus = statusFilter === "ALL"
-        || (statusFilter === "PRE_REGISTRATION" && node.lifecyclePhase === "PRE_REGISTRATION")
         || (statusFilter === "CRITICAL" && node.critical)
         || (statusFilter === "SUSPENDED" && node.suspended)
         || node.operationalState === statusFilter;
@@ -481,7 +478,7 @@ export function DashboardPage({ releaseInfo, onOpenStandardPage }: {
   const contentHeight = Math.max(850, ...topology.nodes.map((node) => node.position.y + 360));
   return (
     <div className="dashboard-page">
-      <PageHeader title="Aktivní Dashboard" description="Živá operační topologie, tokenový lifecycle, PULSE oprávnění a Secret granty nad jedním autoritativním backendem.">
+      <PageHeader title="Aktivní Dashboard" description="Živá operační topologie registrovaných CML prvků, PULSE oprávnění a Secret granty nad jedním autoritativním backendem.">
         <label className="search-box"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Hledat prvek, kód nebo stav…" aria-label="Hledat v Dashboardu" /></label>
         <button onClick={() => { void refresh(); }}><RefreshCw size={17} /> Obnovit</button>
       </PageHeader>
@@ -490,7 +487,7 @@ export function DashboardPage({ releaseInfo, onOpenStandardPage }: {
         <div><span className={`status-dot ${liveConnected ? "ok" : "danger"}`} /><strong>{liveConnected ? "Živý stream připojen" : "Živé spojení přerušeno"}</strong><small>{liveConnected ? `Poslední událost ${formatDate(topology.live.lastEventAt)}` : "Zobrazen poslední potvrzený stav; animace jsou zastaveny."}</small></div>
         <div><Activity size={18} /><strong>{topology.events.length}</strong><small>korelovaných událostí</small></div>
         <div><ShieldAlert size={18} /><strong>{topology.alarms.length}</strong><small>situací vyžadujících zásah</small></div>
-        <div><KeyRound size={18} /><strong>{releaseInfo?.commitSha?.slice(0, 8) ?? "neznámý"}</strong><small>{releaseInfo?.buildId ?? "build neuveden"}</small></div>
+        <div><Boxes size={18} /><strong>{releaseInfo?.commitSha?.slice(0, 8) ?? "neznámý"}</strong><small>{releaseInfo?.buildId ?? "build neuveden"}</small></div>
       </section>
 
       {topology.alarms.length ? <section className="dashboard-alarm-strip" aria-label="Prioritní alarmy">{topology.alarms.map((alarm) => <button key={alarm.id} onClick={() => setSelectedNodeId(alarm.objectId)}><AlertTriangle size={19} /><span><strong>{alarm.severity}: {alarm.title}</strong><small>{alarm.impact} {alarm.recommendedAction}</small></span></button>)}</section> : null}
@@ -524,13 +521,13 @@ export function DashboardPage({ releaseInfo, onOpenStandardPage }: {
 
         <section className="dashboard-canvas-shell">
           <div className="dashboard-canvas-toolbar">
-            <label>Stav<select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="ALL">Všechny prvky</option><option value="PRE_REGISTRATION">Čeká na onboarding</option><option value="HEALTHY">Zdravé</option><option value="CRITICAL">Kritické</option><option value="SUSPENDED">Suspendované</option></select></label>
+            <label>Stav<select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="ALL">Všechny prvky</option><option value="HEALTHY">Zdravé</option><option value="CRITICAL">Kritické</option><option value="SUSPENDED">Suspendované</option></select></label>
             <div className="dashboard-zoom-controls" aria-label="Ovládání zobrazení"><button aria-label="Oddálit" onClick={() => setZoom((value) => Math.max(0.35, value - 0.1))}><Minus size={16} /></button><span>{Math.round(zoom * 100)} %</span><button aria-label="Přiblížit" onClick={() => setZoom((value) => Math.min(2, value + 0.1))}><Plus size={16} /></button><button aria-label="Přizpůsobit prvky" onClick={() => { setZoom(0.75); canvasRef.current?.scrollTo({ top: 0, left: 0, behavior: "smooth" }); }}><Maximize2 size={16} /></button></div>
             <button className={listMode ? "active" : ""} onClick={() => setListMode((value) => !value)}><List size={16} /> Přístupný seznam</button>
             {pendingSource ? <div className="dashboard-connect-notice"><Link2 size={15} /> Vybrán {pendingSource.label}. Zvolte příchozí zásuvku.<button onClick={() => setPendingSource(null)}>Zrušit</button></div> : null}
           </div>
 
-          {listMode ? <div className="dashboard-accessible-list">{nodes.map((node) => <article key={node.id}><header><strong>{node.code ?? node.label} · {node.displayName}</strong><span>{node.lifecyclePhase === "PRE_REGISTRATION" ? "Čeká na onboarding" : node.operationalState}</span></header><p>{node.description || "Popis není v manifestu uveden."}</p><button onClick={() => { setSelectedNodeId(node.id); setListMode(false); }}>Otevřít na plátně</button></article>)}</div> : <div className="dashboard-canvas-viewport" ref={canvasRef}>
+          {listMode ? <div className="dashboard-accessible-list">{nodes.map((node) => <article key={node.id}><header><strong>{node.code ?? node.label} · {node.displayName}</strong><span>{node.operationalState}</span></header><p>{node.description || "Popis není v manifestu uveden."}</p><button onClick={() => { setSelectedNodeId(node.id); setListMode(false); }}>Otevřít na plátně</button></article>)}</div> : <div className="dashboard-canvas-viewport" ref={canvasRef}>
             <div className="dashboard-canvas" style={{ width: contentWidth * zoom, height: contentHeight * zoom }}>
               <div className="dashboard-canvas-transform" ref={canvasTransformRef} style={{ width: contentWidth, height: contentHeight, transform: `scale(${zoom})` }}>
                 <svg className="dashboard-edge-layer" width={contentWidth} height={contentHeight} aria-label="PULSE spojení">
@@ -555,21 +552,20 @@ export function DashboardPage({ releaseInfo, onOpenStandardPage }: {
                       if ((event.target as HTMLElement).closest("button,input,select,a")) return;
                       dragRef.current = { nodeId: node.id, startX: event.clientX, startY: event.clientY, originX: node.position.x, originY: node.position.y }; setDraggingNodeId(node.id);
                     }}>
-                      <div className="dashboard-node-title"><span className={`dashboard-node-icon ${node.lifecyclePhase === "PRE_REGISTRATION" ? "token" : "component"}`}>{node.lifecyclePhase === "PRE_REGISTRATION" ? <KeyRound size={19} /> : <Boxes size={19} />}</span><div><span className="eyebrow">{node.lifecyclePhase === "PRE_REGISTRATION" ? "Čeká na onboarding" : node.category}</span><h3>{node.code ?? node.label}</h3><p>{node.displayName}</p></div></div>
+                      <div className="dashboard-node-title"><span className="dashboard-node-icon component"><Boxes size={19} /></span><div><span className="eyebrow">{node.category}</span><h3>{node.code ?? node.label}</h3><p>{node.displayName}</p></div></div>
                       <span className={`dashboard-node-health ${node.critical ? "danger" : node.suspended ? "warn" : "ok"}`} title={node.critical ? "Kritický stav" : node.suspended ? "Suspendováno" : "Bez kritického alarmu"} />
                     </header>
                     {activeMotionForNode(node) ? <div className={`dashboard-process-indicator ${activeMotionForNode(node)?.phase}`} role="status" aria-live="polite"><span className="dashboard-process-spinner" /><div><strong>{activeMotionForNode(node)?.event.operationKey}</strong><small>{activeMotionForNode(node)?.phase === "travelling" ? "Probíhá korelovaná operace" : activeMotionForNode(node)?.phase === "success" ? "Operace úspěšně dokončena" : "Operace skončila chybou"}</small></div></div> : null}
                     <div className="dashboard-node-state"><span><strong>{node.operationalState}</strong><small>provoz</small></span><span><strong>{node.statistics.callCount}</strong><small>volání / 24 h</small></span><span><strong>{Math.round(node.statistics.errorRate * 100)} %</strong><small>chybovost</small></span></div>
-                    {node.lifecyclePhase === "PRE_REGISTRATION" ? <div className="dashboard-node-locked"><PauseCircle size={16} /> Provozní akce jsou neaktivní do dokončení onboardingu.</div> : null}
                     <div className="dashboard-node-secrets" aria-label="Připnuté Secrets">{node.secrets.slice(0, 4).map((secret) => <button key={secret.secretId} title={`Secret ${secret.stableName}; zdroj grantu ${secret.source}`} onClick={(event) => { event.stopPropagation(); void mutate("revoke-secret", () => revokeDashboardSecret(secret.secretId, node.id)); }}><Lock size={12} />{secret.stableName}<span aria-hidden="true">×</span></button>)}{node.secrets.length > 4 ? <span>+{node.secrets.length - 4} dalších</span> : null}{node.secrets.length === 0 ? <small>Přetáhněte sem Secret kartičku</small> : null}</div>
-                    {node.lifecyclePhase === "REGISTERED" ? <div className="dashboard-node-ports" aria-label="PULSE vstupy a výstupy"><div className="dashboard-port-column incoming"><span>Příchozí zásuvky</span>{incoming.length === 0 ? <div className="dashboard-port empty" title="Komponenta nemá deklarovaný příchozí PULSE kontrakt."><span className="port-socket" aria-hidden="true" /><small>Bez vstupu</small></div> : null}{incoming.map((port) => {
+                    <div className="dashboard-node-ports" aria-label="PULSE vstupy a výstupy"><div className="dashboard-port-column incoming"><span>Příchozí zásuvky</span>{incoming.length === 0 ? <div className="dashboard-port empty" title="Komponenta nemá deklarovaný příchozí PULSE kontrakt."><span className="port-socket" aria-hidden="true" /><small>Bez vstupu</small></div> : null}{incoming.map((port) => {
                       const anchorKey = `incoming:${port.componentId}:${port.key}`;
                       const externalHelp = externalPortHelp(port);
                       return <button key={port.key} className={`dashboard-port ${portCompatibilityClass(port, topology.edges)} ${externalHelp ? "external" : ""} ${pendingSource ? "target-candidate" : ""} ${dragTargetKey === port.key ? "drag-over" : ""}`} title={`${portHelp(port)}${externalHelp ? ` ${externalHelp}` : ""}`} aria-label={`${portHelp(port)}${externalHelp ? ` ${externalHelp}` : ""}`} onDragOver={(event) => { if (event.dataTransfer.types.includes("application/x-kcml-port")) { event.preventDefault(); setDragTargetKey(port.key); } }} onDragLeave={() => setDragTargetKey((current) => current === port.key ? null : current)} onDrop={(event) => { const raw = event.dataTransfer.getData("application/x-kcml-port"); if (!raw) return; event.preventDefault(); setDragTargetKey(null); void connect(JSON.parse(raw) as DashboardPort, port); }} onClick={(event) => { event.stopPropagation(); if (pendingSource) void connect(pendingSource, port); }}><span className="port-socket" ref={(element) => { if (element) portAnchorRefs.current.set(anchorKey, element); else portAnchorRefs.current.delete(anchorKey); }} aria-hidden="true" />{externalHelp ? <small className="port-external-label">EXTERNÍ</small> : null}{port.pulseType}</button>;
                     })}</div><div className="dashboard-port-column outgoing"><span>Odchozí zástrčky</span>{outgoing.length === 0 ? <div className="dashboard-port empty" title="Komponenta nemá deklarovaný odchozí PULSE kontrakt."><small>Bez výstupu</small><span className="port-connector" aria-hidden="true" /></div> : null}{outgoing.map((port) => {
                       const anchorKey = `outgoing:${port.componentId}:${port.key}`;
                       return <button key={port.key} className={`dashboard-port ${portCompatibilityClass(port, topology.edges)}`} draggable title={portHelp(port)} aria-label={portHelp(port)} onDragStart={(event) => event.dataTransfer.setData("application/x-kcml-port", JSON.stringify(port))} onClick={(event) => { event.stopPropagation(); setPendingSource(port); }}><span className="port-connector" ref={(element) => { if (element) portAnchorRefs.current.set(anchorKey, element); else portAnchorRefs.current.delete(anchorKey); }} aria-hidden="true" />{port.pulseType}</button>;
-                    })}</div></div> : null}
+                    })}</div></div>
                     <footer><code>{node.tokenFingerprint ?? "credential zatím nevydán"}</code><button onClick={(event) => { event.stopPropagation(); setSelectedNodeId(node.id); }} aria-label={`Otevřít detail ${node.code ?? node.label}`}><Focus size={14} /></button></footer>
                   </article>;
                 })}
@@ -586,7 +582,7 @@ export function DashboardPage({ releaseInfo, onOpenStandardPage }: {
             <h3>{selectedNode.code ?? selectedNode.label}</h3><p>{selectedNode.description || "Popis není v manifestu uveden."}</p>
             <dl className="dashboard-detail-list"><div><dt>Lifecycle</dt><dd>{selectedNode.lifecycleState}</dd></div><div><dt>Aktivace</dt><dd>{selectedNode.activationState}</dd></div><div><dt>Monitoring</dt><dd>{selectedNode.monitoringState}</dd></div><div><dt>Recertifikace</dt><dd>{selectedNode.recertificationState}</dd></div><div><dt>Poslední běh</dt><dd>{formatDate(selectedNode.statistics.lastRunAt)}</dd></div><div><dt>Secrets</dt><dd>{selectedNode.secrets.length}</dd></div></dl>
             {selectedNode.secrets.length ? <details className="dashboard-secret-detail"><summary>Připnuté Secret proměnné ({selectedNode.secrets.length})</summary><div>{selectedNode.secrets.map((grant) => { const secret = topology.secrets.find((item) => item.id === grant.secretId); return <article key={`${grant.secretId}-${grant.source}`}><div><strong>{grant.stableName}</strong><small>{grant.source}</small></div><div>{secret ? <button onClick={() => setReveal({ secret, password: "", totp: "", loading: false, error: "", value: null, revealGrantId: null, expiresAt: null })}><Eye size={14} /> MFA reveal</button> : null}<button onClick={() => void mutate("revoke-secret", () => revokeDashboardSecret(grant.secretId, selectedNode.id))}><Unplug size={14} /> Odebrat grant</button></div></article>; })}</div></details> : null}
-            {selectedNode.lifecyclePhase === "REGISTERED" && selectedNode.componentId ? <div className="dashboard-context-actions">
+            {selectedNode.componentId ? <div className="dashboard-context-actions">
               <button disabled={busy === "activation"} onClick={() => void mutate("activation", () => setDashboardComponentEnabled(selectedNode.componentId!, !selectedNode.enabled))}>{selectedNode.enabled ? <><PauseCircle size={16} /> Vypnout komponentu</> : <><PlayCircle size={16} /> Zapnout komponentu</>}</button>
               <button disabled={busy === "suspension"} onClick={() => { const reason = window.prompt(selectedNode.suspended ? "Důvod obnovení oprávnění:" : "Důvod dočasné suspendace oprávnění:", selectedNode.suspended ? "OWNER obnovil účinná oprávnění po ověření příčiny." : "OWNER dočasně pozastavil účinná oprávnění."); if (reason) void mutate("suspension", () => setDashboardNodeSuspension(selectedNode.id, !selectedNode.suspended, reason)); }}>{selectedNode.suspended ? <><PlayCircle size={16} /> Obnovit oprávnění</> : <><PauseCircle size={16} /> Suspendovat oprávnění</>}</button>
               <button onClick={() => void mutate("e2e", () => runDashboardComponentE2E(selectedNode.componentId!))}><Zap size={16} /> Spustit E2E</button>
@@ -595,7 +591,7 @@ export function DashboardPage({ releaseInfo, onOpenStandardPage }: {
               {selectedNode.lifecycleState === "QUARANTINED" ? <button onClick={() => void mutate("lifecycle", () => setDashboardComponentLifecycle(selectedNode.componentId!, "RESTORE"))}><PlayCircle size={16} /> Obnovit z karantény</button> : <button onClick={() => { if (window.confirm(`Přesunout ${selectedNode.code ?? selectedNode.label} do karantény?`)) void mutate("lifecycle", () => setDashboardComponentLifecycle(selectedNode.componentId!, "QUARANTINE")); }}><ShieldAlert size={16} /> Karanténa</button>}
               <button onClick={() => { if (window.confirm(`Retire komponenty ${selectedNode.code ?? selectedNode.label} ji provozně vyřadí. Pokračovat?`)) void mutate("lifecycle", () => setDashboardComponentLifecycle(selectedNode.componentId!, "RETIRE")); }}><PauseCircle size={16} /> Retire</button>
               <button onClick={() => onOpenStandardPage("components")}><Boxes size={16} /> Přesný detail komponenty</button><button onClick={() => onOpenStandardPage("identities")}><KeyRound size={16} /> Tokenová identita</button><button onClick={() => onOpenStandardPage("audit")}><Activity size={16} /> Audit a události</button><button className="danger-link" onClick={() => setDeregistrationNode(selectedNode)}><Trash2 size={16} /> Smazat prvek a registraci</button>
-            </div> : <div className="dashboard-context-actions"><button onClick={() => onOpenStandardPage("identities")}><KeyRound size={16} /> Otevřít integrační token</button></div>}
+            </div> : <div className="dashboard-context-actions"><button onClick={() => onOpenStandardPage("identities")}><KeyRound size={16} /> Otevřít runtime identitu</button></div>}
           </div> : null}
           {selectedEdge ? <div className="dashboard-context-content">
             <h3>{selectedEdge.sourceCode} → {selectedEdge.targetCode}</h3>

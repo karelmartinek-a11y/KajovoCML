@@ -1,0 +1,50 @@
+#!/usr/bin/env node
+import { readFile, access } from "node:fs/promises";
+
+async function text(path) { return readFile(path, "utf8"); }
+function requireText(source, needle, label) { if (!source.includes(needle)) throw new Error(`${label}: missing ${needle}`); }
+function forbidText(source, needle, label) { if (source.includes(needle)) throw new Error(`${label}: forbidden ${needle}`); }
+
+const app = await text("apps/server/src/app.ts");
+requireText(app, "registerGenerationRoutes", "app generation route");
+forbidText(app, "registerOnboardingRoutes", "retired onboarding route");
+const componentRoutes = await text("apps/server/src/http/component-routes.ts");
+forbidText(componentRoutes, "/v2/component-onboardings", "retired component onboarding intake");
+const packageJson = JSON.parse(await text("package.json"));
+const pretest = String(packageJson.scripts?.pretest ?? "");
+for (const legacy of ["repository-component", "onboarding-catalog", "generate-mcp-onboarding"]) forbidText(pretest, legacy, "pretest");
+const install = await text("deploy/scripts/install-release.sh");
+for (const legacy of ["kcml-onboarding-worker", "GHCR_TOKEN", "GITHUB_TOKEN", "stage_registry_auth", "repository-component-deploy"]) forbidText(install, legacy, "production install");
+requireText(install, "kcml-generation-worker", "production install");
+requireText(install, "kcml-generated-component@.service", "production install");
+const generation = await text("apps/server/src/generation/worker.ts");
+for (const legacy of ["github", "ghcr", "OCI_REGISTRY", "pull request"]) forbidText(generation.toLowerCase(), legacy.toLowerCase(), "generation worker");
+for (const required of ["recoverGenerationTechnicalFailure", "cancelGeneratedCandidateRelease", "restoreRepairBaseState"]) requireText(generation, required, "generation technical failure cleanup wiring");
+
+const mcpRuntime = await text("apps/server/src/http/component-mcp-runtime.ts");
+requireText(mcpRuntime, 'path: "/mcp"', "generated MCP internal dispatch");
+requireText(mcpRuntime, "generatedRuntimeCredential", "generated MCP credential handoff");
+const webhookRuntime = await text("apps/server/src/http/component-webhook-runtime.ts");
+requireText(webhookRuntime, 'app.all("/webhooks/*"', "generated public webhook ingress");
+requireText(webhookRuntime, "EXTERNAL_WEBHOOK", "provider webhook auth");
+const generatedDomain = await text("apps/server/src/domain/generated-component.ts");
+for (const required of ["materializeGenerationDependencies", "verifyGenerationDependencies", "verifyGeneratedPublicMcpBeforeActivation", "verifyGeneratedWebhookPublicIngress", "probeUdsComponentRuntime"]) requireText(generatedDomain, required, "generated CML conformance");
+const generationDomain = await text("apps/server/src/domain/generation.ts");
+requireText(generationDomain, "enqueueGeneratedRepairJob", "generated repair");
+for (const required of ["grantGenerationSecretToElements", "resumeGenerationAfterSatisfiedInputs", "upsertGenerationSecret"]) requireText(generationDomain, required, "INTEGRATING secret grant-before-resume wiring");
+const browser = await text("apps/server/src/generation/browser-session.mjs");
+for (const required of ["Runtime.evaluate", "Page.navigate", "Input.dispatchKeyEvent", "__kcmlLocatorRegistry", "switchPage"]) requireText(browser, required, "interactive generation browser");
+const runtimeHost = await text("apps/server/src/generation/runtime-host.mjs");
+requireText(runtimeHost, "GeneratedHandlerSandbox", "generated handler capability boundary");
+const handlerSandbox = await text("apps/server/src/generation/handler-sandbox.mjs");
+for (const required of ["/usr/bin/unshare", '"--mount", "--net"', '"--pid", "--fork"', "/usr/sbin/chroot", "mount -o remount,bind,ro"]) requireText(handlerSandbox, required, "generated handler OS capability boundary");
+for (const file of ["apps/server/src/generation/handler-sandbox.mjs", "apps/server/src/generation/handler-sandbox-worker.mjs", "apps/server/src/generation/generation-cancellation.mjs", "apps/server/src/generation/generation-release-cleanup.mjs", "apps/server/src/generation/generation-failure-recovery.mjs", "apps/server/src/generation/generation-secret-grant-control.mjs", "apps/server/src/onboarding/generated-repair-enqueue.mjs", "scripts/test-generated-handler-capabilities.mjs", "scripts/test-generation-cancellation.mjs", "scripts/test-generation-technical-failure-cleanup.mjs", "scripts/test-generation-integrating-secret-grant.mjs", "scripts/test-repair-enqueue-control.mjs"]) await access(file);
+await access("scripts/test-generation-browser.mjs");
+await access("scripts/test-generated-platform-live.mjs");
+try { await access("deploy/scripts/kcml-deploy-wrapper.sh"); throw new Error("production install: retired GitHub/GHCR deploy wrapper still exists"); } catch (error) { if (error?.code !== "ENOENT") throw error; }
+const migration = await text("apps/server/src/migrations/009_internal_generation.sql");
+for (const table of ["generation_job", "generation_component", "component_runtime_identity", "local_component_release"]) requireText(migration, `CREATE TABLE ${table}`, "generation migration");
+const ui = await text("apps/admin-ui/src/app-layout.tsx");
+requireText(ui, 'navigationButton("generation", "Generování"', "OWNER navigation");
+for (const file of ["deploy/systemd/kcml-generation-worker.service", "deploy/systemd/kcml-generated-component@.service", "deploy/scripts/kcml-generated-runtime-helper", "apps/server/src/http/generation-routes.ts"]) await access(file);
+process.stdout.write("internal-generation-contract:PASS\n");

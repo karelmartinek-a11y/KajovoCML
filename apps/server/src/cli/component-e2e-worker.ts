@@ -24,7 +24,7 @@ try {
         error: error instanceof Error ? error.message : "component_e2e_worker_failed" });
       throw error;
     }
-    if (!worked) await new Promise((resolve) => setTimeout(resolve, config.ONBOARDING_WORKER_INTERVAL_MS));
+    if (!worked) await new Promise((resolve) => setTimeout(resolve, config.COMPONENT_WORKER_INTERVAL_MS));
   }
 } finally {
   await db.end();

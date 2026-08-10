@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { loadConfig, type AppConfig } from "../config.js";
 import { createDb, type Db } from "../db.js";
@@ -7,15 +6,11 @@ import { hmacToken } from "../security/secrets.js";
 import { ingestComponentAuditEvent } from "./component-audit.js";
 import { authorizeComponentCall } from "./component-auth.js";
 import {
-  createComponentOnboarding,
-  evaluateComponentReadiness,
   markStaleComponentHeartbeats,
-  queueComponentE2ERun,
   revokeComponentAccessToken,
   rotateComponentAccessToken,
   setComponentLifecycle,
-  setComponentPermissionEnabled,
-  validateComponentManifest
+  setComponentPermissionEnabled
 } from "./component.js";
 import { KCML_RELEASE } from "./release.js";
 import { authorizePlatformWorkerCall, ensurePlatformWorkerAccessToken, rotatePlatformWorkerAccessToken } from "./platform-worker-access.js";
@@ -32,7 +27,6 @@ const targetPrincipalId = "91000000-0000-4000-8000-000000000009";
 const auditPrincipalId = "91000000-0000-4000-8000-000000000010";
 const clientSecret = "component-secret-for-current-policy-tests";
 const enabled = process.env.KCML_TEST_DATABASE === "1";
-const exampleManifest = JSON.parse(readFileSync(new URL(`../../../../docs/onboarding-manifest-${KCML_RELEASE.manifestSchemaVersion}.example.json`, import.meta.url), "utf8")) as Record<string, unknown>;
 let db: Db;
 let accessHmacKey: Buffer;
 let config: AppConfig;
@@ -273,66 +267,6 @@ describe.skipIf(!enabled)("component authorization and audit persistence", () =>
     });
   });
 
-  it("keeps onboarding idempotent and queues KCML-executed E2E before token handoff", async () => {
-    const integrationTokenId = randomUUID();
-    const admin = await db.query("select id from admin_account order by created_at limit 1");
-    await db.query(`insert into integration_token(
-      id,label,lookup_digest,key_id,fingerprint,created_by,initial_expires_at,expires_at,max_expires_at,descriptor,
-      token_kind,release_version,max_child_jobs
-    ) values ($1,'Component DB test',$2,'test','component-db-test',$3,now()+interval '24 hours',now()+interval '24 hours',now()+interval '24 hours',$4::jsonb,
-      'SINGLE_COMPONENT',$5,1)`,
-    [integrationTokenId, hmacToken(integrationTokenId, accessHmacKey), admin.rows[0].id, JSON.stringify({ summary: "Component test", businessPurpose: "Validate component onboarding access token handoff safely.", serviceOwner: "KCML", technicalOwner: "KCML", criticality: "LOW" }), KCML_RELEASE.catalogVersion]);
-    const manifest = validateComponentManifest({
-      ...structuredClone(exampleManifest),
-      displayName: "Self-service test",
-      businessPurpose: "Validate component onboarding access token handoff safely."
-    });
-    const input = { integrationTokenId, idempotencyKey: `component-${integrationTokenId}`, manifest, correlationId: randomUUID() };
-    const created = await createComponentOnboarding(db, input);
-    expect((await createComponentOnboarding(db, input)).id).toBe(created.id);
-    const mcpPermissions = await db.query("select route_pattern,scope_name from component_permission where source_component_id=$1 and target_component_id=$1 and scope_name like 'mcp.%' and revoked_at is null order by scope_name", [created.componentId]);
-    expect(mcpPermissions.rows.map((row) => [String(row.scope_name), String(row.route_pattern)])).toEqual([
-      ["mcp.initialize", "/mcp"], ["mcp.notifications.initialized", "/mcp"], ["mcp.tools.call", "/mcp/*"], ["mcp.tools.list", "/mcp"]
-    ]);
-    await db.query("update component set monitoring_state='HEALTHY', recertification_state='NOT_DUE' where id=$1", [created.componentId]);
-    const run = await queueComponentE2ERun(db, { jobId: String(created.id), integrationTokenId, correlationId: randomUUID() });
-    expect(run.status).toBe("QUEUED");
-    const evaluation = await evaluateComponentReadiness(db, {
-      jobId: String(created.id), integrationTokenId, accessTokenHmacKey: accessHmacKey,
-      accessTokenHmacKeyId: config.ACCESS_TOKEN_HMAC_KEY_ID, vaultMasterKey: config.CONFIG_VAULT_MASTER_KEY_BASE64,
-      vaultMasterKeyId: config.CONFIG_VAULT_MASTER_KEY_ID, integrationTokenHmacKey: config.INTEGRATION_TOKEN_HMAC_KEY_BASE64,
-      integrationTokenHmacKeyId: config.INTEGRATION_TOKEN_HMAC_KEY_ID, correlationId: randomUUID()
-    });
-    expect(evaluation.accessToken).toBeUndefined();
-    expect(evaluation.job.state).toBe("BLOCKED");
-    const authorizationGates = await db.query(
-      `select distinct on (gate_key) gate_key,status from component_readiness_gate_evidence
-        where component_id=$1 and (gate_key like 'NEGATIVE_AUTH_%' or gate_key='TOKEN_EPOCH_INVALIDATION')
-        order by gate_key,executed_at desc`,
-      [created.componentId]
-    );
-    expect(authorizationGates.rows).toHaveLength(7);
-    expect(authorizationGates.rows.every((gate) => gate.status === "PASS")).toBe(true);
-    const secondEvaluation = await evaluateComponentReadiness(db, {
-      jobId: String(created.id), integrationTokenId, accessTokenHmacKey: accessHmacKey,
-      accessTokenHmacKeyId: config.ACCESS_TOKEN_HMAC_KEY_ID, vaultMasterKey: config.CONFIG_VAULT_MASTER_KEY_BASE64,
-      vaultMasterKeyId: config.CONFIG_VAULT_MASTER_KEY_ID, integrationTokenHmacKey: config.INTEGRATION_TOKEN_HMAC_KEY_BASE64,
-      integrationTokenHmacKeyId: config.INTEGRATION_TOKEN_HMAC_KEY_ID, correlationId: randomUUID()
-    });
-    expect(secondEvaluation.accessToken).toBeUndefined();
-    const secretGates = await db.query(
-      `select distinct on (gate_key) gate_key,status from component_readiness_gate_evidence
-        where component_id=$1 and gate_key in ('SECRET_ALLOWED','SECRET_DENIED') order by gate_key,executed_at desc`,
-      [created.componentId]
-    );
-    expect(secretGates.rows).toHaveLength(2);
-    expect(secretGates.rows.every((gate) => gate.status === "PASS")).toBe(true);
-    const pendingToken = await db.query("select principal_access_token_ciphertext,principal_access_token_handed_off_at from component_onboarding_job where id=$1", [created.id]);
-    expect(String(pendingToken.rows[0].principal_access_token_ciphertext)).toMatch(/^vault:v1:/);
-    expect(pendingToken.rows[0].principal_access_token_handed_off_at).toBeNull();
-    expect(Number((await db.query("select count(*)::int count from principal where public_id like 'KCML-READINESS-%'")).rows[0].count)).toBe(0);
-    expect((await db.query("select revoked_at is null as reusable from integration_token where id=$1", [integrationTokenId])).rows[0].reusable).toBe(true);
-  });
 
   it("keeps lifecycle, permission and access-token revocation as separate audited operations", async () => {
     const actorId = String((await db.query("select id from admin_account order by created_at limit 1")).rows[0].id);

@@ -1,3 +1,5 @@
+> **HISTORICAL/SUPERSEDED (2026-08-09):** pre-internal-generation Dashboard notes. `docs/SSOT_CURRENT.md` and `docs/ARCHITECTURE.md` override lifecycle/creation statements below.
+
 # Capability parity – Dashboard revize 2
 
 | ID | Doména | Backend | Standardní UI | Dashboard UI | Test | Evidence | Stav |

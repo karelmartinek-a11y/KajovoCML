@@ -93,7 +93,6 @@ export function describeApiError(code: string, correlationId: string | null = nu
     invalid_disable_request: "Požadavek na vypnutí není platný.",
     invalid_enable_request: "Požadavek na zapnutí není platný.",
     invalid_integration_descriptor: "Popis integračního záměru není úplný.",
-    invalid_integration_token: "Integrační token není platný.",
     invalid_token: "Přístupový token komponenty není platný.",
     expired_token: "Přístupový token komponenty vypršel.",
     revoked_token: "Přístupový token nebo přístupový token byl revokován.",
@@ -118,9 +117,6 @@ export function describeApiError(code: string, correlationId: string | null = nu
     component_must_be_retired: "Před odregistrací musí být komponenta vyřazena.",
     credential_already_revoked: "Přístupový token už byl revokován.",
     audit_stream_unavailable: "Auditní kanál komponenty není dostupný.",
-    job_not_found: "Onboarding úloha nebyla nalezena.",
-    job_not_resumable: "Onboarding úlohu v tomto stavu nelze obnovit.",
-    job_not_quarantined: "Onboarding úloha není v karanténě.",
     lock_version_conflict: "Záznam se mezitím změnil. Obnovte stránku a akci zopakujte.",
     operation_failed: "Operaci se nepodařilo dokončit.",
     internal_error: "Operaci se nepodařilo dokončit kvůli interní chybě."

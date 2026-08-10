@@ -1,0 +1,2 @@
+export function deployCandidatesBeforeIntegration<T>(input: { artifacts: T[]; checkpoint?: () => Promise<void>; deployCandidate: (artifact:T)=>Promise<void>; waitCandidateRuntime:(artifact:T)=>Promise<void> }): Promise<void>;
+export function runLiveCandidateIntegration<T,R>(input: { artifacts: T[]; checkpoint?: () => Promise<void>; verifyCandidateRuntime:(artifact:T)=>Promise<void>; integrate:()=>Promise<R> }): Promise<R>;

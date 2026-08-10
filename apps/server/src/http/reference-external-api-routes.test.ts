@@ -14,7 +14,6 @@ describe("reference external API routes", () => {
       NODE_ENV: "test",
       DATABASE_URL: "postgres://unused/test",
       ACCESS_TOKEN_HMAC_KEY_BASE64: secret(1),
-      INTEGRATION_TOKEN_HMAC_KEY_BASE64: secret(2),
       EGRESS_CAPABILITY_HMAC_KEY_BASE64: secret(3),
       SESSION_SECRET_BASE64: secret(4),
       CSRF_SECRET_BASE64: secret(5),

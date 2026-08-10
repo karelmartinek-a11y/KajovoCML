@@ -1,17 +1,12 @@
 # KajovoCML
 
-KCML is a security-focused control plane for registering, operating and auditing isolated MCP servers and managed external APIs. The executable source of truth is the code, numbered PostgreSQL migrations and machine-readable catalogs in `docs/onboarding-catalogs/`; `docs/requirements-matrix.md` and `docs/audit-remediation-matrix.md` map those invariants to automated evidence.
+KajovoCML is the canonical control plane for CML components, identities, permissions, Secret Manager grants, monitoring, control, readiness/E2E evidence and audit. The normative target is `docs/SSOT_CURRENT.md`; current executable truth is the source plus numbered PostgreSQL migrations.
 
-AI agents, MCP-facing components and deterministic microsteps may be maintained outside KajovoCML and then follow the canonical onboarding catalog `docs/onboarding-catalogs/onboarding-1.1.json` at registration time. When they are maintained in this monorepository, they belong exclusively in `components/<repository-key>/`; their source layout and generation flow are governed by `docs/onboarding-catalogs/repository-component-1.1.json`, while runtime registration continues through `/v2/component-onboardings`. Integration tokens authorize KCML registration plus onboarding-time reads of explicitly granted KCML Secrets only; they must never be committed or used as GitHub or deployment credentials.
+## Creating new capabilities
+OWNER uses **Generování** in the admin UI. A persistent generation job analyses the human request, asks only for genuinely missing inputs, creates a local job workspace/revision point, uses the OpenAI Responses API for focused implementation/research, stores durable credentials in the existing Secret Manager, validates the generated source, installs a versioned local release, proves CML conformance and only then activates the component.
 
-Pure `components/<repository-key>/**` changes use the dedicated repository-component PR and deploy workflows. Mixed diffs still run full platform CI, and the post-deploy evidence for a component rollout is captured in `apps/server/src/contracts/repository-component-deploy-receipt-1.0.schema.json`.
+Internally generated components do **not** use integration-token/programmer handoff, GitHub PR/CI, GHCR or OCI as runtime dependencies or completion gates. Each result is a normal canonical CML `component`/`principal` with one managed runtime access identity, direct secret grants, HTTPS hostname, control/state/heartbeat, monitoring, audit and local rollback.
+Abandoned candidate releases use the same local rollback path: a first CREATE is stopped/removed when no previous release exists, while UPDATE/REPAIR restores the prior release; terminal REPAIR also restores its captured base component state. When INTEGRATING resumes after OWNER secret input, deterministic component grants are committed before provider/browser/API work continues.
 
-## Aktivní OWNER Dashboard
-
-OWNER administrační UI obsahuje primární aktivní Dashboard nad persistovaným serverovým read modelem. Zobrazuje stabilní lifecycle uzlu od integračního tokenu po registrovanou komponentu, PULSE topologii s oddělenou kompatibilitou a autorizací, Secret granty, uložený layout a persistovanou runtime timeline. Implementační model, migrační postup, parity matice a pravdivý stav důkazů jsou v `docs/dashboard/`.
-
-Nové administrační API je pod `/api/dashboard/*`; všechny mutace vyžadují OWNER session a CSRF, destruktivní deregistrace navíc čerstvé heslo, MFA a typed confirmation.
-
-## Local development
-
-Required tooling is Node.js 24 or newer, pnpm 11 and PostgreSQL 16.
+## Repository checks
+Use the supported runtime declared by `package.json`, then run `corepack pnpm install --frozen-lockfile` and `corepack pnpm run ci`. Independent generation checks are `node scripts/check-internal-generation-contract.mjs`, `node scripts/test-generated-component-runtime.mjs` and `node scripts/test-generation-browser.mjs`. A deployed no-mock HTTPS regression runner is available as `node scripts/test-generated-platform-live.mjs` and intentionally requires a real CML deployment and runtime credentials.

@@ -77,8 +77,6 @@ describe("secret api credential authentication", () => {
       CONFIG_VAULT_MASTER_KEY_BASE64: randomBytes(32),
       CONFIG_VAULT_MASTER_KEY_ID: "config-v1",
       ACCESS_TOKEN_HMAC_KEY_BASE64: accessKey,
-      INTEGRATION_TOKEN_HMAC_KEY_BASE64: randomBytes(32),
-      INTEGRATION_TOKEN_HMAC_KEY_ID: "it-v1"
     })).resolves.toMatchObject({
       kind: "COMPONENT",
       id: "91000000-0000-4000-8000-000000000001",
@@ -110,8 +108,6 @@ describe("secret api credential authentication", () => {
       CONFIG_VAULT_MASTER_KEY_BASE64: randomBytes(32),
       CONFIG_VAULT_MASTER_KEY_ID: "config-v1",
       ACCESS_TOKEN_HMAC_KEY_BASE64: accessKey,
-      INTEGRATION_TOKEN_HMAC_KEY_BASE64: randomBytes(32),
-      INTEGRATION_TOKEN_HMAC_KEY_ID: "it-v1"
     })).resolves.toBeNull();
   });
 

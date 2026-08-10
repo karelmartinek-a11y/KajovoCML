@@ -1,3 +1,5 @@
+> **HISTORICAL IMMUTABLE RELEASE RECORD:** This directory documents the 2026.07.22 external-onboarding compliance release. It is retained for forensic/migration history and is not an active creation/deployment instruction. `docs/SSOT_CURRENT.md` and current source code govern internal generation.
+
 # KCML compliance release 2026.07.22-compliance.1
 
 This immutable release defines generic onboarding for any API-capable component. KCML assigns the component identity and canonical hostname, and exposes the component through `https://kcml####.kajovocml.hcasc.cz/mcp`.

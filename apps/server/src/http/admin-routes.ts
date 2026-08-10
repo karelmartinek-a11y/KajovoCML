@@ -32,7 +32,7 @@ import {
   serializeWithinLimit
 } from "../domain/mcp-policy.js";
 import { monitoringPolicySchema, monitoringProfileUpdateSchema } from "../domain/monitoring-policy.js";
-import { deleteRegisteredServer } from "../domain/onboarding.js";
+import { deleteRegisteredServer } from "../domain/legacy-server-maintenance.js";
 import { listOperationalConfig, rotateMfaEncryptionKey, updateDomainConfiguration, updateOperationalConfig } from "../domain/operational-config.js";
 import { buildReadinessReport } from "../domain/readiness.js";
 import { evaluateRecertification } from "../domain/recertification.js";

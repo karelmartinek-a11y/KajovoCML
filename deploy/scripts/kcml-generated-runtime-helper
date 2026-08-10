@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+if [ "$(id -u)" -ne 0 ]; then
+  exec /usr/bin/sudo -n "$0" "$@"
+fi
+
+action="${1:?action required}"
+code="${2:?component code required}"
+[[ "$code" =~ ^kcml[0-9]{4,}$ ]] || { echo "invalid component code" >&2; exit 2; }
+root="/var/lib/kcml/generated-components/$code"
+unit="kcml-generated-component@${code}.service"
+
+ensure_runtime_user() {
+  if ! getent group kcml >/dev/null; then groupadd --system kcml; fi
+  if ! id kcml-runtime >/dev/null 2>&1; then
+    useradd --system --gid kcml --home-dir /nonexistent --shell /usr/sbin/nologin kcml-runtime
+  fi
+}
+
+case "$action" in
+  prepare)
+    ensure_runtime_user
+    install -d -m 0750 -o kcml -g kcml /var/lib/kcml/generated-components "$root" "$root/releases"
+    install -d -m 0750 -o kcml-runtime -g kcml "$root/data"
+    install -d -m 0770 -o kcml-runtime -g kcml /var/lib/kcml/runtime
+    ;;
+  credential-stdin)
+    ensure_runtime_user
+    install -d -m 0750 -o kcml -g kcml "$root"
+    tmp="$root/runtime-token.cred.tmp.$$"
+    trap 'rm -f "$tmp"' EXIT
+    /usr/bin/systemd-creds encrypt --name=runtime_token - "$tmp"
+    chown root:kcml "$tmp"
+    chmod 0640 "$tmp"
+    mv -f "$tmp" "$root/runtime-token.cred"
+    trap - EXIT
+    ;;
+  start|restart|stop)
+    /usr/bin/systemctl "$action" "$unit"
+    ;;
+  status)
+    /usr/bin/systemctl show "$unit" --property=ActiveState --property=MainPID --property=NRestarts
+    ;;
+  *)
+    echo "unsupported action: $action" >&2
+    exit 2
+    ;;
+esac

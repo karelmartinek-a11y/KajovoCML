@@ -1,13 +1,19 @@
 import { createHash } from "node:crypto";
 import { isIP } from "node:net";
 import { lookup } from "node:dns/promises";
-import { request as httpsRequest } from "node:https";
 import type { Db } from "../db.js";
 import { tx } from "../db.js";
 import { hmacToken, issueOpaqueSecret } from "../security/secrets.js";
 import { appendAudit } from "./audit.js";
+import { resolveSecret } from "./secret-manager.js";
+import { applyExternalProviderAuth, encodeExternalBody, externalRouteAllowed, normalizeExternalHeaders, normalizeExternalMethod, normalizeExternalRoute, performPinnedHttpsRequest } from "../generation/external-http-capability.mjs";
 
 type JsonRecord = Record<string, unknown>;
+type ExternalDispatchSecretConfig = {
+  CONFIG_VAULT_MASTER_KEY_BASE64: Buffer;
+  CONFIG_VAULT_MASTER_KEY_ID: string;
+  ACCESS_TOKEN_HMAC_KEY_BASE64: Buffer;
+};
 const privateIpv4 = /^(10\.|127\.|169\.254\.|172\.(1[6-9]|2[0-9]|3[0-1])\.|192\.168\.|0\.)/;
 
 function fail(code: string, statusCode: number): never {
@@ -43,22 +49,11 @@ export async function assertSafeExternalTarget(urlValue: string): Promise<URL> {
   return url;
 }
 
-async function pinnedHttpsPost(url: URL, body: string, headers: Record<string, string>, timeoutMs: number): Promise<{ status: number; body: string }> {
+async function safePinnedAddress(url: URL): Promise<{ address: string; family: number }> {
   const hostname = url.hostname.replace(/^\[|\]$/g, "");
   const addresses = isIP(hostname) ? [{ address: hostname, family: isIP(hostname) }] : await lookup(hostname, { all: true, verbatim: true });
   if (!addresses.length || addresses.some(({ address }) => forbiddenIp(address))) fail("external_target_ssrf_denied", 400);
-  const pinned = addresses[0]!;
-  return new Promise((resolve, reject) => {
-    const request = httpsRequest({ protocol: "https:", hostname, servername: hostname, port: 443, method: "POST", path: `${url.pathname}${url.search}`, headers: { ...headers, "content-length": Buffer.byteLength(body) }, rejectUnauthorized: true, timeout: timeoutMs, lookup: (_hostname, _options, callback) => callback(null, pinned.address, pinned.family) }, (response) => {
-      const chunks: Buffer[] = [];
-      let size = 0;
-      response.on("data", (chunk: Buffer) => { size += chunk.length; if (size > 4 * 1024 * 1024) request.destroy(new Error("external_gateway_response_too_large")); else chunks.push(chunk); });
-      response.on("end", () => resolve({ status: response.statusCode ?? 502, body: Buffer.concat(chunks).toString("utf8") }));
-    });
-    request.on("timeout", () => request.destroy(new Error("external_gateway_timeout")));
-    request.on("error", reject);
-    request.end(body);
-  });
+  return { address: addresses[0]!.address, family: Number(addresses[0]!.family) };
 }
 
 function principalView(row: Record<string, unknown>): JsonRecord {
@@ -159,27 +154,66 @@ export async function setExternalInboundPermission(db: Db, params: { externalPri
       objectType: "component", objectId: params.targetComponentId, after: { externalPrincipalId: params.externalPrincipalId, routePattern: params.routePattern, scopeName: params.scopeName, enabled: params.enabled }, correlationId: params.correlationId });
   });
 }
-export async function setExternalPermission(db: Db, params: { componentId?: string; externalPrincipalId?: string; externalTargetId: string; routePattern: string; scopeName: string; enabled: boolean; actorId: string; correlationId: string }): Promise<void> {
+export async function setExternalPermission(db: Db, params: { componentId?: string; externalPrincipalId?: string; externalTargetId: string; routePattern: string; scopeName: string; allowedMethods?: string[]; enabled: boolean; actorId: string; correlationId: string }): Promise<void> {
   if (!params.componentId && !params.externalPrincipalId) fail("external_permission_subject_required", 400);
   if (params.componentId && params.externalPrincipalId) fail("external_permission_subject_ambiguous", 400);
+  const allowedMethods = [...new Set((params.allowedMethods?.length ? params.allowedMethods : ["POST"]).map((method) => normalizeExternalMethod(method)))];
   return tx(db, async (client) => {
     const existing = await client.query(`select id from component_external_permission where component_id is not distinct from $1::uuid and external_principal_id is not distinct from $2::uuid and external_target_id=$3 and route_pattern=$4 and scope_name=$5 for update`, [params.componentId ?? null, params.externalPrincipalId ?? null, params.externalTargetId, params.routePattern, params.scopeName]);
-    if (existing.rowCount) await client.query("update component_external_permission set revoked_at=case when $2 then null else now() end where id=$1", [existing.rows[0].id, params.enabled]);
-    else if (params.enabled) await client.query(`insert into component_external_permission(component_id,external_principal_id,external_target_id,route_pattern,scope_name) values ($1,$2,$3,$4,$5)`, [params.componentId ?? null, params.externalPrincipalId ?? null, params.externalTargetId, params.routePattern, params.scopeName]);
-    await appendAudit(client, { eventType: "external_permission.changed", actorType: "admin", actorId: params.actorId, objectType: "component_external_target", objectId: params.externalTargetId, after: { componentId: params.componentId ?? null, externalPrincipalId: params.externalPrincipalId ?? null, routePattern: params.routePattern, scopeName: params.scopeName, enabled: params.enabled }, correlationId: params.correlationId });
+    if (existing.rowCount) await client.query("update component_external_permission set revoked_at=case when $2 then null else now() end, allowed_methods=$3::text[] where id=$1", [existing.rows[0].id, params.enabled, allowedMethods]);
+    else if (params.enabled) await client.query(`insert into component_external_permission(component_id,external_principal_id,external_target_id,route_pattern,scope_name,allowed_methods) values ($1,$2,$3,$4,$5,$6::text[])`, [params.componentId ?? null, params.externalPrincipalId ?? null, params.externalTargetId, params.routePattern, params.scopeName, allowedMethods]);
+    await appendAudit(client, { eventType: "external_permission.changed", actorType: "admin", actorId: params.actorId, objectType: "component_external_target", objectId: params.externalTargetId, after: { componentId: params.componentId ?? null, externalPrincipalId: params.externalPrincipalId ?? null, routePattern: params.routePattern, scopeName: params.scopeName, allowedMethods, enabled: params.enabled }, correlationId: params.correlationId });
   });
 }
 
-export async function dispatchExternalComponentCall(db: Db, params: { sourceComponentId: string; targetKey: string; routePath: string; scopeName: string; payload: unknown; correlationId: string; accessToken: string; tokenFingerprint: string }): Promise<JsonRecord> {
+async function externalProviderHeaders(
+  db: Db,
+  config: ExternalDispatchSecretConfig | undefined,
+  sourceComponentId: string,
+  authConfigInput: unknown,
+  accessToken: string,
+  tokenFingerprint: string,
+  correlationId: string
+): Promise<{ headers: Record<string, string>; authMode: string; providerSecretFingerprint: string | null }> {
+  const authConfig = authConfigInput && typeof authConfigInput === "object" && !Array.isArray(authConfigInput) ? authConfigInput as Record<string, unknown> : {};
+  const mode = typeof authConfig.mode === "string" ? authConfig.mode : "FORWARD_KCML_BEARER";
+  if (mode !== "FORWARD_KCML_BEARER" && mode !== "NONE" && mode !== "BEARER_SECRET" && mode !== "HEADER_SECRET") fail("external_provider_auth_mode_invalid", 500);
+  if ((mode === "BEARER_SECRET" || mode === "HEADER_SECRET") && !config) fail("external_provider_secret_config_unavailable", 503);
+  const component = await db.query("select code from component where id=$1", [sourceComponentId]);
+  if (!component.rowCount) fail("external_source_component_missing", 404);
+  try {
+    return await applyExternalProviderAuth({
+      authConfig, accessToken, tokenFingerprint, correlationId,
+      resolveSecret: async (stableName: string) => {
+        if (!config) fail("external_provider_secret_config_unavailable", 503);
+        const secret = await resolveSecret(db, config, { kind: "COMPONENT", id: sourceComponentId, publicId: String(component.rows[0].code), auditActorType: "component" }, stableName, correlationId);
+        return { value: secret.value, fingerprint: secret.fingerprint };
+      }
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "external_provider_auth_failed";
+    if (message.startsWith("external_provider_")) fail(message, 500);
+    throw error;
+  }
+}
+
+export async function dispatchExternalComponentCall(db: Db, params: {
+  sourceComponentId: string; targetKey: string; routePath: string; scopeName: string;
+  method?: string; headers?: Record<string, string>; bodyType?: "NONE" | "JSON" | "FORM" | "TEXT"; body?: unknown; payload?: unknown; timeoutMs?: number;
+  correlationId: string; accessToken: string; tokenFingerprint: string; config?: ExternalDispatchSecretConfig;
+}): Promise<JsonRecord> {
+  const route = normalizeExternalRoute(params.routePath);
   const targetResult = await db.query("select * from component_external_target where target_key=$1 and status='ACTIVE'", [params.targetKey]);
   if (!targetResult.rowCount) fail("external_target_not_available", 404);
   let target = targetResult.rows[0] as Record<string, unknown>;
   if (target.circuit_state === "OPEN" && circuitCooldownActive(target)) fail("external_gateway_circuit_open", 503);
-  const permission = await db.query(`select id from component_external_permission where component_id=$1 and external_target_id=$2 and scope_name=$3 and revoked_at is null and ($4=route_pattern or (right(route_pattern,2)='/*' and $4 like left(route_pattern,length(route_pattern)-1)||'%'))`, [params.sourceComponentId, target.id, params.scopeName, params.routePath]);
-  if (!permission.rowCount) fail("external_route_denied", 403);
+  const permission = await db.query(`select id,auth_config,allowed_methods,route_pattern from component_external_permission where component_id=$1 and external_target_id=$2 and scope_name=$3 and revoked_at is null`, [params.sourceComponentId, target.id, params.scopeName]);
+  const permissionWithRoute = permission.rows.find((row: Record<string, unknown>) => externalRouteAllowed(row.route_pattern, route.pathname));
+  if (!permissionWithRoute) fail("external_route_denied", 403);
+  const method = normalizeExternalMethod(params.method ?? "POST", Array.isArray(permissionWithRoute.allowed_methods) ? permissionWithRoute.allowed_methods : ["POST"]);
   const baseUrl = await assertSafeExternalTarget(String(target.base_url));
-  if (!(target.allowed_path_prefixes as string[]).some((prefix) => params.routePath.startsWith(prefix))) fail("external_route_denied", 403);
-  const url = new URL(params.routePath, baseUrl);
+  if (!(target.allowed_path_prefixes as string[]).some((prefix) => route.pathname.startsWith(prefix))) fail("external_route_denied", 403);
+  const url = new URL(route.pathAndQuery, baseUrl);
   if (url.origin !== baseUrl.origin) fail("external_target_ssrf_denied", 400);
 
   target = await tx(db, async (client) => {
@@ -196,26 +230,34 @@ export async function dispatchExternalComponentCall(db: Db, params: { sourceComp
     }
     return row;
   });
-  const requestDigest = `sha256:${createHash("sha256").update(JSON.stringify(params.payload)).digest("hex")}`;
+  const providerAuth = await externalProviderHeaders(db, params.config, params.sourceComponentId, permissionWithRoute.auth_config, params.accessToken, params.tokenFingerprint, params.correlationId);
+  const customHeaders = normalizeExternalHeaders(params.headers ?? {});
+  const encoded = encodeExternalBody({ method, bodyType: params.bodyType, body: params.body, payload: params.payload });
+  const requestHeaders: Record<string, string> = { ...customHeaders, ...providerAuth.headers };
+  if (encoded.contentType && !requestHeaders["content-type"]) requestHeaders["content-type"] = encoded.contentType;
+  const requestAuditPayload = { method, routePath: route.pathAndQuery, bodyType: encoded.bodyType, headers: customHeaders, body: params.body !== undefined ? params.body : params.payload };
+  const requestDigest = `sha256:${createHash("sha256").update(JSON.stringify(requestAuditPayload)).digest("hex")}`;
   let call;
   try {
     call = await tx(db, async (client) => {
-      const created = await client.query(`insert into component_external_gateway_call(source_component_id,external_target_id,external_permission_id,route_path,scope_name,correlation_id,request_digest,request_payload,status,attempt_count) values ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,'PENDING',1) returning id`, [params.sourceComponentId, target.id, permission.rows[0].id, params.routePath, params.scopeName, params.correlationId, requestDigest, JSON.stringify(params.payload)]);
-      await appendAudit(client, { eventType: "component.external_gateway.authorized", actorType: "component", actorId: params.sourceComponentId, objectType: "component_external_target", objectId: String(target.id), after: { callId: created.rows[0].id, audience: baseUrl.origin, scopeName: params.scopeName, tokenFingerprint: params.tokenFingerprint }, correlationId: params.correlationId });
+      const created = await client.query(`insert into component_external_gateway_call(source_component_id,external_target_id,external_permission_id,route_path,scope_name,correlation_id,request_digest,request_payload,status,attempt_count) values ($1,$2,$3,$4,$5,$6,$7,$8::jsonb,'PENDING',1) returning id`, [params.sourceComponentId, target.id, permissionWithRoute.id, route.pathAndQuery, params.scopeName, params.correlationId, requestDigest, JSON.stringify(requestAuditPayload)]);
+      await appendAudit(client, { eventType: "component.external_gateway.authorized", actorType: "component", actorId: params.sourceComponentId, objectType: "component_external_target", objectId: String(target.id), after: { callId: created.rows[0].id, audience: baseUrl.origin, scopeName: params.scopeName, method, routePath: route.pathAndQuery, tokenFingerprint: params.tokenFingerprint, providerAuthMode: providerAuth.authMode, providerSecretFingerprint: providerAuth.providerSecretFingerprint }, correlationId: params.correlationId });
       return created;
     });
   } catch (error) {
     await db.query("update component_external_target set circuit_probe_in_flight=false where id=$1 and circuit_state='HALF_OPEN'", [target.id]);
     throw error;
   }
-  let response: { status: number; body: string } | undefined;
+  let response: { statusCode: number; headers: Record<string, string>; body: string } | undefined;
   const attempts = Number(target.max_retries) + 1;
+  const timeoutMs = Math.min(Math.max(Number(params.timeoutMs ?? target.request_timeout_ms) || Number(target.request_timeout_ms), 100), Number(target.request_timeout_ms));
   let attemptsUsed = 0;
+  const pinned = await safePinnedAddress(url);
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     attemptsUsed = attempt;
     try {
-      response = await pinnedHttpsPost(url, JSON.stringify(params.payload), { "authorization": `Bearer ${params.accessToken}`, "content-type": "application/json", "x-kcml-correlation-id": params.correlationId, "x-kcml-access-token-fingerprint": params.tokenFingerprint }, Number(target.request_timeout_ms));
-      if (response.status < 500 || attempt === attempts) break;
+      response = await performPinnedHttpsRequest({ url, method, headers: requestHeaders, body: encoded.body, timeoutMs, ...pinned });
+      if (response.statusCode < 500 || attempt === attempts) break;
     } catch {
       if (attempt === attempts) break;
     }
@@ -229,14 +271,14 @@ export async function dispatchExternalComponentCall(db: Db, params: { sourceComp
   }
   const bodyText = response.body;
   let responsePayload: unknown = bodyText;
-  try { responsePayload = JSON.parse(bodyText); } catch { /* audit raw text safely as a JSON string */ }
+  try { responsePayload = JSON.parse(bodyText); } catch { /* raw text remains a JSON string in audit */ }
   const responseDigest = `sha256:${createHash("sha256").update(bodyText).digest("hex")}`;
   await tx(db, async (client) => {
-    const succeeded = response.status >= 200 && response.status < 300;
-    const circuitHealthy = response.status < 500;
-    await client.query("update component_external_gateway_call set status=$2,http_status=$3,response_digest=$4,response_payload=$5::jsonb,attempt_count=$6,completed_at=now() where id=$1", [call.rows[0].id, succeeded ? "SUCCEEDED" : "FAILED", response.status, responseDigest, JSON.stringify(responsePayload), attemptsUsed]);
+    const providerOk = response.statusCode >= 200 && response.statusCode < 300;
+    const circuitHealthy = response.statusCode < 500;
+    await client.query("update component_external_gateway_call set status=$2,http_status=$3,response_digest=$4,response_payload=$5::jsonb,attempt_count=$6,completed_at=now() where id=$1", [call.rows[0].id, providerOk ? "SUCCEEDED" : "FAILED", response.statusCode, responseDigest, JSON.stringify(responsePayload), attemptsUsed]);
     await client.query(`update component_external_target set circuit_failure_count=case when $2 then 0 else circuit_failure_count+1 end,circuit_state=case when $2 then 'CLOSED' when circuit_failure_count+1>=circuit_failure_threshold then 'OPEN' else circuit_state end,circuit_opened_at=case when $2 then null when circuit_failure_count+1>=circuit_failure_threshold then now() else circuit_opened_at end,circuit_probe_in_flight=false where id=$1`, [target.id, circuitHealthy]);
-    await appendAudit(client, { eventType: "component.external_gateway.completed", actorType: "component", actorId: params.sourceComponentId, objectType: "component_external_target", objectId: String(target.id), after: { callId: call.rows[0].id, routePath: params.routePath, scopeName: params.scopeName, status: response.status, requestDigest, responseDigest, attempts: attemptsUsed }, correlationId: params.correlationId });
+    await appendAudit(client, { eventType: "component.external_gateway.completed", actorType: "component", actorId: params.sourceComponentId, objectType: "component_external_target", objectId: String(target.id), after: { callId: call.rows[0].id, routePath: route.pathAndQuery, method, scopeName: params.scopeName, status: response.statusCode, requestDigest, responseDigest, attempts: attemptsUsed }, correlationId: params.correlationId });
   });
-  return { accepted: response.status >= 200 && response.status < 300, statusCode: response.status, response: responsePayload, correlationId: params.correlationId };
+  return { accepted: true, providerOk: response.statusCode >= 200 && response.statusCode < 300, statusCode: response.statusCode, headers: response.headers, body: responsePayload, response: responsePayload, correlationId: params.correlationId };
 }

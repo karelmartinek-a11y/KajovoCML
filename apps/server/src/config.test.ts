@@ -39,7 +39,6 @@ describe("configuration gates", () => {
     expect(() => loadConfig({
       ...envBase,
       ACCESS_TOKEN_HMAC_KEY_BASE64: secret,
-      INTEGRATION_TOKEN_HMAC_KEY_BASE64: Buffer.alloc(32, 2).toString("base64"),
       EGRESS_CAPABILITY_HMAC_KEY_BASE64: Buffer.alloc(32, 3).toString("base64"),
       SESSION_SECRET_BASE64: Buffer.alloc(32, 4).toString("base64"),
       CSRF_SECRET_BASE64: Buffer.alloc(32, 5).toString("base64"),
@@ -48,7 +47,6 @@ describe("configuration gates", () => {
     expect(() => loadConfig({
       ...envBase,
       ACCESS_TOKEN_HMAC_KEY_BASE64: `${secret}\n`,
-      INTEGRATION_TOKEN_HMAC_KEY_BASE64: Buffer.alloc(32, 2).toString("base64"),
       EGRESS_CAPABILITY_HMAC_KEY_BASE64: Buffer.alloc(32, 3).toString("base64"),
       SESSION_SECRET_BASE64: Buffer.alloc(32, 4).toString("base64"),
       CSRF_SECRET_BASE64: Buffer.alloc(32, 5).toString("base64"),
@@ -60,7 +58,6 @@ describe("configuration gates", () => {
     expect(() => loadConfig({
       ...envBase,
       ACCESS_TOKEN_HMAC_KEY_BASE64: Buffer.alloc(8).toString("base64"),
-      INTEGRATION_TOKEN_HMAC_KEY_BASE64: Buffer.alloc(32, 2).toString("base64"),
       EGRESS_CAPABILITY_HMAC_KEY_BASE64: Buffer.alloc(32, 3).toString("base64"),
       SESSION_SECRET_BASE64: Buffer.alloc(32, 4).toString("base64"),
       CSRF_SECRET_BASE64: Buffer.alloc(32, 5).toString("base64"),
@@ -68,21 +65,15 @@ describe("configuration gates", () => {
     })).toThrow();
   });
 
-  it("accepts the existing GitHub API authorization for the onboarding worker", () => {
+  it("accepts the internal generation worker without external onboarding credentials", () => {
     expect(() => loadConfig({
+      KCML_PROCESS_ROLE: "worker",
       ...envBase,
       ACCESS_TOKEN_HMAC_KEY_BASE64: secret,
-      INTEGRATION_TOKEN_HMAC_KEY_BASE64: Buffer.alloc(32, 2).toString("base64"),
       EGRESS_CAPABILITY_HMAC_KEY_BASE64: Buffer.alloc(32, 3).toString("base64"),
-      SESSION_SECRET_BASE64: Buffer.alloc(32, 4).toString("base64"),
-      CSRF_SECRET_BASE64: Buffer.alloc(32, 5).toString("base64"),
-      MFA_ENCRYPTION_KEY_BASE64: Buffer.alloc(32, 6).toString("base64"),
-      ONBOARDING_WORKER_ENABLED: "true",
-      GITHUB_OWNER: "example",
-      GITHUB_REPO: "repository",
-      GITHUB_TOKEN: "github-token-with-sufficient-length",
-      OCI_IMAGE_NAMESPACE: "example/handlers",
-      OCI_CERTIFICATE_IDENTITY: "https://github.com/example/repository/.github/workflows/onboarding-build.yml@refs/heads/main"
+      GENERATION_WORKER_ENABLED: "true",
+      GENERATION_WORKER_INTERVAL_MS: "1500",
+      COMPONENT_WORKER_INTERVAL_MS: "2000"
     })).not.toThrow();
   });
 
@@ -90,24 +81,18 @@ describe("configuration gates", () => {
     expect(() => loadConfig({
       KCML_PROCESS_ROLE: "worker",
       ...envBase,
+      ACCESS_TOKEN_HMAC_KEY_BASE64: secret,
       EGRESS_CAPABILITY_HMAC_KEY_BASE64: Buffer.alloc(32, 3).toString("base64"),
-      ONBOARDING_WORKER_ENABLED: "true",
-      GITHUB_OWNER: "example",
-      GITHUB_REPO: "repository",
-      GITHUB_TOKEN: "github-token-with-sufficient-length",
-      OCI_IMAGE_NAMESPACE: "example/handlers",
-      OCI_CERTIFICATE_IDENTITY: "https://github.com/example/repository/.github/workflows/onboarding-build.yml@refs/heads/main"
+      GENERATION_WORKER_ENABLED: "true"
     })).not.toThrow();
     expect(() => loadConfig({
       KCML_PROCESS_ROLE: "web",
       ...envBase,
       ACCESS_TOKEN_HMAC_KEY_BASE64: secret,
-      INTEGRATION_TOKEN_HMAC_KEY_BASE64: Buffer.alloc(32, 2).toString("base64")
     })).toThrow();
     expect(() => loadConfig({
       KCML_PROCESS_ROLE: "migrate",
-      ...envBase,
-      ONBOARDING_WORKER_ENABLED: "true"
+      ...envBase
     })).not.toThrow();
   });
 
@@ -115,8 +100,7 @@ describe("configuration gates", () => {
     expect(() => loadConfig({
       ...envBase,
       ACCESS_TOKEN_HMAC_KEY_BASE64: secret,
-      INTEGRATION_TOKEN_HMAC_KEY_BASE64: secret,
-      EGRESS_CAPABILITY_HMAC_KEY_BASE64: Buffer.alloc(32, 3).toString("base64"),
+      EGRESS_CAPABILITY_HMAC_KEY_BASE64: secret,
       SESSION_SECRET_BASE64: Buffer.alloc(32, 4).toString("base64"),
       CSRF_SECRET_BASE64: Buffer.alloc(32, 5).toString("base64"),
       MFA_ENCRYPTION_KEY_BASE64: Buffer.alloc(32, 6).toString("base64")
@@ -124,7 +108,6 @@ describe("configuration gates", () => {
     expect(() => loadConfig({
       ...envBase,
       ACCESS_TOKEN_HMAC_KEY_BASE64: secret,
-      INTEGRATION_TOKEN_HMAC_KEY_BASE64: Buffer.alloc(32, 2).toString("base64"),
       EGRESS_CAPABILITY_HMAC_KEY_BASE64: Buffer.alloc(32, 3).toString("base64"),
       SESSION_SECRET_BASE64: Buffer.alloc(32, 4).toString("base64"),
       CSRF_SECRET_BASE64: Buffer.alloc(32, 5).toString("base64"),
@@ -137,7 +120,6 @@ describe("configuration gates", () => {
     expect(() => loadConfig({
       ...envBase,
       ACCESS_TOKEN_HMAC_KEY_BASE64: secret,
-      INTEGRATION_TOKEN_HMAC_KEY_BASE64: Buffer.alloc(32, 2).toString("base64"),
       EGRESS_CAPABILITY_HMAC_KEY_BASE64: Buffer.alloc(32, 3).toString("base64"),
       SESSION_SECRET_BASE64: Buffer.alloc(32, 4).toString("base64"),
       CSRF_SECRET_BASE64: Buffer.alloc(32, 5).toString("base64"),
@@ -147,7 +129,6 @@ describe("configuration gates", () => {
     expect(() => loadConfig({
       ...envBase,
       ACCESS_TOKEN_HMAC_KEY_BASE64: secret,
-      INTEGRATION_TOKEN_HMAC_KEY_BASE64: Buffer.alloc(32, 2).toString("base64"),
       EGRESS_CAPABILITY_HMAC_KEY_BASE64: Buffer.alloc(32, 3).toString("base64"),
       SESSION_SECRET_BASE64: Buffer.alloc(32, 4).toString("base64"),
       CSRF_SECRET_BASE64: Buffer.alloc(32, 5).toString("base64"),
@@ -161,7 +142,6 @@ describe("configuration gates", () => {
       ...envBase,
       NODE_ENV: "production",
       ACCESS_TOKEN_HMAC_KEY_BASE64: secret,
-      INTEGRATION_TOKEN_HMAC_KEY_BASE64: Buffer.alloc(32, 2).toString("base64"),
       EGRESS_CAPABILITY_HMAC_KEY_BASE64: Buffer.alloc(32, 3).toString("base64"),
       SESSION_SECRET_BASE64: Buffer.alloc(32, 4).toString("base64"),
       CSRF_SECRET_BASE64: Buffer.alloc(32, 5).toString("base64"),
@@ -176,7 +156,6 @@ describe("configuration gates", () => {
       AUTH_HOST: "auth.hcasc.cz",
       REGISTER_HOST: "register.hcasc.cz",
       ACCESS_TOKEN_HMAC_KEY_BASE64: secret,
-      INTEGRATION_TOKEN_HMAC_KEY_BASE64: Buffer.alloc(32, 2).toString("base64"),
       EGRESS_CAPABILITY_HMAC_KEY_BASE64: Buffer.alloc(32, 3).toString("base64"),
       SESSION_SECRET_BASE64: Buffer.alloc(32, 4).toString("base64"),
       CSRF_SECRET_BASE64: Buffer.alloc(32, 5).toString("base64"),
@@ -187,7 +166,6 @@ describe("configuration gates", () => {
       ...envBase,
       PORT: "65536",
       ACCESS_TOKEN_HMAC_KEY_BASE64: secret,
-      INTEGRATION_TOKEN_HMAC_KEY_BASE64: Buffer.alloc(32, 2).toString("base64"),
       EGRESS_CAPABILITY_HMAC_KEY_BASE64: Buffer.alloc(32, 3).toString("base64"),
       SESSION_SECRET_BASE64: Buffer.alloc(32, 4).toString("base64"),
       CSRF_SECRET_BASE64: Buffer.alloc(32, 5).toString("base64"),
@@ -207,7 +185,6 @@ describe("configuration gates", () => {
       REGISTER_HOST: "register.hcasc.cz",
       BUILD_ID: "release-1",
       ACCESS_TOKEN_HMAC_KEY_BASE64: secret,
-      INTEGRATION_TOKEN_HMAC_KEY_BASE64: Buffer.alloc(32, 2).toString("base64"),
       EGRESS_CAPABILITY_HMAC_KEY_BASE64: Buffer.alloc(32, 3).toString("base64"),
       SESSION_SECRET_BASE64: Buffer.alloc(32, 4).toString("base64"),
       CSRF_SECRET_BASE64: Buffer.alloc(32, 5).toString("base64"),
@@ -248,7 +225,6 @@ describe("configuration gates", () => {
       ...productionBase,
       CREDENTIALS_DIRECTORY: systemdCredentialsDirectory,
       ACCESS_TOKEN_HMAC_KEY_BASE64_FILE: systemdCredentialFile,
-      INTEGRATION_TOKEN_HMAC_KEY_BASE64: Buffer.alloc(32, 2).toString("base64"),
       EGRESS_CAPABILITY_HMAC_KEY_BASE64: Buffer.alloc(32, 3).toString("base64"),
       SESSION_SECRET_BASE64: Buffer.alloc(32, 4).toString("base64"),
       CSRF_SECRET_BASE64: Buffer.alloc(32, 5).toString("base64"),
@@ -257,7 +233,6 @@ describe("configuration gates", () => {
     expect(() => loadConfig({
       ...productionBase,
       ACCESS_TOKEN_HMAC_KEY_BASE64_FILE: worldReadable,
-      INTEGRATION_TOKEN_HMAC_KEY_BASE64: Buffer.alloc(32, 2).toString("base64"),
       EGRESS_CAPABILITY_HMAC_KEY_BASE64: Buffer.alloc(32, 3).toString("base64"),
       SESSION_SECRET_BASE64: Buffer.alloc(32, 4).toString("base64"),
       CSRF_SECRET_BASE64: Buffer.alloc(32, 5).toString("base64"),
@@ -267,7 +242,6 @@ describe("configuration gates", () => {
       ...productionBase,
       CREDENTIALS_DIRECTORY: systemdCredentialsDirectory,
       ACCESS_TOKEN_HMAC_KEY_BASE64_FILE: worldReadable,
-      INTEGRATION_TOKEN_HMAC_KEY_BASE64: Buffer.alloc(32, 2).toString("base64"),
       EGRESS_CAPABILITY_HMAC_KEY_BASE64: Buffer.alloc(32, 3).toString("base64"),
       SESSION_SECRET_BASE64: Buffer.alloc(32, 4).toString("base64"),
       CSRF_SECRET_BASE64: Buffer.alloc(32, 5).toString("base64"),
@@ -276,7 +250,6 @@ describe("configuration gates", () => {
     expect(() => loadConfig({
       ...productionBase,
       ACCESS_TOKEN_HMAC_KEY_BASE64_FILE: symlinkPath,
-      INTEGRATION_TOKEN_HMAC_KEY_BASE64: Buffer.alloc(32, 2).toString("base64"),
       EGRESS_CAPABILITY_HMAC_KEY_BASE64: Buffer.alloc(32, 3).toString("base64"),
       SESSION_SECRET_BASE64: Buffer.alloc(32, 4).toString("base64"),
       CSRF_SECRET_BASE64: Buffer.alloc(32, 5).toString("base64"),
@@ -285,7 +258,6 @@ describe("configuration gates", () => {
     expect(() => loadConfig({
       ...productionBase,
       ACCESS_TOKEN_HMAC_KEY_BASE64_FILE: oversized,
-      INTEGRATION_TOKEN_HMAC_KEY_BASE64: Buffer.alloc(32, 2).toString("base64"),
       EGRESS_CAPABILITY_HMAC_KEY_BASE64: Buffer.alloc(32, 3).toString("base64"),
       SESSION_SECRET_BASE64: Buffer.alloc(32, 4).toString("base64"),
       CSRF_SECRET_BASE64: Buffer.alloc(32, 5).toString("base64"),
@@ -297,25 +269,24 @@ describe("configuration gates", () => {
     const bootstrap = loadBootstrapConfig({
       ...envBase,
       ACCESS_TOKEN_HMAC_KEY_BASE64: secret,
-      INTEGRATION_TOKEN_HMAC_KEY_BASE64: Buffer.alloc(32, 2).toString("base64"),
       EGRESS_CAPABILITY_HMAC_KEY_BASE64: Buffer.alloc(32, 3).toString("base64"),
       SESSION_SECRET_BASE64: Buffer.alloc(32, 4).toString("base64"),
       CSRF_SECRET_BASE64: Buffer.alloc(32, 5).toString("base64"),
       MFA_ENCRYPTION_KEY_BASE64: Buffer.alloc(32, 6).toString("base64"),
       LOG_LEVEL: "debug",
       MONITOR_INTERVAL_MS: "30000",
-      ONBOARDING_WORKER_INTERVAL_MS: "25000"
+      COMPONENT_WORKER_INTERVAL_MS: "25000"
     });
 
     expect(mutableRuntimeConfigEnvKeys).toEqual([
-      "ONBOARDING_WORKER_INTERVAL_MS",
+      "GENERATION_WORKER_INTERVAL_MS",
       "MONITOR_INTERVAL_MS",
       "LOG_LEVEL",
       "UI_TIME_ZONE"
     ]);
     expect("LOG_LEVEL" in bootstrap).toBe(false);
     expect("MONITOR_INTERVAL_MS" in bootstrap).toBe(false);
-    expect("ONBOARDING_WORKER_INTERVAL_MS" in bootstrap).toBe(false);
+    expect("COMPONENT_WORKER_INTERVAL_MS" in bootstrap).toBe(false);
     expect("UI_TIME_ZONE" in bootstrap).toBe(false);
   });
 
@@ -323,19 +294,18 @@ describe("configuration gates", () => {
     const config = loadConfig({
       ...envBase,
       ACCESS_TOKEN_HMAC_KEY_BASE64: secret,
-      INTEGRATION_TOKEN_HMAC_KEY_BASE64: Buffer.alloc(32, 2).toString("base64"),
       EGRESS_CAPABILITY_HMAC_KEY_BASE64: Buffer.alloc(32, 3).toString("base64"),
       SESSION_SECRET_BASE64: Buffer.alloc(32, 4).toString("base64"),
       CSRF_SECRET_BASE64: Buffer.alloc(32, 5).toString("base64"),
       MFA_ENCRYPTION_KEY_BASE64: Buffer.alloc(32, 6).toString("base64"),
       LOG_LEVEL: "debug",
       MONITOR_INTERVAL_MS: "30000",
-      ONBOARDING_WORKER_INTERVAL_MS: "25000"
+      COMPONENT_WORKER_INTERVAL_MS: "25000"
     });
 
     expect(config.LOG_LEVEL).toBe("debug");
     expect(config.MONITOR_INTERVAL_MS).toBe(30000);
-    expect(config.ONBOARDING_WORKER_INTERVAL_MS).toBe(25000);
+    expect(config.COMPONENT_WORKER_INTERVAL_MS).toBe(25000);
   });
 });
 

@@ -1,0 +1,528 @@
+import { createHash, randomUUID } from "node:crypto";
+import type { GenerationRouteConfig } from "../config.js";
+import type { Db } from "../db.js";
+import { tx } from "../db.js";
+import { generatedInputSecretName, generationSecretGrantElementKeys, normalizeGenerationSecretName, reconcileGenerationPlanSecrets } from "../generation/generation-secret-plan.mjs";
+import { grantGenerationSecretBeforeResume, resumeGenerationAfterSatisfiedInputs } from "../generation/generation-secret-grant-control.mjs";
+import { appendAudit } from "./audit.js";
+import {
+  createSecret,
+  grantSecret,
+  listSecrets,
+  platformWorkerSecretPrincipal,
+  resolveSecret,
+  rotateSecret,
+  setSecretStatus
+} from "./secret-manager.js";
+
+export const GENERATION_STATES = [
+  "CREATED", "ANALYZING", "NEEDS_INPUT", "PLAN_READY", "IMPLEMENTING", "INTEGRATING", "VALIDATING",
+  "CML_CONFORMANCE", "ACTIVATING", "COMPLETED", "FAILED", "BLOCKED", "CANCELLED"
+] as const;
+export type GenerationState = typeof GENERATION_STATES[number];
+
+export class GenerationCancelledError extends Error {
+  constructor() { super("generation_job_cancelled"); this.name = "GenerationCancelledError"; }
+}
+export function isGenerationCancelledError(error: unknown): boolean {
+  return error instanceof GenerationCancelledError || (error instanceof Error && error.message === "generation_job_cancelled");
+}
+export async function assertGenerationNotCancelled(db: Db, jobId: string): Promise<void> {
+  const result = await db.query("select state from generation_job where id=$1", [jobId]);
+  if (!result.rowCount) throw Object.assign(new Error("not_found"), { statusCode: 404 });
+  if (String(result.rows[0].state) === "CANCELLED") throw new GenerationCancelledError();
+}
+
+export type GenerationInputKind = "TEXT" | "URL" | "EMAIL" | "PHONE" | "PASSWORD" | "API_KEY" | "SECRET" | "RULE";
+export type GenerationPlan = {
+  understoodIntent: string;
+  resultSummary: string;
+  elements: Array<{
+    key: string;
+    kind: "MCP_SERVER" | "AI_AGENT";
+    displayName: string;
+    businessPurpose: string;
+    responsibilities: string[];
+    requiredSecretNames?: string[];
+    providerGeneratedSecretNames?: string[];
+  }>;
+  dependencies: Array<{ from: string; to: string; purpose: string; sourceTool: string; targetTools: string[] }>;
+  missingInputs: Array<{
+    key: string;
+    label: string;
+    description: string;
+    kind: GenerationInputKind;
+    required: boolean;
+    secret: boolean;
+    stableSecretName?: string;
+    grantToElementKeys?: string[];
+  }>;
+};
+
+export type GenerationJobView = {
+  id: string;
+  jobKind: "CREATE" | "REPAIR";
+  repairComponentId: string | null;
+  ownerAdminId: string;
+  originalPrompt: string;
+  state: GenerationState;
+  plan: GenerationPlan | null;
+  inputs: Array<{
+    id: string; key: string; label: string; description: string; kind: GenerationInputKind; required: boolean; secret: boolean;
+    stableSecretName: string | null; grantElementKeys: string[]; supplied: boolean;
+  }>;
+  events: Array<{ id: number; phase: string; eventType: string; message: string; details: Record<string, unknown>; createdAt: string }>;
+  components: Array<{ componentId: string; elementKey: string; elementKind: string; code: string; hostname: string; displayName: string }>;
+  resultSummary: Record<string, unknown> | null;
+  integrationPlan: { required: boolean; summary: string; steps: string[] } | null;
+  workspacePath: string | null;
+  blockerSummary: string | null;
+  remediationAttempts: number;
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+};
+
+export { generationSecretGrantElementKeys, normalizeGenerationSecretName };
+
+function recordValue(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
+}
+
+function state(value: unknown): GenerationState {
+  const text = String(value);
+  if (!GENERATION_STATES.includes(text as GenerationState)) throw new Error(`invalid_generation_state:${text}`);
+  return text as GenerationState;
+}
+
+export async function appendGenerationEvent(db: Db, jobId: string, phase: string, eventType: string, message: string, details: Record<string, unknown> = {}): Promise<void> {
+  await db.query(
+    "insert into generation_job_event(job_id,phase,event_type,message,details) values ($1,$2,$3,$4,$5::jsonb)",
+    [jobId, phase, eventType, message, JSON.stringify(details)]
+  );
+}
+
+export async function getGenerationJob(db: Db, jobId: string): Promise<GenerationJobView> {
+  const job = await db.query("select * from generation_job where id=$1", [jobId]);
+  if (!job.rowCount) throw Object.assign(new Error("not_found"), { statusCode: 404 });
+  const inputs = await db.query("select * from generation_job_input where job_id=$1 order by created_at,input_key", [jobId]);
+  const events = await db.query("select * from generation_job_event where job_id=$1 order by id", [jobId]);
+  const components = await db.query(
+    `select gc.component_id,gc.element_key,gc.element_kind,c.code,c.hostname,c.display_name
+       from generation_component gc join component c on c.id=gc.component_id where gc.job_id=$1 order by gc.created_at`, [jobId]
+  );
+  const row = job.rows[0];
+  return {
+    id: String(row.id), jobKind: String(row.job_kind ?? "CREATE") as "CREATE" | "REPAIR", repairComponentId: row.repair_component_id ? String(row.repair_component_id) : null,
+    ownerAdminId: String(row.owner_admin_id), originalPrompt: String(row.original_prompt), state: state(row.state),
+    plan: row.plan as GenerationPlan | null,
+    inputs: inputs.rows.map((input) => ({
+      id: String(input.id), key: String(input.input_key), label: String(input.label), description: String(input.description),
+      kind: String(input.input_kind) as GenerationInputKind, required: Boolean(input.required), secret: Boolean(input.secret),
+      stableSecretName: input.stable_secret_name ? String(input.stable_secret_name) : null,
+      grantElementKeys: stringArray(input.grant_element_keys), supplied: Boolean(input.supplied_at)
+    })),
+    events: events.rows.map((event) => ({ id: Number(event.id), phase: String(event.phase), eventType: String(event.event_type), message: String(event.message), details: (event.details ?? {}) as Record<string, unknown>, createdAt: new Date(event.created_at).toISOString() })),
+    components: components.rows.map((component) => ({ componentId: String(component.component_id), elementKey: String(component.element_key), elementKind: String(component.element_kind), code: String(component.code), hostname: String(component.hostname), displayName: String(component.display_name) })),
+    resultSummary: row.result_summary as Record<string, unknown> | null,
+    integrationPlan: row.integration_plan as { required: boolean; summary: string; steps: string[] } | null,
+    workspacePath: row.workspace_path ? String(row.workspace_path) : null,
+    blockerSummary: row.blocker_summary ? String(row.blocker_summary) : null,
+    remediationAttempts: Number(row.remediation_attempts), createdAt: new Date(row.created_at).toISOString(), updatedAt: new Date(row.updated_at).toISOString(),
+    completedAt: row.completed_at ? new Date(row.completed_at).toISOString() : null
+  };
+}
+
+export async function listGenerationJobs(db: Db, ownerAdminId?: string): Promise<GenerationJobView[]> {
+  const result = await db.query(`select id from generation_job ${ownerAdminId ? "where owner_admin_id=$1" : ""} order by created_at desc limit 50`, ownerAdminId ? [ownerAdminId] : []);
+  return Promise.all(result.rows.map((row) => getGenerationJob(db, String(row.id))));
+}
+
+export async function createGenerationJob(db: Db, ownerAdminId: string, prompt: string, correlationId: string): Promise<GenerationJobView> {
+  const normalized = prompt.trim();
+  if (normalized.length < 3 || normalized.length > 50_000) throw Object.assign(new Error("invalid_generation_prompt"), { statusCode: 400 });
+  const inserted = await db.query("insert into generation_job(owner_admin_id,original_prompt) values ($1,$2) returning id", [ownerAdminId, normalized]);
+  const jobId = String(inserted.rows[0].id);
+  await appendGenerationEvent(db, jobId, "CREATED", "generation.created", "Zadání bylo přijato a čeká na analýzu.");
+  await appendAudit(db, { eventType: "generation_job.created", actorType: "admin", actorId: ownerAdminId, objectType: "generation_job", objectId: jobId, after: { promptLength: normalized.length }, correlationId });
+  return getGenerationJob(db, jobId);
+}
+
+function repairEvidenceFingerprint(evidence: Record<string, unknown>): Record<string, unknown> {
+  const pick = (key: string): unknown => Object.prototype.hasOwnProperty.call(evidence, key) ? evidence[key] : undefined;
+  const stable = {
+    source: pick("source") ?? "component_monitoring",
+    probe: pick("probe") ?? pick("probeName") ?? pick("check") ?? pick("checkName") ?? null,
+    status: pick("status") ?? pick("result") ?? null,
+    reasonCode: pick("reasonCode") ?? pick("errorCode") ?? null,
+    error: typeof pick("error") === "string" ? String(pick("error")).replace(/[0-9a-f]{8}-[0-9a-f-]{27,}/gi, "<uuid>").slice(0, 500) : null
+  };
+  return stable;
+}
+
+export function generatedRepairTriggerKey(componentId: string, evidence: Record<string, unknown>): string {
+  return `sha256:${createHash("sha256").update(JSON.stringify({ componentId, evidence: repairEvidenceFingerprint(evidence) })).digest("hex")}`;
+}
+
+export async function enqueueGeneratedRepairJob(
+  db: Db,
+  componentId: string,
+  evidence: Record<string, unknown>,
+  correlationId: string,
+  cooldownMinutes = 15
+): Promise<GenerationJobView | null> {
+  const triggerKey = generatedRepairTriggerKey(componentId, evidence);
+  const jobId = await tx(db, async (client) => {
+    const component = await client.query(
+      `select c.id,c.code,c.hostname,c.display_name,c.category,c.registration_type,c.active_revision_id,
+              c.lifecycle_state,c.activation_state,c.operational_state,c.monitoring_state,c.enabled,c.ingress_enabled,c.pulse_enabled,c.egress_enabled,
+              revision.manifest,release.id active_release_id,
+              prior.job_id prior_job_id,prior.element_key,job.owner_admin_id
+         from component c
+         join component_revision revision on revision.id=c.active_revision_id
+         left join lateral (
+           select gc.job_id,gc.element_key from generation_component gc
+            where gc.component_id=c.id order by gc.created_at desc limit 1
+         ) prior on true
+         left join generation_job job on job.id=prior.job_id
+         left join lateral (
+           select id from local_component_release where component_id=c.id and state='ACTIVE' order by activated_at desc limit 1
+         ) release on true
+        where c.id=$1 and c.registration_type='INTERNAL_GENERATED'
+          and c.lifecycle_state='ACTIVE' and c.activation_state='ACTIVE' and c.enabled=true
+        for update of c`,
+      [componentId]
+    );
+    if (!component.rowCount) return null;
+    const row = component.rows[0];
+    if (!row.owner_admin_id || !row.active_release_id) return null;
+    const duplicate = await client.query(
+      `select id from generation_job
+        where repair_component_id=$1 and job_kind='REPAIR'
+          and (state not in ('COMPLETED','FAILED','BLOCKED','CANCELLED')
+               or (repair_trigger_key=$2 and created_at > now()-($3||' minutes')::interval))
+        order by created_at desc limit 1`,
+      [componentId, triggerKey, cooldownMinutes]
+    );
+    if (duplicate.rowCount) return null;
+    const manifest = recordValue(row.manifest) ?? {};
+    const secretPolicy = recordValue(manifest.secretPolicy);
+    const elementKey = String(row.element_key ?? `repair-${String(row.code).toLowerCase()}`);
+    const plan: GenerationPlan = {
+      understoodIntent: `Automatická oprava ${String(row.code)} podle produkční monitoring evidence.`,
+      resultSummary: `Opravit existující ${String(row.code)} bez změny jeho CML identity a bez druhého control plane.`,
+      elements: [{
+        key: elementKey,
+        kind: String(row.category) === "AI_AGENT" ? "AI_AGENT" : "MCP_SERVER",
+        displayName: String(row.display_name),
+        businessPurpose: typeof manifest.businessPurpose === "string" ? manifest.businessPurpose : "Repair existing generated component",
+        responsibilities: ["Diagnostikovat root cause z monitoring evidence", "Zachovat veřejný kontrakt, pokud oprava nevyžaduje jeho normativní změnu"],
+        requiredSecretNames: stringArray(secretPolicy?.requiredSecrets)
+      }],
+      dependencies: [],
+      missingInputs: []
+    };
+    const persistedEvidence = { ...evidence, _kcmlBaseComponentState: { activeRevisionId: String(row.active_revision_id), lifecycleState: String(row.lifecycle_state), activationState: String(row.activation_state), operationalState: String(row.operational_state), monitoringState: String(row.monitoring_state), enabled: Boolean(row.enabled), ingressEnabled: Boolean(row.ingress_enabled), pulseEnabled: Boolean(row.pulse_enabled), egressEnabled: Boolean(row.egress_enabled) } };
+    const prompt = `Automatická OWNER repair cesta pro ${String(row.code)}. Použij aktuální source/release jako základ, diagnostikuj root cause z monitoring/error evidence a proveď nejmenší úplnou opravu. Neměň CML identitu. Evidence: ${JSON.stringify(evidence)}`;
+    const inserted = await client.query(
+      `insert into generation_job(owner_admin_id,original_prompt,state,plan,job_kind,repair_component_id,repair_evidence,repair_base_release_id,repair_trigger_key,repair_cooldown_until)
+       values ($1,$2,'IMPLEMENTING',$3::jsonb,'REPAIR',$4,$5::jsonb,$6,$7,now()+($8||' minutes')::interval) returning id`,
+      [row.owner_admin_id, prompt, JSON.stringify(plan), componentId, JSON.stringify(persistedEvidence), row.active_release_id, triggerKey, cooldownMinutes]
+    );
+    const id = String(inserted.rows[0].id);
+    await client.query(
+      `insert into generation_component(job_id,component_id,element_key,element_kind)
+       values ($1,$2,$3,$4)`,
+      [id, componentId, elementKey, String(row.category) === "AI_AGENT" ? "AI_AGENT" : "MCP_SERVER"]
+    );
+    await appendAudit(client, {
+      eventType: "generation_repair.queued", actorType: "system", objectType: "generation_job", objectId: id,
+      after: { componentId, triggerKey, baseReleaseId: row.active_release_id, cooldownMinutes, evidence }, correlationId
+    });
+    return id;
+  });
+  if (!jobId) return null;
+  await appendGenerationEvent(db, jobId, "IMPLEMENTING", "generation.repair_queued", "Monitoring zjistil závadu; byl založen řízený AI repair job.", { componentId, triggerKey });
+  return getGenerationJob(db, jobId);
+}
+
+export async function setGenerationNeedsInput(
+  db: Db,
+  jobId: string,
+  inputs: GenerationPlan["missingInputs"],
+  blocker: string,
+  resumeState: "IMPLEMENTING" | "INTEGRATING" = "IMPLEMENTING"
+): Promise<void> {
+  const jobRow = await db.query("select owner_admin_id,plan from generation_job where id=$1", [jobId]);
+  if (!jobRow.rowCount) throw Object.assign(new Error("not_found"), { statusCode: 404 });
+  const ownerAdminId = String(jobRow.rows[0].owner_admin_id);
+  const plan = (jobRow.rows[0].plan ?? { elements: [] }) as GenerationPlan;
+  const activeSecrets = new Set((await listSecrets(db)).filter((secret) => secret.status === "ACTIVE" && !secret.deletedAt).map((secret) => secret.stableName));
+  const normalizedInputs = [] as Array<GenerationPlan["missingInputs"][number] & { normalizedSecretName: string | null; alreadyAvailable: boolean }>;
+  for (const input of inputs) {
+    const secretName = input.secret ? normalizeGenerationSecretName(input.stableSecretName?.trim() || generatedInputSecretName(jobId, input.key)) : null;
+    const alreadyAvailable = Boolean(secretName && activeSecrets.has(secretName));
+    const grantToElementKeys = secretName
+      ? Array.from(new Set([...(input.grantToElementKeys ?? []), ...generationSecretGrantElementKeys(plan, secretName)]))
+      : input.grantToElementKeys;
+    // During INTEGRATING the candidate identities already exist. An ACTIVE secret must
+    // receive all deterministic component grants before the job is allowed to resume.
+    if (alreadyAvailable && secretName) {
+      const granted = await grantGenerationSecretToElements(db, ownerAdminId, jobId, secretName, grantToElementKeys ?? [], randomUUID());
+      if (!granted) throw new Error(`generation_secret_missing:${secretName}`);
+    }
+    normalizedInputs.push({ ...input, grantToElementKeys, normalizedSecretName: secretName, alreadyAvailable });
+  }
+  let needsOwnerInput = false;
+  await tx(db, async (client) => {
+    for (const input of normalizedInputs) {
+      await client.query(
+        `insert into generation_job_input(job_id,input_key,label,description,input_kind,required,secret,stable_secret_name,grant_element_keys,supplied_at)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9::text[],case when $10 then now() else null end)
+         on conflict(job_id,input_key) do update set label=excluded.label,description=excluded.description,input_kind=excluded.input_kind,
+           required=excluded.required,secret=excluded.secret,stable_secret_name=excluded.stable_secret_name,grant_element_keys=excluded.grant_element_keys,
+           supplied_at=case when $10 then coalesce(generation_job_input.supplied_at,now()) else generation_job_input.supplied_at end`,
+        [jobId, input.key, input.label, input.description, input.kind, input.required, input.secret, input.normalizedSecretName, input.grantToElementKeys ?? [], input.alreadyAvailable]
+      );
+    }
+    const missing = await client.query("select count(*)::int n from generation_job_input where job_id=$1 and required and supplied_at is null", [jobId]);
+    needsOwnerInput = Number(missing.rows[0].n) > 0;
+    const next = needsOwnerInput ? "NEEDS_INPUT" : resumeState;
+    const updated = await client.query("update generation_job set state=$2,resume_state=case when $2='NEEDS_INPUT' then $3 else null end,blocker_summary=case when $2='NEEDS_INPUT' then $4 else null end,updated_at=now(),lease_owner=null,lease_until=null where id=$1 and state<>'CANCELLED' returning id", [jobId, next, resumeState, blocker]);
+    if (!updated.rowCount) throw new GenerationCancelledError();
+  });
+  if (needsOwnerInput) {
+    await appendGenerationEvent(db, jobId, "NEEDS_INPUT", "generation.needs_input", "Job vyžaduje skutečně chybějící OWNER údaj nebo credential.", { blocker, inputs: normalizedInputs.filter((input) => !input.alreadyAvailable).map((input) => input.key), resumeState });
+  } else {
+    await appendGenerationEvent(db, jobId, resumeState, "generation.inputs_reused", "Požadované secrets již existují v KajovoCML Secret Manageru; OWNER vstup není potřeba a job pokračuje.", { reusedSecrets: normalizedInputs.filter((input) => input.alreadyAvailable).map((input) => input.normalizedSecretName).filter(Boolean) });
+  }
+}
+
+export async function setGenerationState(db: Db, jobId: string, next: GenerationState, params: { blocker?: string | null; result?: Record<string, unknown> | null; workspacePath?: string | null; revisionPoint?: string | null; remediationAttempts?: number } = {}): Promise<void> {
+  if (next === "CANCELLED") throw new Error("generation_cancel_must_use_owner_operation");
+  const updated = await db.query(
+    `update generation_job set state=$2,blocker_summary=$3,result_summary=coalesce($4::jsonb,result_summary),
+       workspace_path=coalesce($5,workspace_path),revision_point=coalesce($6,revision_point),
+       remediation_attempts=coalesce($7,remediation_attempts),updated_at=now(),lock_version=lock_version+1,
+       completed_at=case when $2='COMPLETED' then now() else completed_at end
+     where id=$1 and state<>'CANCELLED' returning id`,
+    [jobId, next, params.blocker ?? null, params.result ? JSON.stringify(params.result) : null, params.workspacePath ?? null, params.revisionPoint ?? null, params.remediationAttempts ?? null]
+  );
+  if (!updated.rowCount) throw new GenerationCancelledError();
+}
+
+export async function setGenerationPlan(db: Db, jobId: string, planInput: GenerationPlan): Promise<void> {
+  if (!planInput.elements.length) throw new Error("generation_plan_has_no_elements");
+  const keys = new Set(planInput.elements.map((element) => element.key));
+  for (const dependency of planInput.dependencies) {
+    if (!keys.has(dependency.from) || !keys.has(dependency.to) || dependency.from === dependency.to) throw new Error("generation_dependency_invalid");
+    if (!Array.isArray(dependency.targetTools) || dependency.targetTools.length === 0 || dependency.targetTools.some((tool) => !tool.trim())) throw new Error(`generation_dependency_target_tools_required:${dependency.from}:${dependency.to}`);
+    if (!dependency.sourceTool?.trim()) throw new Error(`generation_dependency_source_tool_required:${dependency.from}:${dependency.to}`);
+  }
+  const active = await db.query("select stable_name from secret_record where status='ACTIVE' and deleted_at is null");
+  const reconciled = reconcileGenerationPlanSecrets(planInput, { jobId, activeSecretNames: active.rows.map((row) => String(row.stable_name)) });
+  const plan = reconciled.plan;
+  await tx(db, async (client) => {
+    const planned = await client.query("update generation_job set plan=$2::jsonb,updated_at=now(),lock_version=lock_version+1 where id=$1 and state<>'CANCELLED' returning id", [jobId, JSON.stringify(plan)]);
+    if (!planned.rowCount) throw new GenerationCancelledError();
+    await client.query("delete from generation_job_input where job_id=$1", [jobId]);
+    for (const input of plan.missingInputs) {
+      const secretName = input.secret ? normalizeGenerationSecretName(input.stableSecretName) : null;
+      const grantKeys = input.secret && secretName ? Array.from(new Set([...(input.grantToElementKeys ?? []), ...generationSecretGrantElementKeys(plan, secretName)])) : [];
+      const alreadyAvailable = Boolean(secretName && reconciled.activeSecretNames.has(secretName));
+      await client.query(
+        `insert into generation_job_input(job_id,input_key,label,description,input_kind,required,secret,stable_secret_name,grant_element_keys,supplied_at)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9::text[],case when $10 then now() else null end)`,
+        [jobId, input.key, input.label, input.description, input.kind, input.required, input.secret, secretName, grantKeys, alreadyAvailable]
+      );
+    }
+    const required = await client.query("select count(*)::int n from generation_job_input where job_id=$1 and required and supplied_at is null", [jobId]);
+    const moved = await client.query("update generation_job set state=$2,updated_at=now() where id=$1 and state<>'CANCELLED' returning id", [jobId, Number(required.rows[0].n) ? "NEEDS_INPUT" : "PLAN_READY"]);
+    if (!moved.rowCount) throw new GenerationCancelledError();
+  });
+  await appendGenerationEvent(db, jobId, "ANALYZING", "generation.plan_ready", "Návrh řešení je připraven.", {
+    elements: plan.elements.map((element) => element.key),
+    missingInputCount: reconciled.unsatisfiedRequiredInputs.length,
+    reusedSecrets: Array.from(reconciled.activeSecretNames).filter((name) => generationSecretGrantElementKeys(plan, name).length > 0)
+  });
+}
+
+export async function ensurePlatformOpenAiSecret(db: Db, config: GenerationRouteConfig, ownerAdminId: string, value: string, correlationId: string): Promise<void> {
+  const secrets = await listSecrets(db);
+  const current = secrets.find((secret) => secret.stableName === "OPENAI_API_KEY" && !secret.deletedAt);
+  const secret = current
+    ? await rotateSecret(db, config, ownerAdminId, correlationId, current.id, { value, expectedVersion: current.lockVersion })
+    : await createSecret(db, config, ownerAdminId, correlationId, { stableName: "OPENAI_API_KEY", displayName: "OpenAI API key pro Generování", description: "Modelová integrace interní generation pipeline.", value, ownerKind: "PLATFORM", ownerId: null });
+  const platform = await platformWorkerSecretPrincipal(db);
+  await grantSecret(db, ownerAdminId, correlationId, secret.id, { principalKind: "PLATFORM", principalId: platform.id, principalPublicId: platform.publicId });
+}
+
+export async function generationOpenAiReady(db: Db): Promise<boolean> {
+  // An ACTIVE canonical secret is sufficient for OWNER readiness. The generation worker
+  // deterministically attaches the existing PLATFORM grant before first model use so an
+  // already stored OPENAI_API_KEY never causes duplicate OWNER copy/paste.
+  const result = await db.query("select 1 from secret_record where stable_name='OPENAI_API_KEY' and status='ACTIVE' and deleted_at is null limit 1");
+  return Boolean(result.rowCount);
+}
+
+export async function ensureGenerationPlatformSecretGrant(db: Db, ownerAdminId: string, stableNameInput: string, correlationId: string): Promise<boolean> {
+  const stableName = normalizeGenerationSecretName(stableNameInput);
+  const secrets = await listSecrets(db);
+  const secret = secrets.find((item) => item.stableName === stableName && item.status === "ACTIVE" && !item.deletedAt);
+  if (!secret) return false;
+  const platform = await platformWorkerSecretPrincipal(db);
+  await grantSecret(db, ownerAdminId, correlationId, secret.id, { principalKind: "PLATFORM", principalId: platform.id, principalPublicId: platform.publicId });
+  return true;
+}
+
+export async function grantGenerationSecretToElements(
+  db: Db,
+  ownerAdminId: string,
+  jobId: string,
+  stableNameInput: string,
+  elementKeys: string[],
+  correlationId: string
+): Promise<boolean> {
+  const result = await grantGenerationSecretBeforeResume({
+    stableSecretName: stableNameInput,
+    elementKeys,
+    findActiveSecret: async (stableName) => {
+      const secrets = await listSecrets(db);
+      return secrets.find((item) => item.stableName === stableName && item.status === "ACTIVE" && !item.deletedAt) ?? null;
+    },
+    grantPlatform: async (secret) => {
+      const platform = await platformWorkerSecretPrincipal(db);
+      await grantSecret(db, ownerAdminId, correlationId, secret.id, { principalKind: "PLATFORM", principalId: platform.id, principalPublicId: platform.publicId });
+    },
+    listComponents: async (keys) => {
+      const components = await db.query(
+        `select gc.element_key,gc.component_id,c.code
+           from generation_component gc join component c on c.id=gc.component_id
+          where gc.job_id=$1 and gc.element_key=any($2::text[])`,
+        [jobId, keys]
+      );
+      return components.rows.map((row) => ({ componentId: String(row.component_id), code: String(row.code), elementKey: String(row.element_key) }));
+    },
+    grantComponent: async (secret, component) => {
+      await grantSecret(db, ownerAdminId, correlationId, secret.id, { principalKind: "COMPONENT", principalId: component.componentId, principalPublicId: component.code });
+    }
+  });
+  return result.available;
+}
+
+export async function resolveGenerationSecret(db: Db, config: GenerationRouteConfig, stableName: string, correlationId: string = randomUUID()): Promise<string> {
+  const principal = await platformWorkerSecretPrincipal(db);
+  return (await resolveSecret(db, config, principal, stableName, correlationId)).value;
+}
+
+export async function upsertGenerationSecret(db: Db, config: GenerationRouteConfig, ownerAdminId: string, jobId: string, correlationId: string, input: {
+  stableSecretName: string; value: string; displayName?: string; description?: string; grantToElementKeys?: string[];
+}): Promise<{ stableName: string; fingerprint: string | null; version: number | null; grantedElementKeys: string[] }> {
+  const stableName = normalizeGenerationSecretName(input.stableSecretName);
+  const job = await getGenerationJob(db, jobId);
+  if (!job.plan) throw new Error("generation_plan_missing");
+  const secrets = await listSecrets(db);
+  const current = secrets.find((secret) => secret.stableName === stableName && !secret.deletedAt);
+  let secret = current
+    ? await rotateSecret(db, config, ownerAdminId, correlationId, current.id, { value: input.value, expectedVersion: current.lockVersion })
+    : await createSecret(db, config, ownerAdminId, correlationId, { stableName, displayName: input.displayName?.trim() || stableName, description: input.description?.trim() || `Credential uložený během integrační fáze generation jobu ${jobId}.`, value: input.value, ownerKind: "PLATFORM", ownerId: null });
+  if (secret.status !== "ACTIVE") secret = await setSecretStatus(db, ownerAdminId, correlationId, secret.id, secret.lockVersion, "ACTIVE");
+  const derived = generationSecretGrantElementKeys(job.plan, stableName);
+  const grantKeys = Array.from(new Set([...(input.grantToElementKeys ?? []), ...derived]));
+  const granted = await grantGenerationSecretToElements(db, ownerAdminId, jobId, stableName, grantKeys, correlationId);
+  if (!granted) throw new Error(`generation_secret_not_active_after_upsert:${stableName}`);
+  await db.query("update generation_job_input set supplied_at=coalesce(supplied_at,now()) where job_id=$1 and stable_secret_name=$2", [jobId, stableName]);
+  await appendAudit(db, { eventType: current ? "generation.secret_rotated" : "generation.secret_created", actorType: "admin", actorId: ownerAdminId, objectType: "generation_job", objectId: jobId, after: { stableName, fingerprint: secret.activeFingerprint, version: secret.activeVersionNumber, grantedElementKeys: grantKeys }, correlationId });
+  return { stableName, fingerprint: secret.activeFingerprint, version: secret.activeVersionNumber, grantedElementKeys: grantKeys };
+}
+
+async function grantSatisfiedGenerationSecretsBeforeResume(db: Db, ownerAdminId: string, jobId: string, correlationId: string): Promise<void> {
+  const job = await getGenerationJob(db, jobId);
+  if (!job.plan) return;
+  const rows = await db.query(
+    "select stable_secret_name,grant_element_keys from generation_job_input where job_id=$1 and secret and supplied_at is not null",
+    [jobId]
+  );
+  const grants = new Map<string, Set<string>>();
+  for (const element of job.plan.elements) {
+    for (const rawName of element.requiredSecretNames ?? []) {
+      const name = normalizeGenerationSecretName(rawName);
+      const keys = grants.get(name) ?? new Set<string>();
+      keys.add(element.key);
+      grants.set(name, keys);
+    }
+  }
+  for (const row of rows.rows) {
+    const name = normalizeGenerationSecretName(String(row.stable_secret_name));
+    const keys = grants.get(name) ?? new Set<string>();
+    for (const key of stringArray(row.grant_element_keys)) keys.add(key);
+    for (const key of generationSecretGrantElementKeys(job.plan, name)) keys.add(key);
+    grants.set(name, keys);
+  }
+  for (const [name, keys] of grants) {
+    const available = await grantGenerationSecretToElements(db, ownerAdminId, jobId, name, Array.from(keys), correlationId);
+    if (available) continue;
+    const providerGenerated = job.plan.elements.some((element) => (element.providerGeneratedSecretNames ?? []).map(normalizeGenerationSecretName).includes(name));
+    if (!providerGenerated) throw new Error(`generation_secret_missing_before_integration_resume:${name}`);
+  }
+}
+
+export async function submitGenerationInputs(db: Db, config: GenerationRouteConfig, jobId: string, ownerAdminId: string, values: Record<string, unknown>, correlationId: string): Promise<GenerationJobView> {
+  const inputs = await db.query("select * from generation_job_input where job_id=$1 order by created_at", [jobId]);
+  if (!inputs.rowCount) return getGenerationJob(db, jobId);
+  for (const input of inputs.rows) {
+    if (!(String(input.input_key) in values)) continue;
+    const raw = values[String(input.input_key)];
+    if (input.secret) {
+      if (typeof raw !== "string" || !raw.length) throw Object.assign(new Error(`invalid_generation_input:${input.input_key}`), { statusCode: 400 });
+      // Reuse the same canonical upsert/grant path used by provider-issued secrets.
+      // Component grants are committed before the resume-state update below, so the
+      // very first resumed provider callback can resolve the credential.
+      await upsertGenerationSecret(db, config, ownerAdminId, jobId, correlationId, {
+        stableSecretName: String(input.stable_secret_name),
+        value: raw,
+        displayName: String(input.label),
+        description: String(input.description),
+        grantToElementKeys: stringArray(input.grant_element_keys)
+      });
+      await db.query("update generation_job_input set supplied_at=now(),value_json=null where id=$1", [input.id]);
+    } else {
+      await db.query("update generation_job_input set supplied_at=now(),value_json=$2::jsonb where id=$1", [input.id, JSON.stringify(raw)]);
+    }
+  }
+  const missing = await db.query("select count(*)::int n from generation_job_input where job_id=$1 and required and supplied_at is null", [jobId]);
+  if (!Number(missing.rows[0].n)) {
+    const resume = await db.query("select resume_state from generation_job where id=$1", [jobId]);
+    const resumeState = String(resume.rows[0]?.resume_state ?? "PLAN_READY") as GenerationState;
+    await resumeGenerationAfterSatisfiedInputs({
+      resumeState,
+      ensureIntegrationGrants: () => grantSatisfiedGenerationSecretsBeforeResume(db, ownerAdminId, jobId, correlationId),
+      setState: (state) => setGenerationState(db, jobId, state as GenerationState, { blocker: null }),
+      clearResumeState: async () => { await db.query("update generation_job set resume_state=null where id=$1", [jobId]); },
+      appendCompleteEvent: (state) => appendGenerationEvent(db, jobId, state, "generation.inputs_complete", state === "INTEGRATING" ? "Chybějící integrační údaje jsou doplněné a component granty jsou aktivní; pokračuje post-deploy integrace." : "Všechny nutné údaje jsou doplněné.")
+    });
+  }
+  await appendAudit(db, { eventType: "generation_job.inputs_submitted", actorType: "admin", actorId: ownerAdminId, objectType: "generation_job", objectId: jobId, after: { suppliedKeys: Object.keys(values) }, correlationId });
+  return getGenerationJob(db, jobId);
+}
+
+export async function confirmGenerationPlan(db: Db, jobId: string, ownerAdminId: string, correlationId: string): Promise<GenerationJobView> {
+  const job = await getGenerationJob(db, jobId);
+  if (job.ownerAdminId !== ownerAdminId) throw Object.assign(new Error("not_found"), { statusCode: 404 });
+  if (job.state !== "PLAN_READY") throw Object.assign(new Error("generation_plan_not_ready"), { statusCode: 409 });
+  await setGenerationState(db, jobId, "IMPLEMENTING");
+  await appendGenerationEvent(db, jobId, "IMPLEMENTING", "generation.confirmed", "Návrh byl potvrzen. Začíná technická realizace.");
+  await appendAudit(db, { eventType: "generation_job.confirmed", actorType: "admin", actorId: ownerAdminId, objectType: "generation_job", objectId: jobId, correlationId });
+  return getGenerationJob(db, jobId);
+}
+
+export async function cancelGenerationJob(db: Db, jobId: string, ownerAdminId: string, correlationId: string): Promise<void> {
+  const result = await db.query("update generation_job set state='CANCELLED',cancelled_at=now(),updated_at=now(),lease_owner=null,lease_until=null where id=$1 and owner_admin_id=$2 and state not in ('COMPLETED','CANCELLED') returning id", [jobId, ownerAdminId]);
+  if (!result.rowCount) throw Object.assign(new Error("generation_job_not_cancellable"), { statusCode: 409 });
+  await appendGenerationEvent(db, jobId, "CANCELLED", "generation.cancelled", "Generování bylo zrušeno vlastníkem.");
+  await appendAudit(db, { eventType: "generation_job.cancelled", actorType: "admin", actorId: ownerAdminId, objectType: "generation_job", objectId: jobId, correlationId });
+}

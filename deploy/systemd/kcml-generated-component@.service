@@ -1,0 +1,32 @@
+[Unit]
+Description=KCML internally generated component %i
+After=network-online.target kcml.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=kcml-runtime
+Group=kcml
+WorkingDirectory=/var/lib/kcml/generated-components/%i/current
+EnvironmentFile=/var/lib/kcml/generated-components/%i/runtime.env
+Environment=CREDENTIALS_DIRECTORY=%d
+LoadCredentialEncrypted=runtime_token:/var/lib/kcml/generated-components/%i/runtime-token.cred
+ExecStart=/usr/bin/node /var/lib/kcml/generated-components/%i/current/runtime-host.mjs
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/kcml/runtime /var/lib/kcml/generated-components/%i/data
+
+[Install]
+WantedBy=multi-user.target

@@ -22,6 +22,8 @@ export type ComponentAuthorizationDecision = {
   reasonCode: ComponentAuthorizationReason;
   decisionId: string;
   correlationId: string;
+  sourcePrincipalId: string | null;
+  sourcePrincipalKind: string | null;
   sourceComponentId: string | null;
   targetComponentId: string | null;
   sourceClientId: string | null;
@@ -49,6 +51,8 @@ function denied(reasonCode: ComponentAuthorizationReason, correlationId: string,
     reasonCode,
     decisionId: randomUUID(),
     correlationId,
+    sourcePrincipalId: null,
+    sourcePrincipalKind: null,
     sourceComponentId: null,
     targetComponentId: null,
     sourceClientId: null,
@@ -71,7 +75,7 @@ export async function authorizeComponentCall(db: Db, params: {
   route: string;
   hmacKey: Buffer;
   correlationId: string;
-  allowOnboardingProbe?: boolean;
+  allowGenerationProbe?: boolean;
 }): Promise<ComponentAuthorizationDecision> {
   return tx(db, async (client) => {
     const tokenDigest = hmacToken(params.token, params.hmacKey);
@@ -83,7 +87,7 @@ export async function authorizeComponentCall(db: Db, params: {
         target.id target_component_id,target.code target_component_code,target.hostname target_hostname,
         target.enabled target_enabled,target.ingress_enabled target_ingress_enabled,target.activation_state target_activation_state,
         target.lifecycle_state target_lifecycle_state,target.operational_state target_operational_state,
-        target.policy_epoch,target.release_version,
+        target.policy_epoch,target.release_version,target.registration_type,
         token.expires_at <= now() token_expired
       from principal_access_token token
       join principal on principal.id=token.source_principal_id
@@ -95,20 +99,34 @@ export async function authorizeComponentCall(db: Db, params: {
     if (principalToken.rowCount) {
       const row = principalToken.rows[0];
       const issuedScopes = row.scope_names as unknown;
-      const onboardingProbe = params.allowOnboardingProbe === true
+      const generationSelfProbe = params.allowGenerationProbe === true
         && row.source_component_id
         && String(row.source_component_id) === String(row.target_component_id)
+        && String(row.registration_type) === "INTERNAL_GENERATED"
         && Boolean((await client.query(
-          `select 1 from component_onboarding_job
-            where component_id=$1 and principal_access_token_digest=$2
-              and principal_access_token_handed_off_at is null and state not in ('CANCELLED','FAILED') limit 1`,
-          [row.target_component_id, tokenDigest]
+          `select 1 from generation_component gc join generation_job job on job.id=gc.job_id
+            where gc.component_id=$1 and job.state in ('IMPLEMENTING','INTEGRATING','VALIDATING','CML_CONFORMANCE','ACTIVATING') limit 1`,
+          [row.target_component_id]
         )).rowCount);
+      const generationDependencyProbe = Boolean(row.source_component_id)
+        && String(row.registration_type) === "INTERNAL_GENERATED"
+        && Boolean((await client.query(
+          `select 1
+             from generation_component source_gc
+             join generation_component target_gc on target_gc.job_id=source_gc.job_id
+             join generation_job job on job.id=source_gc.job_id
+            where source_gc.component_id=$1 and target_gc.component_id=$2 and job.state='CML_CONFORMANCE'
+            limit 1`,
+          [row.source_component_id, row.target_component_id]
+        )).rowCount);
+      const preactivationProbe = generationSelfProbe || generationDependencyProbe;
       const controlCallback = (["component.control.ack", "component.state.query", "component.heartbeat"].includes(params.scope)
         && ["ENABLE_REQUESTED", "DISABLE_REQUESTED", "DISABLE_UNCONFIRMED"].includes(String(row.target_activation_state)))
         || (row.source_principal_kind === "PLATFORM"
           && (params.scope.startsWith("platform.control.") || params.scope === "platform.e2e.execute"));
       const base = {
+        sourcePrincipalId: String(row.source_principal_id),
+        sourcePrincipalKind: String(row.source_principal_kind),
         sourceComponentId: row.source_component_id ? String(row.source_component_id) : null,
         targetComponentId: String(row.target_component_id),
         sourceClientId: String(row.source_client_id),
@@ -131,7 +149,7 @@ export async function authorizeComponentCall(db: Db, params: {
         principalDecision = denied("expired_token", params.correlationId, base);
       } else if (suspension.rowCount) {
         principalDecision = denied("authorization_suspended", params.correlationId, base);
-      } else if (row.source_principal_status !== "ACTIVE") {
+      } else if (row.source_principal_status !== "ACTIVE" && !preactivationProbe) {
         principalDecision = denied(row.source_principal_status === "QUARANTINED" ? "component_quarantined" : "component_disabled", params.correlationId, base);
       } else if (String(row.target_hostname).toLowerCase() !== params.host.toLowerCase()
         || params.audience.toLowerCase() !== `https://${String(row.target_hostname).toLowerCase()}`
@@ -139,7 +157,7 @@ export async function authorizeComponentCall(db: Db, params: {
         principalDecision = denied("invalid_audience", params.correlationId, base);
       } else if (row.target_lifecycle_state === "QUARANTINED" || row.target_operational_state === "QUARANTINED" || row.source_lifecycle_state === "QUARANTINED") {
         principalDecision = denied("component_quarantined", params.correlationId, base);
-      } else if ((!row.target_enabled || !row.target_ingress_enabled || (row.source_component_id && !row.source_enabled)) && !controlCallback && !onboardingProbe) {
+      } else if ((!row.target_enabled || !row.target_ingress_enabled || (row.source_component_id && !row.source_enabled)) && !controlCallback && !preactivationProbe) {
         principalDecision = denied("component_disabled", params.correlationId, base);
       } else if (!Array.isArray(issuedScopes) || !(issuedScopes as unknown[]).some((scope) => scope === "*" || scope === params.scope)) {
         principalDecision = denied("insufficient_scope", params.correlationId, base);
@@ -175,7 +193,7 @@ export async function authorizeComponentCall(db: Db, params: {
       }
       await appendAudit(client, {
         eventType: principalDecision.allow ? "component_authorization.allowed" : "component_authorization.denied",
-        actorType: "component", actorId: principalDecision.sourceComponentId ?? principalDecision.sourceClientId,
+        actorType: principalDecision.sourcePrincipalKind === "EXTERNAL" ? "external" : principalDecision.sourcePrincipalKind === "PLATFORM" ? "platform" : "component", actorId: principalDecision.sourceComponentId ?? principalDecision.sourcePrincipalId ?? principalDecision.sourceClientId,
         objectType: "component", objectId: principalDecision.targetComponentId,
         after: { decisionId: principalDecision.decisionId, reasonCode: principalDecision.reasonCode, scope: params.scope, route: params.route, audience: params.audience, tokenFingerprint: principalDecision.tokenFingerprint },
         correlationId: params.correlationId

@@ -14,9 +14,10 @@ import { registerAdminRoutes } from "./http/admin-routes.js";
 import { registerAuthRoutes } from "./http/auth-routes.js";
 import { registerExternalApiRoutes } from "./http/external-api-routes.js";
 import { registerComponentRoutes } from "./http/component-routes.js";
+import { registerComponentWebhookRoutes } from "./http/component-webhook-runtime.js";
 import { registerDashboardRoutes } from "./http/dashboard-routes.js";
 import { registerMcpRoutes } from "./http/mcp.js";
-import { registerOnboardingRoutes } from "./http/onboarding-routes.js";
+import { registerGenerationRoutes } from "./http/generation-routes.js";
 import { registerReferenceExternalApiRoutes } from "./http/reference-external-api-routes.js";
 import { isSecretApiHostname, registerSecretApiRoutes } from "./http/secret-api-routes.js";
 import { hostOf, sendError } from "./http/errors.js";
@@ -84,8 +85,9 @@ export async function buildApp(config: AppServerConfig, db: Db) {
   registerMcpRoutes(app, db, config);
   registerReferenceExternalApiRoutes(app, config);
   registerExternalApiRoutes(app, db, config);
-  registerOnboardingRoutes(app, db, config);
+  registerGenerationRoutes(app, db, config);
   registerComponentRoutes(app, db, config);
+  registerComponentWebhookRoutes(app, db, config);
   registerDashboardRoutes(app, db, config);
   await app.register(async (secretApi) => {
     registerSecretApiRoutes(secretApi, db, config);

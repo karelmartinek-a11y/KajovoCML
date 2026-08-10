@@ -208,75 +208,6 @@ async function findPort(client: Queryable, componentId: string, key: string, exp
   return port;
 }
 
-export async function createPreRegistrationDashboardNode(
-  client: pg.PoolClient,
-  input: { integrationTokenId: string; label: string; fingerprint: string; actorId: string; metadata?: Record<string, unknown> }
-): Promise<string> {
-  const existing = await client.query(
-    "select id from dashboard_visual_node where integration_token_id=$1 and deleted_at is null for update",
-    [input.integrationTokenId]
-  );
-  if (existing.rowCount) return String(existing.rows[0].id);
-  const inserted = await client.query(
-    `insert into dashboard_visual_node(integration_token_id,lifecycle_phase,label,token_fingerprint,created_by,metadata)
-     values ($1,'PRE_REGISTRATION',$2,$3,$4,$5::jsonb) returning id`,
-    [input.integrationTokenId, input.label, input.fingerprint, input.actorId, JSON.stringify(input.metadata ?? {})]
-  );
-  return String(inserted.rows[0].id);
-}
-
-export async function handoffDashboardNode(
-  client: pg.PoolClient,
-  input: { integrationTokenId: string; componentId: string; principalId: string; code: string; displayName: string; correlationId: string }
-): Promise<string> {
-  const existingComponent = await client.query(
-    "select id,integration_token_id from dashboard_visual_node where component_id=$1 and deleted_at is null for update",
-    [input.componentId]
-  );
-  if (existingComponent.rowCount && String(existingComponent.rows[0].integration_token_id ?? "") === input.integrationTokenId) {
-    return String(existingComponent.rows[0].id);
-  }
-
-  const tokenNode = await client.query(
-    "select id from dashboard_visual_node where integration_token_id=$1 and lifecycle_phase='PRE_REGISTRATION' and deleted_at is null for update",
-    [input.integrationTokenId]
-  );
-  if (existingComponent.rowCount && tokenNode.rowCount && String(existingComponent.rows[0].id) !== String(tokenNode.rows[0].id)) {
-    const existingId = String(existingComponent.rows[0].id);
-    const tokenNodeId = String(tokenNode.rows[0].id);
-    await client.query(
-      `insert into dashboard_node_position(workspace_id,node_id,x,y)
-       select workspace_id,$2,x,y from dashboard_node_position where node_id=$1
-       on conflict (workspace_id,node_id) do nothing`,
-      [existingId, tokenNodeId]
-    );
-    await client.query(
-      `update dashboard_visual_node
-          set lifecycle_phase='DELETED',deleted_at=now(),updated_at=now(),lock_version=lock_version+1,
-              metadata=metadata || $2::jsonb
-        where id=$1`,
-      [existingId, JSON.stringify({ supersededByStableNodeId: tokenNodeId, handoffCorrelationId: input.correlationId })]
-    );
-  }
-
-  const updated = await client.query(
-    `update dashboard_visual_node
-        set component_id=$2,principal_id=$3,lifecycle_phase='REGISTERED',label=$4,
-            metadata=metadata || $5::jsonb,handed_off_at=coalesce(handed_off_at,now()),updated_at=now(),lock_version=lock_version+1
-      where integration_token_id=$1 and lifecycle_phase='PRE_REGISTRATION' and deleted_at is null
-      returning id`,
-    [input.integrationTokenId, input.componentId, input.principalId, input.code, JSON.stringify({ displayName: input.displayName, handoffCorrelationId: input.correlationId })]
-  );
-  if (updated.rowCount) return String(updated.rows[0].id);
-  if (existingComponent.rowCount) return String(existingComponent.rows[0].id);
-  const inserted = await client.query(
-    `insert into dashboard_visual_node(integration_token_id,component_id,principal_id,lifecycle_phase,label,metadata,handed_off_at)
-     values ($1,$2,$3,'REGISTERED',$4,$5::jsonb,now()) returning id`,
-    [input.integrationTokenId, input.componentId, input.principalId, input.code, JSON.stringify({ displayName: input.displayName, handoffCorrelationId: input.correlationId, recoveredMissingPreRegistrationNode: true })]
-  );
-  return String(inserted.rows[0].id);
-}
-
 async function workspace(client: Queryable, adminId: string): Promise<Record<string, unknown>> {
   const result = await client.query(
     `insert into dashboard_workspace(owner_admin_id,workspace_key)
@@ -548,99 +479,46 @@ export async function setDashboardNodeSuspension(db: Db, input: {
 
 export async function listDashboardIdentityCards(db: Db) {
   const result = await db.query(
-    `select node.id node_id,node.lifecycle_phase,node.label,node.token_fingerprint,
-            token.id integration_token_id,token.expires_at integration_expires_at,
-            token.revoked_at integration_revoked_at,token.deleted_at integration_deleted_at,token.last_used_at integration_last_used_at,
-            component.id component_id,component.code,component.display_name,component.principal_id,
+    `select node.id node_id,node.label,
+            component.id component_id,component.code,component.display_name,
             principal.public_id,principal.status,
             access.fingerprint access_fingerprint,access.last_used_at,access.expires_at access_expires_at
        from dashboard_visual_node node
-       left join integration_token token on token.id=node.integration_token_id
-       left join component component on component.id=node.component_id
-       left join principal principal on principal.id=node.principal_id
+       join component component on component.id=node.component_id
+       join principal principal on principal.id=node.principal_id
        left join lateral (
          select fingerprint,last_used_at,expires_at from principal_access_token
           where source_principal_id=node.principal_id and revoked_at is null order by created_at desc limit 1
        ) access on true
-      where node.deleted_at is null
-      order by node.lifecycle_phase,node.label`
+      where node.deleted_at is null and node.lifecycle_phase='REGISTERED'
+      order by node.label`
   );
-  return result.rows.map((row) => {
-    const preregistrationStatus = row.integration_deleted_at
-      ? "DELETED"
-      : row.integration_revoked_at
-        ? "REVOKED"
-        : row.integration_expires_at && new Date(row.integration_expires_at).getTime() <= Date.now()
-          ? "EXPIRED"
-          : "ACTIVE";
-    const componentStatus = row.status === "ACTIVE" && row.access_expires_at && new Date(row.access_expires_at).getTime() <= Date.now()
-      ? "EXPIRED"
-      : row.status ?? "UNKNOWN";
-    return {
-      nodeId: String(row.node_id),
-      identityType: row.lifecycle_phase === "PRE_REGISTRATION" ? "INTEGRATION_TOKEN" : "COMPONENT",
-      displayName: row.display_name ?? row.label,
-      code: row.code ?? null,
-      publicId: row.public_id ?? null,
-      status: row.lifecycle_phase === "PRE_REGISTRATION" ? preregistrationStatus : componentStatus,
-      fingerprint: row.access_fingerprint ?? row.token_fingerprint,
-      lastUsedAt: row.last_used_at ?? row.integration_last_used_at ?? null,
-      componentId: row.component_id ?? null,
-      integrationTokenId: row.integration_token_id ?? null
-    };
-  });
+  return result.rows.map((row) => ({
+    nodeId: String(row.node_id),
+    identityType: "COMPONENT" as const,
+    displayName: row.display_name ?? row.label,
+    code: row.code ?? null,
+    publicId: row.public_id ?? null,
+    status: row.status === "ACTIVE" && row.access_expires_at && new Date(row.access_expires_at).getTime() <= Date.now() ? "EXPIRED" : row.status ?? "UNKNOWN",
+    fingerprint: row.access_fingerprint ?? null,
+    lastUsedAt: row.last_used_at ?? null,
+    componentId: row.component_id ?? null
+  }));
 }
 
 export async function grantDashboardSecretToNode(db: Db, input: {
   secretId: string; nodeId: string; actorId: string; correlationId: string;
 }): Promise<{ status: "CREATED" | "ALREADY_GRANTED"; nodeId: string; secretId: string }> {
   const node = await db.query(
-    `select node.*,component.code,component.deregistered_at,principal.status principal_status,
-            token.revoked_at token_revoked_at,token.deleted_at token_deleted_at,token.expires_at token_expires_at
+    `select node.component_id,node.principal_id,component.code,component.deregistered_at,principal.status principal_status
        from dashboard_visual_node node
-       left join component component on component.id=node.component_id
-       left join principal principal on principal.id=node.principal_id
-       left join integration_token token on token.id=node.integration_token_id
-      where node.id=$1 and node.deleted_at is null`,
+       join component component on component.id=node.component_id
+       join principal principal on principal.id=node.principal_id
+      where node.id=$1 and node.deleted_at is null and node.lifecycle_phase='REGISTERED'`,
     [input.nodeId]
   );
-  if (!node.rowCount) throw Object.assign(new Error("dashboard_node_not_found"), { statusCode: 404 });
-  const secret = await db.query("select stable_name from secret_record where id=$1 and deleted_at is null", [input.secretId]);
-  if (!secret.rowCount) throw Object.assign(new Error("not_found"), { statusCode: 404 });
+  if (!node.rowCount) throw Object.assign(new Error("dashboard_registered_node_not_found"), { statusCode: 404 });
   const row = node.rows[0];
-  if (row.lifecycle_phase === "PRE_REGISTRATION") {
-    const tokenExpired = row.token_expires_at && new Date(row.token_expires_at).getTime() <= Date.now();
-    if (!row.integration_token_id || row.token_revoked_at || row.token_deleted_at || tokenExpired) {
-      throw Object.assign(new Error("dashboard_identity_unavailable"), { statusCode: 409 });
-    }
-    const result = await tx(db, async (client) => {
-      const tokenState = await client.query(
-        `select id from integration_token
-          where id=$1 and revoked_at is null and deleted_at is null and expires_at>now()
-          for update`,
-        [row.integration_token_id]
-      );
-      if (!tokenState.rowCount) throw Object.assign(new Error("dashboard_identity_unavailable"), { statusCode: 409 });
-      const existing = await client.query(
-        `select id from integration_token_secret_grant where token_id=$1 and secret_stable_name=$2 and all_secrets=false and revoked_at is null`,
-        [row.integration_token_id, secret.rows[0].stable_name]
-      );
-      if (!existing.rowCount) {
-        await client.query(
-          `insert into integration_token_secret_grant(token_id,secret_stable_name,all_secrets,granted_by)
-           values ($1,$2,false,$3)`,
-          [row.integration_token_id, secret.rows[0].stable_name, input.actorId]
-        );
-      }
-      await appendAudit(client, {
-        eventType: "dashboard.secret_grant.created", actorType: "admin", actorId: input.actorId,
-        objectType: "secret", objectId: input.secretId,
-        after: { nodeId: input.nodeId, integrationTokenId: row.integration_token_id, stableName: secret.rows[0].stable_name }, correlationId: input.correlationId
-      });
-      return existing.rowCount ? "ALREADY_GRANTED" as const : "CREATED" as const;
-    });
-    return { status: result, nodeId: input.nodeId, secretId: input.secretId };
-  }
   if (!row.component_id || !row.principal_id || row.deregistered_at || String(row.principal_status) !== "ACTIVE") {
     throw Object.assign(new Error("dashboard_identity_unavailable"), { statusCode: 409 });
   }
@@ -657,47 +535,32 @@ export async function grantDashboardSecretToNode(db: Db, input: {
 export async function previewBulkDashboardSecret(db: Db, secretId: string) {
   const secret = await db.query("select id,stable_name,status,deleted_at from secret_record where id=$1", [secretId]);
   if (!secret.rowCount || secret.rows[0].deleted_at) throw Object.assign(new Error("not_found"), { statusCode: 404 });
-  const stableName = String(secret.rows[0].stable_name);
   const nodes = await db.query(
-    `select node.id,node.lifecycle_phase,node.label,node.integration_token_id,node.component_id,
-            token.revoked_at token_revoked_at,token.deleted_at token_deleted_at,token.expires_at token_expires_at,
-            component.code,component.deregistered_at,principal.status principal_status,
-            exists(select 1 from integration_token_secret_grant grant_row
-              where grant_row.token_id=node.integration_token_id and grant_row.revoked_at is null
-                and (grant_row.all_secrets or grant_row.secret_stable_name=$2)) integration_granted,
+    `select node.id,node.label,node.component_id,component.code,component.deregistered_at,principal.status principal_status,
             exists(select 1 from secret_grant grant_row
               where grant_row.secret_id=$1 and grant_row.principal_kind='COMPONENT'
-                and grant_row.principal_id=node.component_id and grant_row.revoked_at is null) direct_granted,
-            exists(select 1 from integration_token_secret_grant grant_row
-              where grant_row.transferred_component_id=node.component_id and grant_row.revoked_at is null
-                and (grant_row.all_secrets or grant_row.secret_stable_name=$2)) transferred_granted
+                and grant_row.principal_id=node.component_id and grant_row.revoked_at is null) direct_granted
        from dashboard_visual_node node
-       left join integration_token token on token.id=node.integration_token_id
-       left join component component on component.id=node.component_id
-       left join principal principal on principal.id=node.principal_id
-      where node.deleted_at is null and node.lifecycle_phase in ('PRE_REGISTRATION','REGISTERED')
+       join component component on component.id=node.component_id
+       join principal principal on principal.id=node.principal_id
+      where node.deleted_at is null and node.lifecycle_phase='REGISTERED'
       order by node.created_at,node.id`,
-    [secretId, stableName]
+    [secretId]
   );
   const eligible: Array<{ nodeId: string; label: string; alreadyGranted: boolean }> = [];
   const skipped: Array<{ nodeId: string; label: string; reason: string }> = [];
   for (const row of nodes.rows) {
     const nodeId = String(row.id);
     const label = String(row.code ?? row.label);
-    if (row.lifecycle_phase === "PRE_REGISTRATION") {
-      if (row.token_deleted_at) skipped.push({ nodeId, label, reason: "INTEGRATION_TOKEN_DELETED" });
-      else if (row.token_revoked_at) skipped.push({ nodeId, label, reason: "INTEGRATION_TOKEN_REVOKED" });
-      else if (!row.token_expires_at || new Date(row.token_expires_at).getTime() <= Date.now()) skipped.push({ nodeId, label, reason: "INTEGRATION_TOKEN_EXPIRED" });
-      else eligible.push({ nodeId, label, alreadyGranted: Boolean(row.integration_granted) });
-    } else if (row.deregistered_at || row.principal_status === "REVOKED") {
+    if (row.deregistered_at || row.principal_status === "REVOKED") {
       skipped.push({ nodeId, label, reason: row.deregistered_at ? "COMPONENT_DEREGISTERED" : "PRINCIPAL_REVOKED" });
     } else {
-      eligible.push({ nodeId, label, alreadyGranted: Boolean(row.direct_granted || row.transferred_granted) });
+      eligible.push({ nodeId, label, alreadyGranted: Boolean(row.direct_granted) });
     }
   }
   return {
     secretId,
-    stableName,
+    stableName: String(secret.rows[0].stable_name),
     secretStatus: String(secret.rows[0].status),
     eligibleCount: eligible.length,
     alreadyGrantedCount: eligible.filter((target) => target.alreadyGranted).length,
@@ -724,28 +587,18 @@ export async function bulkGrantDashboardSecret(db: Db, input: { secretId: string
 
 export async function revokeDashboardSecretFromNode(db: Db, input: { secretId: string; nodeId: string; actorId: string; correlationId: string }) {
   return tx(db, async (client) => {
-    const node = await client.query("select * from dashboard_visual_node where id=$1 and deleted_at is null for update", [input.nodeId]);
-    if (!node.rowCount) throw Object.assign(new Error("dashboard_node_not_found"), { statusCode: 404 });
+    const node = await client.query(
+      "select component_id from dashboard_visual_node where id=$1 and lifecycle_phase='REGISTERED' and deleted_at is null for update",
+      [input.nodeId]
+    );
+    if (!node.rowCount) throw Object.assign(new Error("dashboard_registered_node_not_found"), { statusCode: 404 });
     const secret = await client.query("select stable_name from secret_record where id=$1", [input.secretId]);
     if (!secret.rowCount) throw Object.assign(new Error("not_found"), { statusCode: 404 });
-    if (node.rows[0].lifecycle_phase === "PRE_REGISTRATION") {
-      await client.query(
-        `update integration_token_secret_grant set revoked_at=coalesce(revoked_at,now()),revoked_by=$3
-          where token_id=$1 and secret_stable_name=$2 and revoked_at is null`,
-        [node.rows[0].integration_token_id, secret.rows[0].stable_name, input.actorId]
-      );
-    } else {
-      await client.query(
-        `update secret_grant set revoked_at=coalesce(revoked_at,now()),revoked_by=$3
-          where secret_id=$1 and principal_kind='COMPONENT' and principal_id=$2 and revoked_at is null`,
-        [input.secretId, node.rows[0].component_id, input.actorId]
-      );
-      await client.query(
-        `update integration_token_secret_grant set revoked_at=coalesce(revoked_at,now()),revoked_by=$3
-          where transferred_component_id=$1 and all_secrets=false and secret_stable_name=$2 and revoked_at is null`,
-        [node.rows[0].component_id, secret.rows[0].stable_name, input.actorId]
-      );
-    }
+    await client.query(
+      `update secret_grant set revoked_at=coalesce(revoked_at,now()),revoked_by=$3
+        where secret_id=$1 and principal_kind='COMPONENT' and principal_id=$2 and revoked_at is null`,
+      [input.secretId, node.rows[0].component_id, input.actorId]
+    );
     await appendAudit(client, {
       eventType: "dashboard.secret_grant.revoked", actorType: "admin", actorId: input.actorId,
       objectType: "secret", objectId: input.secretId, after: { nodeId: input.nodeId, stableName: secret.rows[0].stable_name }, correlationId: input.correlationId
@@ -757,12 +610,11 @@ export async function revokeDashboardSecretFromNode(db: Db, input: { secretId: s
 export async function dashboardDeregistrationPreview(
   db: Db,
   nodeId: string
-): Promise<Record<string, unknown> & { requiresMfa: true; typedConfirmation: string; requiresCompleteOnboarding: true }> {
+): Promise<Record<string, unknown> & { requiresMfa: true; typedConfirmation: string; requiresRegisteredComponent: true }> {
   const result = await db.query<Record<string, unknown>>(
     `select node.id node_id,component.id component_id,component.code,component.display_name,
       (select count(*) from principal_access_token token where token.source_principal_id=component.principal_id and token.revoked_at is null)::int token_count,
       (select count(*) from secret_grant grant_row where grant_row.principal_kind='COMPONENT' and grant_row.principal_id=component.id and grant_row.revoked_at is null)::int direct_secret_grant_count,
-      (select count(*) from integration_token_secret_grant grant_row where grant_row.transferred_component_id=component.id and grant_row.revoked_at is null)::int transferred_secret_grant_count,
       (select count(*) from pulse_topology_connection edge where edge.revoked_at is null and (edge.source_component_id=component.id or edge.target_component_id=component.id))::int connection_count
       from dashboard_visual_node node join component component on component.id=node.component_id
       where node.id=$1 and node.lifecycle_phase='REGISTERED' and node.deleted_at is null`,
@@ -770,7 +622,7 @@ export async function dashboardDeregistrationPreview(
   );
   if (!result.rowCount) throw Object.assign(new Error("dashboard_registered_node_not_found"), { statusCode: 404 });
   const row = result.rows[0] ?? {};
-  return { ...row, requiresMfa: true, typedConfirmation: String(row.code), requiresCompleteOnboarding: true };
+  return { ...row, requiresMfa: true, typedConfirmation: String(row.code), requiresRegisteredComponent: true };
 }
 
 async function verifyDashboardDeregistrationReauthentication(
@@ -914,11 +766,6 @@ export async function deregisterDashboardNode(
         where principal_kind='COMPONENT' and principal_id=$1 and revoked_at is null`,
       [componentId, input.actorId]
     );
-    const transferredGrants = await client.query(
-      `update integration_token_secret_grant set revoked_at=coalesce(revoked_at,now()),revoked_by=$2
-        where transferred_component_id=$1 and revoked_at is null`,
-      [componentId, input.actorId]
-    );
     await client.query(
       `update principal_permission_suspension set resumed_at=coalesce(resumed_at,now()),resumed_by=coalesce(resumed_by,$2)
         where principal_id=$1 and resumed_at is null`,
@@ -950,7 +797,7 @@ export async function deregisterDashboardNode(
       componentId,
       componentCode: String(current.code),
       deregistered: true,
-      requiresCompleteOnboarding: true,
+      requiresRegisteredComponent: true,
       cleanup: {
         accessTokens: accessTokens.rowCount ?? 0,
         principalCredentials: principalCredentials.rowCount ?? 0,
@@ -960,8 +807,7 @@ export async function deregisterDashboardNode(
         connections: edges.rowCount ?? 0,
         componentPermissions: permissions.rowCount ?? 0,
         principalPermissions: principalPermissions.rowCount ?? 0,
-        directSecretGrants: directGrants.rowCount ?? 0,
-        transferredSecretGrants: transferredGrants.rowCount ?? 0
+        directSecretGrants: directGrants.rowCount ?? 0
       },
       correlationId: input.correlationId
     };
@@ -995,7 +841,7 @@ export async function listDashboardTopology(db: Db, adminId: string) {
   const currentWorkspace = await workspace(db, adminId);
   const [nodesResult, positionsResult, ports, edgeRows, secretRows, operationRows, eventRows] = await Promise.all([
     db.query(
-      `select node.*,token.expires_at integration_token_expires_at,token.revoked_at integration_token_revoked_at,token.deleted_at integration_token_deleted_at,
+      `select node.*,
               component.code,component.display_name,component.description,component.category,component.component_role,component.lifecycle_state,
               component.activation_state,component.operational_state,component.monitoring_state,component.recertification_state,
               component.enabled,component.ingress_enabled,component.pulse_enabled,component.egress_enabled,component.policy_epoch,
@@ -1003,7 +849,6 @@ export async function listDashboardTopology(db: Db, adminId: string) {
               principal.status principal_status,suspension.id suspension_id,suspension.reason suspension_reason,
               access.fingerprint access_fingerprint,access.last_used_at access_last_used_at
          from dashboard_visual_node node
-         left join integration_token token on token.id=node.integration_token_id
          left join component component on component.id=node.component_id
          left join principal principal on principal.id=node.principal_id
          left join principal_permission_suspension suspension on suspension.principal_id=node.principal_id and suspension.resumed_at is null
@@ -1011,8 +856,8 @@ export async function listDashboardTopology(db: Db, adminId: string) {
            select fingerprint,last_used_at from principal_access_token
             where source_principal_id=node.principal_id and revoked_at is null order by created_at desc limit 1
          ) access on true
-        where node.deleted_at is null
-        order by node.lifecycle_phase,node.label`
+        where node.deleted_at is null and node.lifecycle_phase='REGISTERED'
+        order by node.label`
     ),
     db.query("select * from dashboard_node_position where workspace_id=$1", [currentWorkspace.id]),
     listPorts(db),
@@ -1037,11 +882,8 @@ export async function listDashboardTopology(db: Db, adminId: string) {
     db.query(
       `select secret.id,secret.stable_name,secret.display_name,secret.description,secret.owner_kind,secret.owner_id,secret.status,
               secret.active_version_id,version.version_number,version.fingerprint,secret.lock_version,secret.deleted_at,
-              ((select count(*) from secret_grant direct_grant
-                  where direct_grant.secret_id=secret.id and direct_grant.revoked_at is null)
-               +(select count(*) from integration_token_secret_grant onboarding_grant
-                  where onboarding_grant.revoked_at is null
-                    and (onboarding_grant.all_secrets or onboarding_grant.secret_stable_name=secret.stable_name)))::int grant_count
+              (select count(*) from secret_grant direct_grant
+                 where direct_grant.secret_id=secret.id and direct_grant.revoked_at is null)::int grant_count
          from secret_record secret
          left join secret_version version on version.id=secret.active_version_id
         order by secret.stable_name`
@@ -1069,19 +911,7 @@ export async function listDashboardTopology(db: Db, adminId: string) {
        from dashboard_visual_node node
        join secret_grant grant_row on grant_row.principal_kind='COMPONENT' and grant_row.principal_id=node.component_id and grant_row.revoked_at is null
        join secret_record secret on secret.id=grant_row.secret_id
-      where node.deleted_at is null
-     union all
-     select node.id,secret.id,secret.stable_name,secret.status,'INTEGRATION_TOKEN'
-       from dashboard_visual_node node
-       join integration_token_secret_grant grant_row on grant_row.token_id=node.integration_token_id and grant_row.revoked_at is null and grant_row.all_secrets=false
-       join secret_record secret on secret.stable_name=grant_row.secret_stable_name
-      where node.deleted_at is null
-     union all
-     select node.id,secret.id,secret.stable_name,secret.status,'TRANSFERRED'
-       from dashboard_visual_node node
-       join integration_token_secret_grant grant_row on grant_row.transferred_component_id=node.component_id and grant_row.revoked_at is null and grant_row.all_secrets=false
-       join secret_record secret on secret.stable_name=grant_row.secret_stable_name
-      where node.deleted_at is null`
+      where node.deleted_at is null and node.lifecycle_phase='REGISTERED'`
   );
   for (const row of grants.rows) {
     const key = String(row.node_id);
@@ -1094,25 +924,21 @@ export async function listDashboardTopology(db: Db, adminId: string) {
   const nodes = nodesResult.rows.map((row, index) => {
     const componentId = row.component_id ? String(row.component_id) : null;
     const stats = componentId ? operationByComponent.get(componentId) : null;
-    const tokenExpired = row.integration_token_expires_at && new Date(row.integration_token_expires_at).getTime() <= Date.now();
-    const identityUnavailable = row.lifecycle_phase === "PRE_REGISTRATION" && Boolean(row.integration_token_revoked_at || row.integration_token_deleted_at || tokenExpired);
-    const preregistrationState = row.integration_token_deleted_at ? "TOKEN_DELETED" : row.integration_token_revoked_at ? "TOKEN_REVOKED" : tokenExpired ? "TOKEN_EXPIRED" : "ČEKÁ_NA_ONBOARDING";
+    const identityUnavailable = false;
     const critical = ["UNHEALTHY", "QUARANTINED"].includes(String(row.operational_state)) || ["FAILED"].includes(String(row.monitoring_state));
     return {
-      id: String(row.id), lifecyclePhase: String(row.lifecycle_phase), label: String(row.label),
-      integrationTokenId: row.integration_token_id ? String(row.integration_token_id) : null,
+      id: String(row.id), lifecyclePhase: "REGISTERED" as const, label: String(row.label),
       componentId, principalId: row.principal_id ? String(row.principal_id) : null,
       code: row.code ?? null, displayName: row.display_name ?? row.label, description: row.description ?? "",
-      category: row.category ?? "PŘEDREGISTRAČNÍ", role: row.component_role ?? null,
-      lifecycleState: row.lifecycle_state ?? preregistrationState, activationState: row.activation_state ?? "INACTIVE",
+      category: row.category ?? "COMPONENT", role: row.component_role ?? null,
+      lifecycleState: row.lifecycle_state ?? "UNKNOWN", activationState: row.activation_state ?? "INACTIVE",
       operationalState: row.operational_state ?? "NOT_REGISTERED", monitoringState: row.monitoring_state ?? "NOT_CONFIGURED",
       recertificationState: row.recertification_state ?? "NOT_DUE", enabled: Boolean(row.enabled),
-      runtimeAvailable: row.lifecycle_phase === "REGISTERED" && Boolean(row.enabled),
+      runtimeAvailable: Boolean(row.enabled),
       identityUnavailable,
       suspended: Boolean(row.suspension_id), suspensionReason: row.suspension_reason ?? null,
       tokenFingerprint: row.access_fingerprint ?? row.token_fingerprint ?? null,
       tokenLastUsedAt: row.access_last_used_at ?? null,
-      integrationTokenExpiresAt: row.integration_token_expires_at ?? null,
       critical,
       position: positionByNode.get(String(row.id)) ?? { x: 60 + (index % 4) * 330, y: 80 + Math.floor(index / 4) * 280 },
       secrets: secretsByNode.get(String(row.id)) ?? [],

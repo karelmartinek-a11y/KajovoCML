@@ -4,11 +4,11 @@ import { Ajv2020 } from "ajv/dist/2020.js";
 import type { WorkerConfig } from "../config.js";
 import type { Db } from "../db.js";
 import { tx } from "../db.js";
-import { decryptVaultSecret } from "../security/secrets.js";
 import { recordComponentControlAck } from "../domain/component.js";
 import { appendAudit } from "../domain/audit.js";
 import { fetchThroughEgress } from "../domain/egress-client.js";
 import { authorizePlatformWorkerCall } from "../domain/platform-worker-access.js";
+import { platformWorkerSecretPrincipal, resolveSecret } from "../domain/secret-manager.js";
 
 type ClaimedDispatch = {
   id: string;
@@ -33,22 +33,21 @@ type ClaimedDispatch = {
   heartbeat_nonce: string | null;
   response_schema: Record<string, unknown>;
   request_schema: Record<string, unknown>;
-  onboarding_job_id: string | null;
-  callback_token_ciphertext: string | null;
-  callback_token_key_id: string | null;
+  registration_type: string;
+  runtime_secret_name: string | null;
   persisted_ack_payload: unknown;
 };
 
 const ajv = new Ajv2020({ strict: false, allErrors: true, validateFormats: false });
 
-function udsPost(socketPath: string, endpointPath: string, body: Buffer, token: string, callbackToken: string | null): Promise<{ status: number; body: Buffer }> {
+function udsPost(socketPath: string, endpointPath: string, body: Buffer, token: string): Promise<{ status: number; body: Buffer }> {
   return new Promise((resolve, reject) => {
     const request = http.request({
       socketPath,
       path: endpointPath,
       method: "POST",
       timeout: 30_000,
-      headers: { authorization: `Bearer ${token}`, ...(callbackToken ? { "x-kcml-callback-authorization": `Bearer ${callbackToken}` } : {}), "content-type": "application/json", "content-length": body.length }
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "content-length": body.length }
     }, (response) => {
       const chunks: Buffer[] = [];
       response.on("data", (chunk: Buffer) => chunks.push(Buffer.from(chunk)));
@@ -70,8 +69,7 @@ async function claim(db: Db, workerId: string): Promise<ClaimedDispatch | null> 
     );
     const result = await client.query(
       `select d.*,rt.transport,rt.upstream,rt.expected_tls_identity,rt.socket_path,contract.request_schema,contract.response_schema,
-              p.public_id as principal_public_id,
-              onboarding.id onboarding_job_id,onboarding.principal_access_token_ciphertext callback_token_ciphertext,onboarding.principal_access_token_key_id callback_token_key_id,
+              p.public_id as principal_public_id,c.registration_type,cri.stable_secret_name as runtime_secret_name,
               sq.id as state_query_id,sq.challenge_nonce as state_query_nonce,
               hb.id as heartbeat_challenge_id,hb.challenge_nonce as heartbeat_nonce,
               ack.response_body as persisted_ack_payload
@@ -80,6 +78,7 @@ async function claim(db: Db, workerId: string): Promise<ClaimedDispatch | null> 
          join principal p on p.id=c.principal_id
          join component_runtime_target rt on rt.component_id=d.component_id and rt.revision_id=d.revision_id
          join component_control_command contract on contract.id=d.command_contract_id
+         left join component_runtime_identity cri on cri.component_id=d.component_id
          left join component_state_query_run sq on sq.dispatch_id=d.id
          left join component_heartbeat_challenge hb on hb.dispatch_id=d.id
          left join lateral (
@@ -89,11 +88,6 @@ async function claim(db: Db, workerId: string): Promise<ClaimedDispatch | null> 
             order by attempt_number desc
             limit 1
          ) ack on true
-         left join lateral (
-           select job.id,job.principal_access_token_ciphertext,job.principal_access_token_key_id
-             from component_onboarding_job job where job.component_id=d.component_id and job.principal_access_token_handed_off_at is null
-             order by job.created_at desc limit 1
-         ) onboarding on true
         where d.state in ('QUEUED','CLAIMED','ACK_PENDING')
           and d.deadline_at > now()
           and d.next_attempt_at <= now()
@@ -115,7 +109,7 @@ async function claim(db: Db, workerId: string): Promise<ClaimedDispatch | null> 
   });
 }
 
-async function send(config: WorkerConfig, dispatch: ClaimedDispatch, token: string, callbackToken: string | null): Promise<{ status: number; body: Buffer }> {
+async function send(config: WorkerConfig, dispatch: ClaimedDispatch, token: string): Promise<{ status: number; body: Buffer }> {
   const requestBody = {
     ...dispatch.request_body,
     stateQuery: dispatch.state_query_id ? { id: dispatch.state_query_id, nonce: dispatch.state_query_nonce } : null,
@@ -126,7 +120,7 @@ async function send(config: WorkerConfig, dispatch: ClaimedDispatch, token: stri
   const body = Buffer.from(JSON.stringify(requestBody));
   if (dispatch.transport === "UDS") {
     if (!dispatch.socket_path) throw new Error("control_socket_missing");
-    return udsPost(dispatch.socket_path, dispatch.endpoint_path, body, token, callbackToken);
+    return udsPost(dispatch.socket_path, dispatch.endpoint_path, body, token);
   }
   if (!dispatch.upstream || !dispatch.expected_tls_identity) throw new Error("control_https_target_missing");
   const upstream = new URL(dispatch.upstream);
@@ -134,7 +128,7 @@ async function send(config: WorkerConfig, dispatch: ClaimedDispatch, token: stri
   const response = await fetchThroughEgress(config, {
     url: new URL(dispatch.endpoint_path, upstream).toString(),
     method: "POST",
-    headers: { authorization: `Bearer ${token}`, ...(callbackToken ? { "x-kcml-callback-authorization": `Bearer ${callbackToken}` } : {}), "content-type": "application/json", "x-kcml-target-hostname": dispatch.target_hostname },
+    headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "x-kcml-target-hostname": dispatch.target_hostname },
     body,
     allowlist: [upstream.hostname],
     purpose: "component.control.dispatch",
@@ -207,16 +201,21 @@ export async function processNextComponentControlDispatch(db: Db, config: Worker
       });
       return true;
     }
-    const authorization = await authorizePlatformWorkerCall(db, config, {
-      hostname: dispatch.target_hostname,
-      scope: `platform.control.${dispatch.command_type}`,
-      route: dispatch.endpoint_path,
-      correlationId: dispatch.correlation_id
-    });
-    const callbackToken = dispatch.onboarding_job_id && dispatch.callback_token_ciphertext && dispatch.callback_token_key_id
-      ? decryptVaultSecret(dispatch.callback_token_ciphertext, new Map([[dispatch.callback_token_key_id, config.CONFIG_VAULT_MASTER_KEY_BASE64]]), `component-onboarding:${dispatch.onboarding_job_id}`)
-      : null;
-    const response = await send(config, dispatch, authorization.token, callbackToken);
+    let dispatchToken: string;
+    if (dispatch.registration_type === "INTERNAL_GENERATED") {
+      if (!dispatch.runtime_secret_name) throw new Error("generated_runtime_identity_missing");
+      const principal = await platformWorkerSecretPrincipal(db);
+      dispatchToken = (await resolveSecret(db, config, principal, dispatch.runtime_secret_name, dispatch.correlation_id)).value;
+    } else {
+      const authorization = await authorizePlatformWorkerCall(db, config, {
+        hostname: dispatch.target_hostname,
+        scope: `platform.control.${dispatch.command_type}`,
+        route: dispatch.endpoint_path,
+        correlationId: dispatch.correlation_id
+      });
+      dispatchToken = authorization.token;
+    }
+    const response = await send(config, dispatch, dispatchToken);
     if (response.status < 200 || response.status >= 300) throw new Error(`control_http_${response.status}`);
     let ackPayload: unknown = {};
     if (response.body.length) ackPayload = JSON.parse(response.body.toString("utf8"));

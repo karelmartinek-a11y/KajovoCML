@@ -6,12 +6,8 @@ import type { Db } from "../db.js";
 import { ingestComponentAuditEvent } from "../domain/component-audit.js";
 import { authorizeComponentCall, componentSourceIdentityMatches } from "../domain/component-auth.js";
 import {
-  cancelComponentOnboarding,
   COMPONENT_CATALOG_VERSION,
-  createComponentOnboarding,
-  evaluateComponentReadiness,
   getComponent,
-  getComponentOnboarding,
   ingestComponentOperationEvent,
   ingestComponentPulse,
   listComponents,
@@ -23,15 +19,13 @@ import {
   recordComponentStateObservation,
   recordComponentStateSnapshot,
   revokeComponentAccessToken,
-  reviseComponentOnboarding,
   rotateComponentAccessToken,
   setComponentActivation,
   setComponentLifecycle,
   setComponentPermissionEnabled,
-  type ComponentPulseEnvelope,
-  validateComponentManifest
+  type ComponentPulseEnvelope
 } from "../domain/component.js";
-import { authenticateIntegrationToken } from "../domain/onboarding.js";
+import { isGeneratedRuntimeAccessToken, revokeGeneratedRuntimeAccessToken, rotateGeneratedRuntimeAccessToken } from "../domain/generated-component.js";
 import { fetchThroughEgress } from "../domain/egress-client.js";
 import { getPlatformWorkerAccessStatus, rotatePlatformWorkerAccessToken } from "../domain/platform-worker-access.js";
 import {
@@ -50,7 +44,6 @@ import {
 import { requireCsrf, sessionAccount } from "./admin-routes.js";
 import { hostOf, sendError } from "./errors.js";
 
-const idempotencyKeyPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/;
 const activationSchema = z.object({ enabled: z.boolean() }).strict();
 const lifecycleSchema = z.object({ action: z.enum(["QUARANTINE", "RESTORE", "RETIRE", "DEREGISTER"]) }).strict();
 const permissionSchema = z.object({ enabled: z.boolean() }).strict();
@@ -58,9 +51,14 @@ const requiredJson = z.custom<unknown>((value) => value !== undefined);
 const externalPrincipalSchema = z.object({ publicId: z.string().min(3).max(120).regex(/^KCML-EXT-[A-Z0-9-]+$/), displayName: z.string().min(2).max(200), description: z.string().max(2000).optional() }).strict();
 const externalTargetSchema = z.object({ targetKey: z.string().min(3).max(120).regex(/^[a-z0-9][a-z0-9.-]*$/), displayName: z.string().min(2).max(200), baseUrl: z.string().url(), allowedPathPrefixes: z.array(z.string().min(1).max(500)).max(30).optional(), requestTimeoutMs: z.number().int().min(100).max(60000).default(15000), maxRetries: z.number().int().min(0).max(3).default(1), circuitFailureThreshold: z.number().int().min(1).max(100).default(5), circuitOpenSeconds: z.number().int().min(1).max(3600).default(60) }).strict();
 const externalStatusSchema = z.object({ status: z.enum(["ACTIVE", "DISABLED", "REVOKED"]) }).strict();
-const externalPermissionSchema = z.object({ componentId: z.string().uuid().optional(), externalPrincipalId: z.string().uuid().optional(), externalTargetId: z.string().uuid(), routePattern: z.string().min(1).max(500), scopeName: z.string().min(2).max(200), enabled: z.boolean() }).strict();
+const externalPermissionSchema = z.object({ componentId: z.string().uuid().optional(), externalPrincipalId: z.string().uuid().optional(), externalTargetId: z.string().uuid(), routePattern: z.string().min(1).max(500), scopeName: z.string().min(2).max(200), allowedMethods: z.array(z.enum(["GET","POST","PUT","PATCH","DELETE","HEAD"])).min(1).max(6).default(["POST"]), enabled: z.boolean() }).strict();
 const externalInboundPermissionSchema = z.object({ externalPrincipalId: z.string().uuid(), targetComponentId: z.string().uuid(), routePattern: z.string().startsWith("/").max(500), scopeName: z.string().min(2).max(200), enabled: z.boolean() }).strict();
-const outboundGatewaySchema = z.object({ targetKey: z.string().min(3).max(120), routePath: z.string().startsWith("/").max(500), scopeName: z.string().min(2).max(200), payload: requiredJson }).strict();
+const outboundGatewaySchema = z.object({
+  targetKey: z.string().min(3).max(120), routePath: z.string().startsWith("/").max(1000), scopeName: z.string().min(2).max(200),
+  method: z.enum(["GET","POST","PUT","PATCH","DELETE","HEAD"]).default("POST"),
+  headers: z.record(z.string()).default({}), bodyType: z.enum(["NONE","JSON","FORM","TEXT"]).optional(),
+  body: z.unknown().optional(), payload: z.unknown().optional(), timeoutMs: z.number().int().min(100).max(300000).optional()
+}).strict();
 const platformWorkerAuthorizationSchema = z.object({ hostname: z.string().min(3).max(255), scope: z.string().min(2).max(200), route: z.string().startsWith("/").max(500) }).strict();
 const identitySchema = z.object({
   clientId: z.string().min(3).max(160),
@@ -165,24 +163,6 @@ function routeError(reply: FastifyReply, error: unknown, correlationId: string) 
   return sendError(reply, statusCode, code, undefined, correlationId);
 }
 
-function etagFor(job: Record<string, unknown>): string {
-  return `"${Number(job.lockVersion ?? 0)}"`;
-}
-
-async function integrationPrincipal(db: Db, config: AppServerConfig, request: FastifyRequest, reply: FastifyReply, correlationId: string) {
-  const token = bearer(request);
-  if (!token) {
-    sendError(reply, 401, "invalid_integration_token", undefined, correlationId);
-    return null;
-  }
-  try {
-    return await authenticateIntegrationToken(db, token, config);
-  } catch {
-    sendError(reply, 401, "invalid_integration_token", undefined, correlationId);
-    return null;
-  }
-}
-
 async function adminPrincipal(db: Db, config: AppServerConfig, request: FastifyRequest, reply: FastifyReply, correlationId: string, mutation = false) {
   if (hostOf(request.headers.host) !== config.ADMIN_HOST) {
     sendError(reply, 404, "not_found", undefined, correlationId);
@@ -217,7 +197,7 @@ async function authorizeRuntime(db: Db, config: AppServerConfig, request: Fastif
     route,
     hmacKey: config.ACCESS_TOKEN_HMAC_KEY_BASE64,
     correlationId,
-    allowOnboardingProbe: true
+    allowGenerationProbe: true
   });
 }
 
@@ -252,120 +232,12 @@ export function registerComponentRoutes(app: FastifyInstance, db: Db, config: Ap
       const body = platformWorkerAuthorizationSchema.parse(request.body);
       const decision = await authorizeComponentCall(db, {
         token, audience: `https://${body.hostname}`, host: body.hostname, scope: body.scope, route: body.route,
-        hmacKey: config.ACCESS_TOKEN_HMAC_KEY_BASE64, correlationId, allowOnboardingProbe: true
+        hmacKey: config.ACCESS_TOKEN_HMAC_KEY_BASE64, correlationId, allowGenerationProbe: true
       });
       if (!decision.allow || decision.sourceClientId !== "KCML-PLATFORM-WORKER") {
         return sendError(reply, 403, decision.reasonCode, undefined, correlationId);
       }
       return reply.header("cache-control", "no-store").send({ allowed: true, decisionId: decision.decisionId, targetComponentCode: decision.targetComponentCode, targetHostname: decision.targetHostname, policyEpoch: decision.policyEpoch, correlationId });
-    } catch (error) {
-      return routeError(reply, error, correlationId);
-    }
-  });
-
-  app.post("/v2/component-onboardings", async (request, reply) => {
-    const correlationId = randomUUID();
-    if (hostOf(request.headers.host) !== config.REGISTER_HOST) return sendError(reply, 404, "not_found", undefined, correlationId);
-    const principal = await integrationPrincipal(db, config, request, reply, correlationId);
-    if (!principal) return;
-    const key = request.headers["idempotency-key"];
-    if (typeof key !== "string" || !idempotencyKeyPattern.test(key)) return sendError(reply, 400, "invalid_idempotency_key", undefined, correlationId);
-    try {
-      const manifest = validateComponentManifest(request.body);
-      const job = await createComponentOnboarding(db, {
-        integrationTokenId: principal.id, idempotencyKey: key, manifest, correlationId
-      });
-      return reply.code(202).header("etag", etagFor(job)).header("cache-control", "no-store").send({ job });
-    } catch (error) {
-      return routeError(reply, error, correlationId);
-    }
-  });
-
-  app.get("/v2/component-onboardings/:id", async (request, reply) => {
-    const correlationId = randomUUID();
-    if (hostOf(request.headers.host) !== config.REGISTER_HOST) return sendError(reply, 404, "not_found", undefined, correlationId);
-    const principal = await integrationPrincipal(db, config, request, reply, correlationId);
-    if (!principal) return;
-    try {
-      const job = await getComponentOnboarding(db, (request.params as { id: string }).id, principal.id);
-      return reply.header("etag", etagFor(job)).header("cache-control", "no-store").send({ job });
-    } catch (error) {
-      return routeError(reply, error, correlationId);
-    }
-  });
-
-  app.post("/v2/component-onboardings/:id/revisions", async (request, reply) => {
-    const correlationId = randomUUID();
-    if (hostOf(request.headers.host) !== config.REGISTER_HOST) return sendError(reply, 404, "not_found", undefined, correlationId);
-    const principal = await integrationPrincipal(db, config, request, reply, correlationId);
-    if (!principal) return;
-    const key = request.headers["idempotency-key"];
-    const match = request.headers["if-match"];
-    const lockVersion = typeof match === "string" ? Number(match.replaceAll('"', "")) : Number.NaN;
-    if (typeof key !== "string" || !idempotencyKeyPattern.test(key) || !Number.isSafeInteger(lockVersion) || lockVersion < 0) {
-      return sendError(reply, 400, "idempotency_key_and_if_match_required", undefined, correlationId);
-    }
-    try {
-      const job = await reviseComponentOnboarding(db, {
-        jobId: (request.params as { id: string }).id, integrationTokenId: principal.id,
-        expectedLockVersion: lockVersion,
-        idempotencyKey: key,
-        manifest: validateComponentManifest(request.body), correlationId
-      });
-      return reply.header("etag", etagFor(job)).header("cache-control", "no-store").send({ job });
-    } catch (error) {
-      return routeError(reply, error, correlationId);
-    }
-  });
-
-  app.post("/v2/component-onboardings/:id/readiness", async (request, reply) => {
-    const correlationId = randomUUID();
-    if (hostOf(request.headers.host) !== config.REGISTER_HOST) return sendError(reply, 404, "not_found", undefined, correlationId);
-    const principal = await integrationPrincipal(db, config, request, reply, correlationId);
-    if (!principal) return;
-    try {
-      const result = await evaluateComponentReadiness(db, {
-        jobId: (request.params as { id: string }).id, integrationTokenId: principal.id,
-        accessTokenHmacKey: config.ACCESS_TOKEN_HMAC_KEY_BASE64,
-        accessTokenHmacKeyId: config.ACCESS_TOKEN_HMAC_KEY_ID,
-        vaultMasterKey: config.CONFIG_VAULT_MASTER_KEY_BASE64,
-        vaultMasterKeyId: config.CONFIG_VAULT_MASTER_KEY_ID,
-        integrationTokenHmacKey: config.INTEGRATION_TOKEN_HMAC_KEY_BASE64,
-        integrationTokenHmacKeyId: config.INTEGRATION_TOKEN_HMAC_KEY_ID,
-        correlationId
-      });
-      if (!result.accessToken) {
-        await queueComponentE2ERun(db, {
-          jobId: (request.params as { id: string }).id,
-          integrationTokenId: principal.id,
-          correlationId
-        });
-      }
-      return reply.header("etag", etagFor(result.job)).header("cache-control", "no-store").send(result);
-    } catch (error) {
-      return routeError(reply, error, correlationId);
-    }
-  });
-
-  app.post("/v2/component-onboardings/:id/credential-claims", async (request, reply) => {
-    const correlationId = randomUUID();
-    if (hostOf(request.headers.host) !== config.REGISTER_HOST) return sendError(reply, 404, "not_found", undefined, correlationId);
-    return sendError(reply, 410, "credential_claim_replaced_by_access_token_handoff", undefined, correlationId);
-  });
-
-  app.post("/v2/component-onboardings/:id/e2e-results", async (request, reply) => {
-    const correlationId = randomUUID();
-    if (hostOf(request.headers.host) !== config.REGISTER_HOST) return sendError(reply, 404, "not_found", undefined, correlationId);
-    return sendError(reply, 410, "client_supplied_e2e_results_forbidden", "KCML executes and records onboarding E2E evidence.", correlationId);
-  });
-
-  app.delete("/v2/component-onboardings/:id", async (request, reply) => {
-    const correlationId = randomUUID();
-    if (hostOf(request.headers.host) !== config.REGISTER_HOST) return sendError(reply, 404, "not_found", undefined, correlationId);
-    const principal = await integrationPrincipal(db, config, request, reply, correlationId);
-    if (!principal) return;
-    try {
-      return { job: await cancelComponentOnboarding(db, (request.params as { id: string }).id, principal.id, correlationId) };
     } catch (error) {
       return routeError(reply, error, correlationId);
     }
@@ -533,6 +405,10 @@ export function registerComponentRoutes(app: FastifyInstance, db: Db, config: Ap
     if (!actorId) return;
     try {
       const params = request.params as { id: string; tokenId: string };
+      if (await isGeneratedRuntimeAccessToken(db, params.id, params.tokenId)) {
+        await revokeGeneratedRuntimeAccessToken(db, config, { componentId: params.id, tokenId: params.tokenId, actorId, correlationId });
+        return { component: await getComponent(db, params.id) };
+      }
       return { component: await revokeComponentAccessToken(db, {
         componentId: params.id, tokenId: params.tokenId, actorId, correlationId
       }) };
@@ -547,6 +423,10 @@ export function registerComponentRoutes(app: FastifyInstance, db: Db, config: Ap
     if (!actorId) return;
     try {
       const params = request.params as { id: string; tokenId: string };
+      if (await isGeneratedRuntimeAccessToken(db, params.id, params.tokenId)) {
+        const accessToken = await rotateGeneratedRuntimeAccessToken(db, config, { componentId: params.id, tokenId: params.tokenId, actorId, correlationId });
+        return reply.header("cache-control", "no-store").send({ component: await getComponent(db, params.id), accessToken });
+      }
       return reply.header("cache-control", "no-store").send(await rotateComponentAccessToken(db, {
         componentId: params.id, tokenId: params.tokenId, actorId,
         accessTokenHmacKey: config.ACCESS_TOKEN_HMAC_KEY_BASE64, accessTokenHmacKeyId: config.ACCESS_TOKEN_HMAC_KEY_ID, correlationId
@@ -643,10 +523,16 @@ export function registerComponentRoutes(app: FastifyInstance, db: Db, config: Ap
           targetKey: gateway.data.targetKey,
           routePath: gateway.data.routePath,
           scopeName: gateway.data.scopeName,
+          method: gateway.data.method,
+          headers: gateway.data.headers,
+          bodyType: gateway.data.bodyType,
+          body: gateway.data.body,
           payload: gateway.data.payload,
+          timeoutMs: gateway.data.timeoutMs,
           correlationId,
           accessToken,
-          tokenFingerprint: decision.tokenFingerprint
+          tokenFingerprint: decision.tokenFingerprint,
+          config
         }));
       }
       const body = fullPulseSchema.parse(request.body) as ComponentPulseEnvelope;

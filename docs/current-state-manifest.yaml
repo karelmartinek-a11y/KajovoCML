@@ -1,38 +1,41 @@
-lifecycleState: PRE_PRODUCTION_TESTING
-effectiveDate: 2026-07-24
-product:
-  name: KajovoCML
-  technicalPrefix: KCML
-deploymentManagedOwner:
-  username: karmar78
-  passwordAuthority: PASS
-  mfa:
-    sourceOrder:
-      - ADMIN_TOTP_SECRET
-      - preserved_admin_account_secret
-securityInvariants:
-  - deployment_managed_owner_password_is_hashed_only
-  - deployment_managed_owner_session_epoch_rotates_on_sync
-  - factory_reset_restores_owner_before_completion
-  - login_smoke_must_pass_with_or_without_mfa
-authoritativeFiles:
-  - apps/server/src/domain/deployment-managed-admin.ts
-  - apps/server/src/cli/sync-admin-password.ts
-  - apps/server/src/cli/factory-reset.ts
-  - apps/server/src/http/admin-routes.ts
-  - deploy/scripts/install-release.sh
-  - deploy/scripts/smoke-reference-external-api.sh
-
-dashboardInvariants:
-  - one_onboarding_lifecycle_has_one_stable_visual_node
-  - topology_compatibility_authorization_and_runtime_are_separate
-  - reversible_suspension_never_unrevokes_a_bearer_credential
-  - principal_suspension_blocks_component_calls_and_secret_resolve
-  - destructive_deregistration_requires_impact_preview_password_mfa_and_typed_confirmation
-  - production_evidence_is_pending_until_deployed_build_capture
-dashboardAuthoritativeFiles:
-  - apps/server/src/migrations/004_dashboard_topology.sql
-  - apps/server/src/domain/dashboard-topology.ts
-  - apps/server/src/http/dashboard-routes.ts
-  - apps/admin-ui/src/dashboard-page.tsx
-  - docs/dashboard/capability-parity.json
+project: KajovoCML
+phase: PRE_PRODUCTION_TESTING
+normative_contract: docs/SSOT_CURRENT.md
+as_of: 2026-08-09
+creation_flow:
+  authority: generation_job
+  owner_ui: Generování
+  external_programmer_handoff: retired
+  integration_token_creation_flow: retired
+  github_ci_ghcr_runtime_dependency: false
+canonical_runtime:
+  lifecycle: component_principal
+  identity: one_managed_runtime_access_token_per_generated_component
+  secrets: existing_secret_manager_direct_component_grants
+  integrating_secret_resume: deterministic_component_grants_before_provider_resume
+  public_boundary: HTTPS
+  local_transport: UDS
+  deployment: local_versioned_source_package
+  rollback: candidate_cleanup_first_create_or_restore_previous_release
+  webhook_ingress: cml_managed_provider_verified_https
+  dependency_routing: canonical_component_permissions
+  browser_automation: persistent_generation_job_chromium_cdp_opaque_locators_frames_popups
+  generated_handler_boundary: user_mount_network_pid_namespace_readonly_chroot_plus_capability_loader
+  generation_cancel: authoritative_db_state_with_worker_abort_and_candidate_cleanup
+  repair_enqueue_failure: existing_operational_alert_plus_audit
+  automatic_repair: existing_generation_job_plus_monitoring_watchdog
+conformance:
+  - authorization
+  - https_runtime
+  - public_webhook_ingress
+  - cross_component_permissions_and_dispatch
+  - interactive_browser_integration
+  - automatic_repair_path
+  - functional_e2e
+  - heartbeat
+  - state
+  - monitoring
+  - audit
+  - secret_grants
+  - owner_enable_disable
+  - dashboard_visibility
