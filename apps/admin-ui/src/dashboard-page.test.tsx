@@ -56,28 +56,20 @@ const topology: DashboardTopology = {
   workspace: { id: "00000000-0000-0000-0000-000000000100", viewport: { x: 0, y: 0, zoom: 1 }, lockVersion: 1 },
   nodes: [
     {
-      id: "00000000-0000-0000-0000-000000000101", lifecyclePhase: "PRE_REGISTRATION", label: "Nový MCP", integrationTokenId: "00000000-0000-0000-0000-000000000111",
-      componentId: null, principalId: null, code: null, displayName: "Nový MCP", description: "", category: "PŘEDREGISTRAČNÍ", role: null,
-      lifecycleState: "ČEKÁ_NA_ONBOARDING", activationState: "INACTIVE", operationalState: "NOT_REGISTERED", monitoringState: "NOT_CONFIGURED", recertificationState: "NOT_DUE",
-      enabled: false, runtimeAvailable: false, identityUnavailable: false, suspended: false, suspensionReason: null, tokenFingerprint: "sha256:token", tokenLastUsedAt: null,
-      integrationTokenExpiresAt: "2026-07-25T12:00:00.000Z", critical: false, position: { x: 50, y: 50 }, secrets: [],
-      statistics: { period: "24h", callCount: 0, successCount: 0, failureCount: 0, errorRate: 0, lastRunAt: null, lastFailureAt: null }
-    },
-    {
-      id: "00000000-0000-0000-0000-000000000102", lifecyclePhase: "REGISTERED", label: "KCML0001", integrationTokenId: "00000000-0000-0000-0000-000000000112",
+      id: "00000000-0000-0000-0000-000000000102", lifecyclePhase: "REGISTERED", label: "KCML0001",
       componentId: "00000000-0000-0000-0000-000000000121", principalId: "00000000-0000-0000-0000-000000000131", code: "KCML0001", displayName: "Zdroj",
       description: "Zdrojová komponenta", category: "MCP_SERVER", role: "SERVICE", lifecycleState: "ACTIVE", activationState: "ACTIVE", operationalState: "HEALTHY",
       monitoringState: "HEALTHY", recertificationState: "NOT_DUE", enabled: true, runtimeAvailable: true, identityUnavailable: false, suspended: false, suspensionReason: null,
-      tokenFingerprint: "sha256:source", tokenLastUsedAt: null, integrationTokenExpiresAt: null, critical: false, position: { x: 420, y: 80 },
+      tokenFingerprint: "sha256:source", tokenLastUsedAt: null, critical: false, position: { x: 420, y: 80 },
       secrets: [{ secretId: "00000000-0000-0000-0000-000000000151", stableName: "OPENAI_API_KEY", status: "ACTIVE", source: "DIRECT" }],
       statistics: { period: "24h", callCount: 4, successCount: 4, failureCount: 0, errorRate: 0, lastRunAt: "2026-07-24T11:58:00.000Z", lastFailureAt: null }
     },
     {
-      id: "00000000-0000-0000-0000-000000000103", lifecyclePhase: "REGISTERED", label: "KCML0002", integrationTokenId: null,
+      id: "00000000-0000-0000-0000-000000000103", lifecyclePhase: "REGISTERED", label: "KCML0002",
       componentId: "00000000-0000-0000-0000-000000000122", principalId: "00000000-0000-0000-0000-000000000132", code: "KCML0002", displayName: "Cíl",
       description: "Cílová komponenta", category: "AI_AGENT", role: "AGENT", lifecycleState: "ACTIVE", activationState: "ACTIVE", operationalState: "HEALTHY",
       monitoringState: "HEALTHY", recertificationState: "NOT_DUE", enabled: true, runtimeAvailable: true, identityUnavailable: false, suspended: false, suspensionReason: null,
-      tokenFingerprint: "sha256:target", tokenLastUsedAt: null, integrationTokenExpiresAt: null, critical: false, position: { x: 820, y: 80 }, secrets: [],
+      tokenFingerprint: "sha256:target", tokenLastUsedAt: null, critical: false, position: { x: 820, y: 80 }, secrets: [],
       statistics: { period: "24h", callCount: 2, successCount: 2, failureCount: 0, errorRate: 0, lastRunAt: "2026-07-24T11:59:00.000Z", lastFailureAt: null }
     }
   ],
@@ -99,14 +91,14 @@ const topology: DashboardTopology = {
 
 beforeEach(() => {
   const firstSecret = topology.secrets[0];
-  const sourceNode = topology.nodes[1];
+  const sourceNode = topology.nodes[0];
   vi.mocked(loadDashboardTopology).mockResolvedValue(structuredClone(topology));
   vi.mocked(saveDashboardLayout).mockResolvedValue({ lock_version: 2 });
   vi.mocked(previewBulkDashboardSecret).mockResolvedValue({ secretId: firstSecret?.id ?? "", stableName: "OPENAI_API_KEY", secretStatus: "ACTIVE", eligibleCount: 2, alreadyGrantedCount: 1, createCount: 1, eligible: [], skipped: [] });
   vi.mocked(loadDashboardDeregistrationPreview).mockResolvedValue({
     node_id: sourceNode?.id ?? "", component_id: sourceNode?.componentId ?? "", code: "KCML0001", display_name: "Zdroj",
-    token_count: 1, direct_secret_grant_count: 1, transferred_secret_grant_count: 0, connection_count: 1,
-    requiresMfa: true, typedConfirmation: "KCML0001", requiresCompleteOnboarding: true
+    token_count: 1, direct_secret_grant_count: 1, connection_count: 1,
+    requiresMfa: true, typedConfirmation: "KCML0001", requiresRegisteredComponent: true
   });
   Object.defineProperty(globalThis, "EventSource", { configurable: true, value: EventSourceStub });
 });
@@ -120,8 +112,6 @@ describe("Aktivní Dashboard", () => {
   it("zobrazuje zásuvky, visící výstup, externí vstup a neautorizované vlákno", async () => {
     const { container } = render(<DashboardPage releaseInfo={null} onOpenStandardPage={vi.fn()} />);
     expect(await screen.findByRole("heading", { name: "Aktivní Dashboard" })).toBeTruthy();
-    expect(screen.getAllByText("Čeká na onboarding").length).toBeGreaterThan(0);
-    expect(screen.getByText("Provozní akce jsou neaktivní do dokončení onboardingu.")).toBeTruthy();
     await waitFor(() => expect(container.querySelectorAll(".dashboard-port.compatible").length).toBe(2));
     expect(container.querySelector(".dashboard-port.unconnected .port-connector")).toBeTruthy();
     expect(container.querySelector(".dashboard-port.external .port-socket")).toBeTruthy();
@@ -177,6 +167,6 @@ describe("Aktivní Dashboard", () => {
     expect(await screen.findByRole("heading", { name: "Smazat prvek a registraci" })).toBeTruthy();
     expect(screen.getByText("aktivních tokenů")).toBeTruthy();
     expect(screen.getByText("PULSE spojení")).toBeTruthy();
-    expect(screen.getByText(/kompletní nový onboarding/)).toBeTruthy();
+    expect(screen.getByText(/novou generaci/i)).toBeTruthy();
   });
 });

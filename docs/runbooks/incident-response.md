@@ -1,40 +1,39 @@
 # Incident Response Runbook
 
+**Status:** ACTIVE — internal-generation/CML runtime model.
+
 ## Critical triggers
 
-- Audit write failure.
-- Database unavailable.
-- Cross-host routing invariant failure.
-- Token accepted for the wrong audience.
-- Contract or artifact digest drift.
-- Repeated backup restore failure.
-- Invalid audit-chain verification or a migration checksum mismatch.
-- MCP invocation finalization failure or dead-lettered Critical alert delivery.
-- Expired recertification, missing active revision or missing monitoring profile.
-- Invalid OCI signature/provenance or source/image digest drift.
-- Integration, Kaja, access or egress capability token found in logs, audit,
-  artifacts, PR output or an uploaded archive.
-- Onboarding handler reaches a non-allowlisted, private, loopback, link-local or
-  metadata address.
+- Audit write or audit-chain integrity failure.
+- Database unavailable or migration checksum mismatch.
+- Cross-host routing or token-audience invariant failure.
+- Generated component runtime/contract digest drift or failed CML conformance.
+- Repeated backup/rollback failure.
+- MCP invocation finalization failure or dead-lettered critical alert delivery.
+- Expired recertification, missing active revision or required monitoring evidence.
+- Generated runtime attempts or evidence of capability-boundary bypass.
+- Secret grant/revocation inconsistency, unauthorized Secret Manager resolution, or persistent runtime credential embedded in source/release artifacts.
+- External egress outside the configured CML target/route/scope permission.
+- Repeated generated repair enqueue failure or repair rollback failure.
+
+OWNER plaintext credentials in the trusted OWNER chat/log are not an incident by themselves. Persistent runtime credentials still belong in the existing KajovoCML Secret Manager.
 
 ## Immediate action
 
-1. Quarantine the affected KCML server.
-2. Revoke resource tokens by changing the server revocation epoch.
-3. Preserve audit, logs, traces, and build ID.
-4. Notify primary and backup operational channels.
-5. Require a new registration revision before returning to `ACTIVE`.
-6. Revoke the integration token, ephemeral Kaja/access tokens and egress
-   capability; cancel the job lease and stop the OCI worker.
-7. Preserve the quarantine source digest, PR/check run, source commit, build ID,
-   image digest, signature, SBOM, provenance and correlation IDs.
-8. Verify both signed webhook deliveries and record any dead-letter recovery.
-9. Verify the complete audit chain before service restoration.
+1. Identify the affected CML component/service and correlation ID from Dashboard, monitoring and audit.
+2. Use the existing CML lifecycle control to disable/quarantine the affected interface/component when fail-closed containment is required.
+3. Revoke/rotate the affected existing CML runtime identity, permission or Secret grant only when the incident requires it.
+4. Preserve the active revision, local release/snapshot, runtime/monitoring evidence, audit events and correlation IDs.
+5. Verify canonical HTTPS routing, authorization, heartbeat/state and monitoring evidence before restoration.
+6. For an `INTERNAL_GENERATED` runtime/contract fault, inspect the existing repair generation job. If automatic repair cannot be enqueued, use the `component.repair.enqueue_failed.<componentId>` operational alert plus `generated_component.repair_enqueue_failed` audit evidence to diagnose the enqueue failure; the next normal monitoring cycle may retry.
+7. If a repair candidate fails, preserve/restore the last functional local release. Do not invent PASS evidence or bypass CML conformance.
+8. If OWNER cancels a generation/repair job, treat `CANCELLED` as authoritative: do not continue implementation/activation and preserve the previously functional active release.
+9. Verify both alert delivery channels and the complete audit chain before service restoration.
 
-Automatic return from `QUARANTINED` is forbidden.
+Automatic return from a quarantined/blocked state is allowed only through the existing lifecycle rules and measured readiness/conformance required by the active CML model; no historical onboarding/CI artifact can substitute for those gates.
 
 ## Alert delivery failure
 
-- Inspect `alert_webhook_delivery` for retry count, HTTP status, response digest and dead-letter state.
-- Confirm both alert sink services are active and inspect their metadata-only journald events.
-- Received payloads are mode `0600` under the isolated primary and backup state directories; correlate them by delivery and correlation ID.
+- Inspect `operational_alert` and `alert_webhook_delivery` for severity, retry count, HTTP status, response digest, correlation ID and dead-letter state.
+- Confirm both existing alert sink services are operational.
+- Correlate alert evidence with component audit and monitoring evidence; do not create a parallel alert channel for generated repair failures.

@@ -7,8 +7,8 @@
     "build": "tsc -p tsconfig.json",
     "dev": "cd ../.. && tsx watch apps/server/src/index.ts",
     "start": "node dist/index.js",
-    "start:worker": "node dist/cli/onboarding-worker.js",
-    "worker": "tsx src/cli/onboarding-worker.ts",
+    "start:worker": "node dist/cli/generation-worker.js",
+    "worker": "tsx src/cli/generation-worker.ts",
     "start:component-control-worker": "node dist/cli/component-control-worker.js",
     "component-control-worker": "tsx src/cli/component-control-worker.ts",
     "start:component-e2e-worker": "node dist/cli/component-e2e-worker.js",
@@ -18,8 +18,6 @@
     "start:egress-proxy": "node dist/cli/egress-proxy.js",
     "start:secret-broker": "node dist/cli/secret-broker.js",
     "secret-broker": "tsx src/cli/secret-broker.ts",
-    "issue:repository-component-runtime-token": "tsx src/cli/issue-repository-component-runtime-token.ts",
-    "issue:repository-component-runtime-token:release": "node dist/cli/issue-repository-component-runtime-token.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "db:migrate": "tsx src/cli/migrate.ts",
     "db:migrate:release": "node dist/cli/migrate.js",
@@ -32,7 +30,9 @@
     "admin:login-smoke": "tsx src/cli/admin-login-smoke.ts",
     "admin:login-smoke:release": "node dist/cli/admin-login-smoke.js",
     "platform-worker-access:ensure": "tsx src/cli/ensure-platform-worker-access.ts",
-    "platform-worker-access:ensure:release": "node dist/cli/ensure-platform-worker-access.js"
+    "platform-worker-access:ensure:release": "node dist/cli/ensure-platform-worker-access.js",
+    "start:generation-worker": "node dist/cli/generation-worker.js",
+    "generation-worker": "tsx src/cli/generation-worker.ts"
   },
   "dependencies": {
     "@fastify/cookie": "^11.0.2",

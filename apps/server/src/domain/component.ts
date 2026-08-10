@@ -4,14 +4,10 @@ import type pg from "pg";
 import componentManifestSchema from "../contracts/component-manifest-2026.07.22-compliance.1.schema.json" with { type: "json" };
 import type { Db } from "../db.js";
 import { tx } from "../db.js";
-import { decryptVaultSecret, encryptVaultSecret, hmacToken, issueOpaqueSecret } from "../security/secrets.js";
+import { hmacToken, issueOpaqueSecret } from "../security/secrets.js";
 import { appendAudit } from "./audit.js";
-import { handoffDashboardNode } from "./dashboard-topology.js";
-import { authorizeComponentCall, componentSourceIdentityMatches } from "./component-auth.js";
 import { CANONICAL_COMPONENT_HOST_SUFFIX } from "./hostnames.js";
-import { transferIntegrationTokenSecretGrants } from "./onboarding.js";
 import { KCML_RELEASE } from "./release.js";
-import { resolveSecret, type SecretPrincipal } from "./secret-manager.js";
 
 export const COMPONENT_CATALOG_VERSION = KCML_RELEASE.catalogVersion;
 export const MCP_REQUIRED_CAPABILITIES = [
@@ -96,7 +92,7 @@ export type ComponentManifest = JsonRecord & {
 
 type GateResult = {
   gate: typeof ACTIVATION_GATES[number];
-  status: "PASS" | "FAIL";
+  status: "PASS" | "FAIL" | "NOT_APPLICABLE";
   reasonCode: string;
   evaluatorVersion: string;
   evidence: JsonRecord;
@@ -275,25 +271,6 @@ function rejectIncompleteContract(manifest: ComponentManifest): void {
   rejectPlaceholderSchemas(manifest);
 }
 
-function manifestRevision(manifest: ComponentManifest): string {
-  return text(manifest.registrationRevision);
-}
-
-function manifestCapabilities(manifest: ComponentManifest): string[] {
-  return [...new Set(manifest.capabilities.map(String))].sort();
-}
-
-function manifestProtocols(manifest: ComponentManifest): string[] {
-  const protocols = new Set(["KCML_CONTROL"]);
-  if (manifest.capabilities.some((capability) => capability.startsWith("mcp.")) || manifest.tools.length) protocols.add("MCP");
-  if (manifest.pulses.incoming.length || manifest.pulses.outgoing.length) protocols.add("KCML_PULSE");
-  return [...protocols].sort();
-}
-
-function manifestTransports(manifest: ComponentManifest): string[] {
-  return [text(manifest.runtime.transport), ...(manifest.tools.length ? ["STREAMABLE_HTTP"] : [])].sort();
-}
-
 export function validateComponentManifest(input: unknown): ComponentManifest {
   if (!validateCatalogComponentManifest(input)) {
     throw Object.assign(new Error("invalid_manifest"), { statusCode: 400, errors: validateCatalogComponentManifest.errors });
@@ -333,10 +310,10 @@ function statePayloadMatchesCommand(expectedStateKey: string | null, payload: un
   return activationState === expectedStateKey || operationalState === expectedStateKey;
 }
 
-async function gateResults(db: Db, componentId: string, manifest: ComponentManifest, authorizationSnapshot: Record<string, unknown>): Promise<GateResult[]> {
+export async function gateResults(db: Db, componentId: string, manifest: ComponentManifest, authorizationSnapshot: Record<string, unknown>): Promise<GateResult[]> {
   void authorizationSnapshot;
   const evidence = await db.query(
-    `select c.hostname,c.recertification_state,c.active_revision_id,r.manifest_digest,target.runtime_digest,
+    `select c.hostname,c.registration_type,c.recertification_state,c.active_revision_id,r.manifest_digest,target.runtime_digest,
             target.transport,target.upstream,target.expected_tls_identity,target.socket_path,
             stream.gap_state,stream.integrity_state,
             (select count(*)::int from component other where other.hostname=c.hostname) as hostname_owners
@@ -398,6 +375,21 @@ async function gateResults(db: Db, componentId: string, manifest: ComponentManif
        (select count(*)::int from component_external_permission permission where permission.component_id=$1 and permission.revoked_at is null) outbound_count`,
     [componentId]
   );
+  const dependencyContracts = await db.query(
+    `select count(*)::int as dependency_count
+       from principal_component_permission permission
+       join component source_component on source_component.principal_id=permission.source_principal_id
+      where source_component.id=$1 and permission.target_component_id<>$1 and permission.revoked_at is null`,
+    [componentId]
+  );
+  const componentSecretGrants = await db.query(
+    `select count(*)::int as grant_count
+       from secret_grant grant_row
+       join component component_row on component_row.id=$1
+      where grant_row.principal_kind='COMPONENT' and grant_row.revoked_at is null
+        and (grant_row.principal_id=component_row.id or grant_row.principal_public_id=component_row.code)`,
+    [componentId]
+  );
   const runtime = record(manifest.runtime) ?? {};
   const artifact = record(manifest.artifact) ?? {};
   const provenance = record(artifact.provenance) ?? {};
@@ -425,31 +417,63 @@ async function gateResults(db: Db, componentId: string, manifest: ComponentManif
     const socketPath: string = typeof row.socket_path === "string" ? String(row.socket_path) : "";
     transportIdentityValid = socketPath.startsWith("/") && text(runtime.transport) === "UDS";
   }
-  const direct = new Map<string, { pass: boolean; reason: string; evidence: JsonRecord }>([
+  const direct = new Map<string, { pass: boolean; notApplicable?: boolean; reason: string; evidence: JsonRecord }>([
     ["MANIFEST_SCHEMA", { pass: row.manifest_digest === manifestDigest, reason: "manifest_schema_and_digest_recomputed", evidence: { schemaVersion: manifest.schemaVersion, manifestDigest } }],
     ["ARTIFACT_PROVENANCE", { pass: artifactProvenanceValid, reason: "artifact_and_runtime_provenance_recomputed", evidence: { artifactDigest: artifact.digest ?? null, runtimeDigest: row.runtime_digest ?? null, issuer: provenance.issuer ?? null } }],
     ["DOCUMENT_CONTENT", { pass: documentationValid, reason: "documentation_bytes_and_digests_recomputed", evidence: { declaredKeys: [...declaredDocumentation.keys()].sort(), storedKeys: documentation.rows.map((item) => String(item.evidence_key)).sort() } }],
     ["HOST_EXCLUSIVITY", { pass: Number(row.hostname_owners) === 1 && String(row.hostname).endsWith(`.${CANONICAL_COMPONENT_HOST_SUFFIX}`), reason: "canonical_hostname_exclusivity_recomputed", evidence: { hostname: row.hostname, owners: Number(row.hostname_owners) } }],
-    ["TLS_IDENTITY", { pass: transportIdentityValid, reason: row.transport === "UDS" ? "uds_peer_boundary_recomputed" : "https_tls_identity_recomputed", evidence: { transport: row.transport ?? null, upstream: row.upstream ?? null, tlsIdentity: row.expected_tls_identity ?? null, socketPath: row.socket_path ?? null } }],
-    ["EACH_TOOL_LISTED", { pass: toolContractsMatch, reason: "canonical_tool_catalog_recomputed", evidence: { declared: declaredTools.map((tool) => text(tool.name)), stored: tools.rows.map((tool) => String(tool.name)) } }],
-    ["EACH_TOOL_INPUT_NEGATIVE", { pass: negativeInputResults.every((result) => result.rejected), reason: "tool_invalid_inputs_actively_rejected", evidence: { results: negativeInputResults } }],
     ["AUDIT_CONTINUITY", { pass: manifest.auditPolicy.technicalAudit === "PLATFORM" && row.gap_state === "CONTIGUOUS", reason: "audit_sequence_recomputed", evidence: { gapState: row.gap_state ?? null } }],
     ["AUDIT_PAYLOAD_INTEGRITY", { pass: row.integrity_state === "VALID", reason: "audit_chain_integrity_recomputed", evidence: { integrityState: row.integrity_state ?? null } }],
     ["RECERTIFICATION", { pass: ["NOT_DUE", "PASSED"].includes(String(row.recertification_state)), reason: "recertification_state_recomputed", evidence: { recertificationState: row.recertification_state ?? null } }]
   ]);
-  if (Number(externalContracts.rows[0]?.inbound_count ?? 0) === 0) direct.set("EXTERNAL_PRINCIPAL_INBOUND", {
-    pass: true, reason: "no_external_inbound_grants_declared", evidence: { declaredExternalInboundGrants: 0 }
+  if (String(row.registration_type) !== "INTERNAL_GENERATED") {
+    direct.set("TLS_IDENTITY", { pass: transportIdentityValid, reason: row.transport === "UDS" ? "uds_peer_boundary_recomputed" : "https_tls_identity_recomputed", evidence: { transport: row.transport ?? null, upstream: row.upstream ?? null, tlsIdentity: row.expected_tls_identity ?? null, socketPath: row.socket_path ?? null } });
+    direct.set("EACH_TOOL_LISTED", { pass: toolContractsMatch, reason: "canonical_tool_catalog_recomputed", evidence: { declared: declaredTools.map((tool) => text(tool.name)), stored: tools.rows.map((tool) => String(tool.name)) } });
+    direct.set("EACH_TOOL_INPUT_NEGATIVE", { pass: negativeInputResults.every((result) => result.rejected), reason: "tool_invalid_inputs_actively_rejected", evidence: { results: negativeInputResults } });
+  }
+  const externalWebhookDeclared = manifest.endpoints.some((endpoint) => {
+    const auth = record(endpoint.auth);
+    return auth?.mode === "EXTERNAL_WEBHOOK";
   });
-  if (manifest.outboundPolicies.length === 0 && Number(externalContracts.rows[0]?.outbound_count ?? 0) === 0) direct.set("EXTERNAL_TARGET_OUTBOUND", {
-    pass: true, reason: "no_external_outbound_policies_declared", evidence: { declaredOutboundPolicies: 0, currentExternalPermissions: 0 }
+  const runtimeEgressGrants = Array.isArray(runtime.egressGrants) ? runtime.egressGrants.map(record).filter(Boolean) as JsonRecord[] : [];
+  const tcpTlsEgressDeclared = runtimeEgressGrants.some((grant) => grant.type === "TCP_TLS");
+  if (manifest.endpoints.length === 0) direct.set("EACH_ENDPOINT_VARIANT", {
+    pass: true, notApplicable: true, reason: "not_applicable_no_endpoints_declared", evidence: { declaredEndpoints: 0 }
   });
+  if (manifest.pulses.incoming.length === 0) direct.set("EACH_INCOMING_PULSE_VARIANT", {
+    pass: true, notApplicable: true, reason: "not_applicable_no_incoming_pulses_declared", evidence: { declaredIncomingPulses: 0 }
+  });
+  if (manifest.pulses.outgoing.length === 0) direct.set("EACH_OUTGOING_PULSE_VARIANT", {
+    pass: true, notApplicable: true, reason: "not_applicable_no_outgoing_pulses_declared", evidence: { declaredOutgoingPulses: 0 }
+  });
+  if (Number(externalContracts.rows[0]?.inbound_count ?? 0) === 0 && !externalWebhookDeclared) direct.set("EXTERNAL_PRINCIPAL_INBOUND", {
+    pass: true, notApplicable: true, reason: "not_applicable_no_external_inbound_contract_declared", evidence: { declaredExternalInboundGrants: 0, externalWebhookDeclared: false }
+  });
+  if (manifest.outboundPolicies.length === 0 && runtimeEgressGrants.length === 0 && Number(externalContracts.rows[0]?.outbound_count ?? 0) === 0) direct.set("EXTERNAL_TARGET_OUTBOUND", {
+    pass: true, notApplicable: true, reason: "not_applicable_no_external_outbound_contract_declared", evidence: { declaredOutboundPolicies: 0, declaredRuntimeEgressGrants: 0, currentExternalPermissions: 0 }
+  });
+  if (!tcpTlsEgressDeclared) direct.set("TCP_TLS_EGRESS_ALLOWED", {
+    pass: true, notApplicable: true, reason: "not_applicable_no_tcp_tls_egress_declared", evidence: { declaredTcpTlsEgressGrants: 0 }
+  });
+  if (Number(dependencyContracts.rows[0]?.dependency_count ?? 0) === 0) {
+    direct.set("REGISTERED_TO_REGISTERED_DISPATCH", {
+      pass: true, notApplicable: true, reason: "not_applicable_no_cross_component_dependency_declared", evidence: { declaredDependencyPermissions: 0 }
+    });
+    direct.set("DEPENDENCY_READY", {
+      pass: true, notApplicable: true, reason: "not_applicable_no_cross_component_dependency_declared", evidence: { declaredDependencyPermissions: 0 }
+    });
+  }
+  if (Number(componentSecretGrants.rows[0]?.grant_count ?? 0) === 0) {
+    direct.set("SECRET_ALLOWED", { pass: true, notApplicable: true, reason: "not_applicable_no_component_secret_grants", evidence: { declaredSecretGrants: 0 } });
+    direct.set("SECRET_ALLOWED_RUNTIME", { pass: true, notApplicable: true, reason: "not_applicable_no_component_secret_grants", evidence: { declaredSecretGrants: 0 } });
+  }
   if (manifest.states.transitions.length === 0) direct.set("EACH_STATE_TRANSITION", {
-    pass: true, reason: "no_state_transitions_declared", evidence: { declaredTransitions: 0 }
+    pass: true, notApplicable: true, reason: "not_applicable_no_state_transitions_declared", evidence: { declaredTransitions: 0 }
   });
   return ACTIVATION_GATES.map((gate) => {
     const evaluated = direct.get(gate);
     if (evaluated) return {
-      gate, status: evaluated.pass ? "PASS" : "FAIL", reasonCode: evaluated.pass ? evaluated.reason : `${gate.toLowerCase()}_failed`,
+      gate, status: evaluated.notApplicable ? "NOT_APPLICABLE" : evaluated.pass ? "PASS" : "FAIL", reasonCode: evaluated.pass ? evaluated.reason : `${gate.toLowerCase()}_failed`,
       evaluatorVersion: COMPONENT_CATALOG_VERSION, evidence: { ...evaluated.evidence, checkedAt: now }, expiresAt: gate === "RECERTIFICATION" ? new Date(Date.now() + 15 * 60_000).toISOString() : null,
       requestDigest: evidenceDigest({ componentId, gate, manifestDigest }), responseDigest: evidenceDigest(evaluated.evidence), variant: "server_recomputed"
     };
@@ -467,7 +491,7 @@ async function gateResults(db: Db, componentId: string, manifest: ComponentManif
   });
 }
 
-async function persistGateEvidence(
+export async function persistGateEvidence(
   client: pg.PoolClient,
   componentId: string,
   revisionId: string,
@@ -496,7 +520,7 @@ async function persistGateEvidence(
   }
 }
 
-async function recordActiveGateEvidence(client: pg.PoolClient, params: {
+export async function recordActiveGateEvidence(client: pg.PoolClient, params: {
   componentId: string;
   revisionId: string;
   gate: typeof ACTIVATION_GATES[number];
@@ -532,176 +556,6 @@ async function recordActiveGateEvidence(client: pg.PoolClient, params: {
       JSON.stringify(params.evidence), evidenceDigest(params.evidence), params.correlationId, digests.rows[0].manifest_digest, runtimeDigest,
       params.requestDigest ?? null, params.responseDigest ?? null, params.variant]
   );
-}
-
-async function runAuthorizationReadinessProbes(db: Db, params: {
-  jobId: string;
-  integrationTokenId: string;
-  hmacKey: Buffer;
-  hmacKeyId: string;
-  correlationId: string;
-}): Promise<void> {
-  const target = await db.query(
-    `select job.component_id,component.active_revision_id,component.code,component.hostname
-       from component_onboarding_job job
-       join component on component.id=job.component_id
-      where job.id=$1 and job.integration_token_id=$2`,
-    [params.jobId, params.integrationTokenId]
-  );
-  if (!target.rowCount || !target.rows[0].active_revision_id) throw Object.assign(new Error("not_found"), { statusCode: 404 });
-  const row = target.rows[0];
-  const probePrincipalId = randomUUID();
-  const probePublicId = `KCML-READINESS-${randomUUID()}`;
-  const probeToken = issueOpaqueSecret();
-  const probeScope = "platform.control.readiness";
-  const probeRoute = "/v1/kcml/readiness/probe";
-  const call = (overrides: Partial<Parameters<typeof authorizeComponentCall>[1]> = {}) => authorizeComponentCall(db, {
-    token: probeToken.value,
-    audience: `https://${String(row.hostname)}`,
-    host: String(row.hostname),
-    scope: probeScope,
-    route: probeRoute,
-    hmacKey: params.hmacKey,
-    correlationId: params.correlationId,
-    ...overrides
-  });
-  let expiredConstraintEnforced = false;
-  try {
-    await db.query(
-      `insert into principal(id,kind,public_id,status,policy_epoch,revocation_epoch,metadata)
-       values ($1,'PLATFORM',$2,'ACTIVE',1,1,$3::jsonb)`,
-      [probePrincipalId, probePublicId, JSON.stringify({ purpose: "component_readiness_probe", componentId: row.component_id })]
-    );
-    await db.query(
-      `insert into principal_component_permission(source_principal_id,target_component_id,route_pattern,scope_name)
-       values ($1,$2,$3,$4)`,
-      [probePrincipalId, row.component_id, probeRoute, probeScope]
-    );
-    await db.query(
-      `insert into principal_access_token(lookup_digest,key_id,fingerprint,source_principal_id,target_component_id,audience,scope_names,issued_policy_epoch,issued_revocation_epoch,expires_at)
-       values ($1,$2,$3,$4,null,'*',$5::text[],1,1,'infinity')`,
-      [hmacToken(probeToken.value, params.hmacKey), params.hmacKeyId, probeToken.fingerprint, probePrincipalId, [probeScope]]
-    );
-    const allowed = await call();
-    const missingToken = await call({ token: `kca_missing_${randomUUID()}` });
-    const wrongAudience = await call({ audience: "https://wrong-audience.invalid" });
-    const missingScope = await call({ scope: "platform.control.scope-not-issued" });
-    const wrongClientRejected = allowed.allow && !componentSourceIdentityMatches(allowed, { clientId: String(row.code), componentCode: String(row.code) });
-
-    const expiredSecret = issueOpaqueSecret();
-    const client = await db.connect();
-    try {
-      await client.query("begin");
-      await client.query("savepoint expired_token_probe");
-      try {
-        await client.query(
-          `insert into principal_access_token(lookup_digest,key_id,fingerprint,source_principal_id,target_component_id,audience,scope_names,issued_policy_epoch,issued_revocation_epoch,expires_at)
-           values ($1,$2,$3,$4,null,'*',$5::text[],1,1,now()-interval '1 second')`,
-          [hmacToken(expiredSecret.value, params.hmacKey), params.hmacKeyId, expiredSecret.fingerprint, probePrincipalId, [probeScope]]
-        );
-      } catch (error) {
-        expiredConstraintEnforced = Boolean(error && typeof error === "object" && "code" in error && error.code === "23514");
-        await client.query("rollback to savepoint expired_token_probe");
-      }
-      await client.query("rollback");
-    } finally {
-      client.release();
-    }
-
-    await db.query("update principal_component_permission set revoked_at=now() where source_principal_id=$1 and target_component_id=$2 and scope_name=$3", [probePrincipalId, row.component_id, probeScope]);
-    const revokedPermission = await call();
-    await db.query("update principal_component_permission set revoked_at=null where source_principal_id=$1 and target_component_id=$2 and scope_name=$3", [probePrincipalId, row.component_id, probeScope]);
-    await db.query("update principal set revocation_epoch=revocation_epoch+1 where id=$1", [probePrincipalId]);
-    const invalidEpoch = await call();
-
-    const outcomes: Array<{ gate: typeof ACTIVATION_GATES[number]; pass: boolean; reason: string; response: unknown; variant: string }> = [
-      { gate: "NEGATIVE_AUTH_MISSING_TOKEN", pass: missingToken.reasonCode === "invalid_token", reason: "missing_or_unknown_bearer_rejected", response: missingToken, variant: "unknown_bearer" },
-      { gate: "NEGATIVE_AUTH_EXPIRED_TOKEN", pass: expiredConstraintEnforced, reason: "expired_access_token_forbidden_by_database", response: { expiredConstraintEnforced }, variant: "long_lived_token_constraint" },
-      { gate: "NEGATIVE_AUTH_WRONG_AUDIENCE", pass: wrongAudience.reasonCode === "invalid_audience", reason: "wrong_audience_rejected", response: wrongAudience, variant: "foreign_https_audience" },
-      { gate: "NEGATIVE_AUTH_WRONG_CLIENT", pass: wrongClientRejected, reason: "declared_client_binding_mismatch_rejected", response: { authenticatedClientId: allowed.sourceClientId, declaredClientId: row.code }, variant: "declared_client_mismatch" },
-      { gate: "NEGATIVE_AUTH_MISSING_SCOPE", pass: missingScope.reasonCode === "insufficient_scope", reason: "token_scope_missing_rejected", response: missingScope, variant: "scope_not_issued" },
-      { gate: "NEGATIVE_AUTH_REVOKED_PERMISSION", pass: revokedPermission.reasonCode === "insufficient_scope", reason: "current_permission_revocation_rejected", response: revokedPermission, variant: "live_permission_revocation" },
-      { gate: "TOKEN_EPOCH_INVALIDATION", pass: invalidEpoch.reasonCode === "revoked_token", reason: "revocation_epoch_change_rejected", response: invalidEpoch, variant: "principal_revocation_epoch" }
-    ];
-    await tx(db, async (client) => {
-      for (const outcome of outcomes) {
-        const evidence = { pass: outcome.pass, reason: outcome.reason, response: outcome.response };
-        await recordActiveGateEvidence(client, {
-          componentId: String(row.component_id), revisionId: String(row.active_revision_id), gate: outcome.gate,
-          pass: outcome.pass, reasonCode: outcome.pass ? outcome.reason : `${outcome.gate.toLowerCase()}_probe_failed`,
-          evidence, correlationId: params.correlationId,
-          requestDigest: evidenceDigest({ gate: outcome.gate, variant: outcome.variant }), responseDigest: evidenceDigest(evidence), variant: outcome.variant
-        });
-      }
-    });
-  } finally {
-    await db.query("delete from principal where id=$1", [probePrincipalId]).catch(() => undefined);
-  }
-}
-
-async function runSecretReadinessProbes(db: Db, params: {
-  jobId: string;
-  integrationTokenId: string;
-  vaultMasterKey: Buffer;
-  vaultMasterKeyId: string;
-  accessTokenHmacKey: Buffer;
-  integrationTokenHmacKey: Buffer;
-  integrationTokenHmacKeyId: string;
-  correlationId: string;
-}): Promise<void> {
-  const job = await db.query(
-    `select job.component_id,component.active_revision_id,component.code
-       from component_onboarding_job job join component on component.id=job.component_id
-      where job.id=$1 and job.integration_token_id=$2 and job.principal_access_token_digest is not null`,
-    [params.jobId, params.integrationTokenId]
-  );
-  if (!job.rowCount) return;
-  const row = job.rows[0];
-  const principal: SecretPrincipal = { kind: "COMPONENT", id: String(row.component_id), publicId: String(row.code), auditActorType: "component" };
-  const config = {
-    CONFIG_VAULT_MASTER_KEY_BASE64: params.vaultMasterKey,
-    CONFIG_VAULT_MASTER_KEY_ID: params.vaultMasterKeyId,
-    ACCESS_TOKEN_HMAC_KEY_BASE64: params.accessTokenHmacKey,
-    INTEGRATION_TOKEN_HMAC_KEY_BASE64: params.integrationTokenHmacKey,
-    INTEGRATION_TOKEN_HMAC_KEY_ID: params.integrationTokenHmacKeyId
-  };
-  const grants = await db.query(
-    `select secret.stable_name
-       from secret_grant grant_row join secret_record secret on secret.id=grant_row.secret_id
-      where grant_row.principal_kind='COMPONENT' and grant_row.revoked_at is null
-        and (grant_row.principal_id=$1 or grant_row.principal_public_id=$2)
-        and secret.status='ACTIVE' order by secret.stable_name`,
-    [row.component_id, row.code]
-  );
-  const allowedResults: Array<{ name: string; fingerprint: string; version: number }> = [];
-  let allowed = true;
-  for (const grant of grants.rows) {
-    try {
-      const resolved = await resolveSecret(db, config, principal, String(grant.stable_name), params.correlationId);
-      allowedResults.push({ name: resolved.name, fingerprint: resolved.fingerprint, version: resolved.version });
-    } catch {
-      allowed = false;
-    }
-  }
-  let denied = false;
-  const deniedName = `KCML_READINESS_DENIED_${randomUUID().replaceAll("-", "").toUpperCase()}`;
-  try {
-    await resolveSecret(db, config, principal, deniedName, params.correlationId);
-  } catch (error) {
-    denied = error instanceof Error && error.message === "secret_unavailable";
-  }
-  await tx(db, async (client) => {
-    const evidenceAllowed = { declaredGrantCount: grants.rows.length, resolved: allowedResults, noGrantsDeclared: grants.rows.length === 0 };
-    await recordActiveGateEvidence(client, { componentId: String(row.component_id), revisionId: String(row.active_revision_id), gate: "SECRET_ALLOWED",
-      pass: allowed, reasonCode: allowed ? (grants.rows.length ? "each_granted_secret_resolved" : "no_secret_grants_declared") : "granted_secret_resolution_failed",
-      evidence: evidenceAllowed, correlationId: params.correlationId, requestDigest: evidenceDigest(grants.rows.map((grant) => String(grant.stable_name))),
-      responseDigest: evidenceDigest(evidenceAllowed), variant: grants.rows.length ? "all_current_grants" : "no_grants" });
-    const evidenceDenied = { deniedNameDigest: evidenceDigest(deniedName), denied };
-    await recordActiveGateEvidence(client, { componentId: String(row.component_id), revisionId: String(row.active_revision_id), gate: "SECRET_DENIED",
-      pass: denied, reasonCode: denied ? "ungranted_secret_denied" : "ungranted_secret_resolution_allowed",
-      evidence: evidenceDenied, correlationId: params.correlationId, requestDigest: evidenceDigest({ name: deniedName }),
-      responseDigest: evidenceDigest(evidenceDenied), variant: "random_ungranted_name" });
-  });
 }
 
 async function controlContract(client: pg.PoolClient, componentId: string, commandType: "enable" | "disable" | "state" | "heartbeat") {
@@ -798,53 +652,6 @@ async function createHeartbeatChallenge(client: pg.PoolClient, params: {
   return { id: String(result.rows[0].id), challenge_nonce: String(result.rows[0].challenge_nonce) };
 }
 
-async function queueReadinessControlProbes(client: pg.PoolClient, params: {
-  componentId: string;
-  revisionId: string;
-  policyEpoch: number;
-  correlationId: string;
-  gates: GateResult[];
-}): Promise<void> {
-  const missing = new Set(params.gates.filter((gate) => gate.status !== "PASS").map((gate) => gate.gate));
-  const alreadyPending = await client.query(
-    `select command_type from component_control_dispatch
-      where component_id=$1 and revision_id=$2 and state in ('QUEUED','CLAIMED','SENT','ACK_PENDING','ACKED')
-        and deadline_at>now() and coalesce((retry_policy->>'probeOnly')::boolean,false)`,
-    [params.componentId, params.revisionId]
-  );
-  const pending = new Set(alreadyPending.rows.map((row) => String(row.command_type)));
-  const queueActivationProbe = async (commandType: "enable" | "disable") => {
-    if (pending.has(commandType)) return;
-    const expectedStateKey = commandType === "enable" ? "ENABLED" : "DISABLED";
-    const dispatch = await enqueueControlDispatch(client, {
-      componentId: params.componentId, commandType, requestedPolicyEpoch: params.policyEpoch,
-      expectedStateKey, correlationId: params.correlationId, probeOnly: true
-    });
-    await createStateQueryRun(client, {
-      componentId: params.componentId, revisionId: params.revisionId, dispatchId: String(dispatch.id),
-      requestedPolicyEpoch: params.policyEpoch, expectedStateKey, correlationId: params.correlationId
-    });
-    if (commandType === "enable") await createHeartbeatChallenge(client, {
-      componentId: params.componentId, revisionId: params.revisionId, dispatchId: String(dispatch.id),
-      requestedPolicyEpoch: params.policyEpoch, correlationId: params.correlationId
-    });
-  };
-  if (missing.has("ENABLE_CONTROL")) await queueActivationProbe("enable");
-  if (missing.has("DISABLE_CONTROL")) await queueActivationProbe("disable");
-  if ((missing.has("STATE_QUERY_CONTROL") || missing.has("STATE_FULL_SNAPSHOT") || missing.has("EACH_STATE_SCHEMA")) && !pending.has("state")) {
-    const dispatch = await enqueueControlDispatch(client, { componentId: params.componentId, commandType: "state",
-      requestedPolicyEpoch: params.policyEpoch, expectedStateKey: "FULL_SNAPSHOT", correlationId: params.correlationId, probeOnly: true });
-    await createStateQueryRun(client, { componentId: params.componentId, revisionId: params.revisionId, dispatchId: String(dispatch.id),
-      requestedPolicyEpoch: params.policyEpoch, expectedStateKey: "FULL_SNAPSHOT", correlationId: params.correlationId });
-  }
-  if (missing.has("HEARTBEAT_CHALLENGE") && !pending.has("heartbeat")) {
-    const dispatch = await enqueueControlDispatch(client, { componentId: params.componentId, commandType: "heartbeat",
-      requestedPolicyEpoch: params.policyEpoch, correlationId: params.correlationId, probeOnly: true });
-    await createHeartbeatChallenge(client, { componentId: params.componentId, revisionId: params.revisionId, dispatchId: String(dispatch.id),
-      requestedPolicyEpoch: params.policyEpoch, correlationId: params.correlationId });
-  }
-}
-
 async function finalizeDispatchFromEvidence(client: pg.PoolClient, dispatchId: string, correlationId: string): Promise<void> {
   const result = await client.query(
     `select d.*, c.enabled, c.lifecycle_state, c.activation_state,
@@ -925,7 +732,7 @@ async function finalizeDispatchFromEvidence(client: pg.PoolClient, dispatchId: s
   });
 }
 
-async function replaceDerivedComponentContracts(client: pg.PoolClient, componentId: string, revisionId: string, manifest: ComponentManifest, hostname: string): Promise<void> {
+export async function replaceDerivedComponentContracts(client: pg.PoolClient, componentId: string, revisionId: string, manifest: ComponentManifest, hostname: string): Promise<void> {
   const tables = [
     "component_secret_policy",
     "component_control_command",
@@ -974,11 +781,14 @@ async function replaceDerivedComponentContracts(client: pg.PoolClient, component
 
   for (const endpoint of manifest.endpoints) {
     const endpointId = text(endpoint.key);
+    const endpointAuth = record(endpoint.auth) ?? {};
+    const endpointAuthMode = text(endpointAuth.mode) || "KCML_BEARER";
+    const endpointAuthConfig = record(endpointAuth.verification) ?? {};
     await client.query(
-      `insert into component_endpoint_contract(component_id,revision_id,endpoint_id,public_hostname,path,methods,auth_mode,request_schema,response_schema)
-       values ($1,$2,$3,$4,$5,$6::text[],$7,$8::jsonb,$9::jsonb)`,
+      `insert into component_endpoint_contract(component_id,revision_id,endpoint_id,public_hostname,path,methods,auth_mode,auth_config,request_schema,response_schema)
+       values ($1,$2,$3,$4,$5,$6::text[],$7,$8::jsonb,$9::jsonb,$10::jsonb)`,
       [componentId, revisionId, endpointId, hostname, text(endpoint.path), [text(endpoint.method)],
-        "KCML_BEARER", JSON.stringify(endpoint.requestSchema ?? {}), JSON.stringify(endpoint.responseSchema ?? {})]
+        endpointAuthMode, JSON.stringify(endpointAuthConfig), JSON.stringify(endpoint.requestSchema ?? {}), JSON.stringify(endpoint.responseSchema ?? {})]
     );
     await client.query(
       `insert into component_call_mask(component_id,revision_id,mask_key,direction,route_pattern,scope_name,request_schema,response_schema)
@@ -1133,438 +943,6 @@ async function replaceDerivedComponentContracts(client: pg.PoolClient, component
       [componentId, routePattern, scopeName]
     );
   }
-}
-
-export async function createComponentOnboarding(db: Db, params: {
-  integrationTokenId: string;
-  idempotencyKey: string;
-  manifest: ComponentManifest;
-  correlationId: string;
-}): Promise<Record<string, unknown>> {
-  const digest = componentManifestDigest(params.manifest);
-  return tx(db, async (client) => {
-    const token = await client.query(
-      `select id,token_kind,release_version,max_child_jobs
-         from integration_token
-        where id=$1
-          and revoked_at is null
-          and deleted_at is null
-          and expires_at > now()
-        for update`,
-      [params.integrationTokenId]
-    );
-    if (!token.rowCount) throw Object.assign(new Error("invalid_integration_token"), { statusCode: 401 });
-    const tokenRow = token.rows[0];
-    await cleanupRetryableComponentOnboardings(client, params.integrationTokenId, params.correlationId);
-    const existing = await client.query(
-      "select * from component_onboarding_job where integration_token_id=$1 and idempotency_key=$2 for update",
-      [params.integrationTokenId, params.idempotencyKey]
-    );
-    if (existing.rowCount) {
-      if (String(existing.rows[0].request_digest) !== digest) throw Object.assign(new Error("idempotency_conflict"), { statusCode: 409 });
-      return componentOnboardingView(existing.rows[0]);
-    }
-    const successfulRegistration = await client.query(
-      `select 1
-         from component_onboarding_job
-        where integration_token_id=$1
-          and principal_access_token_handed_off_at is not null
-        limit 1`,
-      [params.integrationTokenId]
-    );
-    if (successfulRegistration.rowCount) throw Object.assign(new Error("integration_token_consumed"), { statusCode: 409 });
-    const activeJob = await client.query(
-      `select 1
-         from component_onboarding_job
-        where integration_token_id=$1
-          and state not in ('CANCELLED','FAILED')
-          and principal_access_token_handed_off_at is null
-        limit 1`,
-      [params.integrationTokenId]
-    );
-    if (activeJob.rowCount) throw Object.assign(new Error("integration_token_already_bound"), { statusCode: 409 });
-    const identity = await client.query("select nextval('kcml_number_seq')::bigint as number");
-    const number = Number(identity.rows[0].number);
-    const code = `KCML${String(number).padStart(4, "0")}`;
-    const hostname = `${code.toLowerCase()}.${CANONICAL_COMPONENT_HOST_SUFFIX}`;
-    const componentId = randomUUID();
-    const principalId = randomUUID();
-    const category = "EXTERNAL_SERVICE";
-    const registrationType = "GENERIC_COMPONENT";
-    const role = "SERVICE";
-    const capabilities = manifestCapabilities(params.manifest);
-    const protocols = manifestProtocols(params.manifest);
-    const transports = manifestTransports(params.manifest);
-    const authorizationSnapshot = {
-      tokenId: params.integrationTokenId,
-      tokenKind: String(tokenRow.token_kind),
-      releaseVersion: COMPONENT_CATALOG_VERSION,
-      manifestDigest: digest,
-      registrationType,
-      componentKind: params.manifest.kind,
-      category,
-      capturedAt: new Date().toISOString()
-    };
-    await client.query(
-      `insert into principal(id,kind,public_id,status,policy_epoch,revocation_epoch,metadata)
-       values ($1,'COMPONENT',$2,'SUSPENDED',1,1,$3::jsonb)`,
-      [principalId, code, JSON.stringify({ componentId, assignedBy: "component_onboarding" })]
-    );
-    await client.query(
-      `insert into component(
-        id,principal_id,kcml_number,code,hostname,display_name,description,category,registration_type,component_role,owners,contacts,
-        lifecycle_state,activation_state,operational_state,monitoring_state,enabled,release_version
-      ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12::jsonb,'REVIEW','INACTIVE','UNKNOWN',$13,false,$14)`,
-      [componentId, principalId, number, code, hostname, params.manifest.displayName, params.manifest.businessPurpose, category,
-        registrationType, role, JSON.stringify(params.manifest.owners), JSON.stringify(params.manifest.contacts),
-        "PENDING", COMPONENT_CATALOG_VERSION]
-    );
-    const revision = await client.query(
-      `insert into component_revision(
-        component_id,revision,manifest,manifest_digest,capabilities,protocols,transports,derived_gates
-      ) values ($1,$2,$3::jsonb,$4,$5::text[],$6::text[],$7::text[],$8::jsonb) returning id`,
-      [componentId, manifestRevision(params.manifest), JSON.stringify(params.manifest), digest, capabilities,
-        protocols, transports, JSON.stringify(ACTIVATION_GATES)]
-    );
-    await replaceDerivedComponentContracts(client, componentId, String(revision.rows[0].id), params.manifest, hostname);
-    await client.query("insert into component_audit_stream(component_id) values ($1)", [componentId]);
-    const inserted = await client.query(
-      `insert into component_onboarding_job(
-        integration_token_id,component_id,idempotency_key,request_digest,category,registration_type,manifest,manifest_digest,state,
-        release_version,authorization_snapshot
-      ) values ($1,$2,$3,$4,$5,$6,$7::jsonb,$4,'IN_REVIEW',$8,$9::jsonb) returning *`,
-      [params.integrationTokenId, componentId, params.idempotencyKey, digest, category, registrationType,
-        JSON.stringify(params.manifest), COMPONENT_CATALOG_VERSION, JSON.stringify(authorizationSnapshot)]
-    );
-    await client.query("update component set active_revision_id=$2 where id=$1", [componentId, revision.rows[0].id]);
-    await transferIntegrationTokenSecretGrants(client, params.integrationTokenId, componentId, code);
-    await handoffDashboardNode(client, {
-      integrationTokenId: params.integrationTokenId,
-      componentId,
-      principalId,
-      code,
-      displayName: params.manifest.displayName,
-      correlationId: params.correlationId
-    });
-    await appendAudit(client, {
-      eventType: "component_onboarding.created", actorType: "integration_token", actorId: params.integrationTokenId,
-      objectType: "component", objectId: componentId,
-      after: { code, hostname, catalogVersion: COMPONENT_CATALOG_VERSION, componentKind: params.manifest.kind },
-      correlationId: params.correlationId
-    });
-    return componentOnboardingView(inserted.rows[0]);
-  });
-}
-
-async function cleanupRetryableComponentOnboardings(client: pg.PoolClient, integrationTokenId: string, correlationId: string): Promise<void> {
-  const retryable = await client.query(
-    `select job.id, job.component_id, job.state
-       from component_onboarding_job job
-      where job.integration_token_id=$1
-        and job.principal_access_token_handed_off_at is null
-        and job.state in ('GATES_PENDING','BLOCKED','FAILED','CANCELLED')
-      for update`,
-    [integrationTokenId]
-  );
-  for (const row of retryable.rows) {
-    await cleanupComponentOnboardingRow(client, row, "component_onboarding.retry_cleanup", correlationId);
-  }
-}
-
-async function cleanupComponentOnboardingRow(
-  client: pg.PoolClient,
-  row: Record<string, unknown>,
-  eventType: string,
-  correlationId: string
-): Promise<void> {
-  const jobId = String(row.id);
-  const componentId = optionalText(row.component_id);
-  await client.query(
-      `update component_onboarding_job
-        set state='CANCELLED', cancelled_at=coalesce(cancelled_at,now()), credential_claim_digest=null,
-            credential_claim_expires_at=null, principal_access_token_ciphertext=null,
-            principal_access_token_key_id=null, lock_version=lock_version+1, updated_at=now()
-      where id=$1 and principal_access_token_handed_off_at is null`,
-    [jobId]
-  );
-  if (componentId) {
-    await client.query(
-      "update principal_access_token set revoked_at=coalesce(revoked_at,now()),rotation_reason='ONBOARDING_CANCELLED' where source_principal_id=(select principal_id from component where id=$1) and revoked_at is null",
-      [componentId]
-    );
-    await client.query("update principal set status='REVOKED',revocation_epoch=revocation_epoch+1,updated_at=now() where id=(select principal_id from component where id=$1)", [componentId]);
-    await client.query("update component_permission set revoked_at=coalesce(revoked_at,now()) where source_component_id=$1 or target_component_id=$1", [componentId]);
-    await client.query(
-      `update component
-          set enabled=false, ingress_enabled=false, pulse_enabled=false, egress_enabled=false,
-              lifecycle_state='DEREGISTERED', activation_state='INACTIVE', operational_state='RETIRED',
-              deregistered_at=coalesce(deregistered_at,now()), lock_version=lock_version+1
-        where id=$1`,
-      [componentId]
-    );
-  }
-  await appendAudit(client, {
-    eventType,
-    actorType: "system",
-    objectType: "component_onboarding_job",
-    objectId: jobId,
-    after: { runtimeVisible: false, componentId },
-    correlationId
-  });
-}
-
-function componentOnboardingView(row: Record<string, unknown>): Record<string, unknown> {
-  return {
-    id: String(row.id),
-    componentId: optionalText(row.component_id),
-    state: String(row.state),
-    category: String(row.category),
-    registrationType: String(row.registration_type),
-    manifestDigest: String(row.manifest_digest),
-    gateResults: row.gate_results ?? [],
-    failureCode: optionalText(row.failure_code),
-    lockVersion: Number(row.lock_version),
-    releaseVersion: String(row.release_version),
-    createdAt: String(row.created_at),
-    updatedAt: String(row.updated_at)
-  };
-}
-
-export async function getComponentOnboarding(db: Db, jobId: string, integrationTokenId?: string): Promise<Record<string, unknown>> {
-  const result = await db.query(
-    `select * from component_onboarding_job where id=$1${integrationTokenId ? " and integration_token_id=$2" : ""}`,
-    integrationTokenId ? [jobId, integrationTokenId] : [jobId]
-  );
-  if (!result.rowCount) throw Object.assign(new Error("not_found"), { statusCode: 404 });
-  return componentOnboardingView(result.rows[0]);
-}
-
-export async function reviseComponentOnboarding(db: Db, params: {
-  jobId: string;
-  integrationTokenId: string;
-  expectedLockVersion: number;
-  idempotencyKey: string;
-  manifest: ComponentManifest;
-  correlationId: string;
-}): Promise<Record<string, unknown>> {
-  const digest = componentManifestDigest(params.manifest);
-  return tx(db, async (client) => {
-    const current = await client.query(
-      "select * from component_onboarding_job where id=$1 and integration_token_id=$2 for update",
-      [params.jobId, params.integrationTokenId]
-    );
-    if (!current.rowCount) throw Object.assign(new Error("not_found"), { statusCode: 404 });
-    const job = current.rows[0];
-    if (Number(job.lock_version) !== params.expectedLockVersion) throw Object.assign(new Error("lock_version_conflict"), { statusCode: 412 });
-    if (["ACTIVE", "CANCELLED"].includes(String(job.state))) throw Object.assign(new Error("invalid_state"), { statusCode: 409 });
-    const duplicateRequest = await client.query(
-      "select request_digest from component_onboarding_revision_request where job_id=$1 and idempotency_key=$2",
-      [params.jobId, params.idempotencyKey]
-    );
-    if (duplicateRequest.rowCount) {
-      if (String(duplicateRequest.rows[0].request_digest) !== digest) {
-        throw Object.assign(new Error("idempotency_conflict"), { statusCode: 409 });
-      }
-      return componentOnboardingView(job);
-    }
-    const revision = await client.query(
-      `insert into component_revision(component_id,revision,manifest,manifest_digest,capabilities,protocols,transports,derived_gates)
-       values ($1,$2,$3::jsonb,$4,$5::text[],$6::text[],$7::text[],$8::jsonb)
-       on conflict (component_id,revision) do update set manifest=excluded.manifest,manifest_digest=excluded.manifest_digest,
-         capabilities=excluded.capabilities,protocols=excluded.protocols,transports=excluded.transports,validation_state='PENDING',evidence='{}'::jsonb
-       returning id`,
-      [job.component_id, manifestRevision(params.manifest), JSON.stringify(params.manifest), digest, manifestCapabilities(params.manifest),
-        manifestProtocols(params.manifest), manifestTransports(params.manifest), JSON.stringify(ACTIVATION_GATES)]
-    );
-    await replaceDerivedComponentContracts(client, String(job.component_id), String(revision.rows[0].id), params.manifest, String((await client.query("select hostname from component where id=$1", [job.component_id])).rows[0].hostname));
-    await client.query("update component set active_revision_id=$2,lifecycle_state='REVIEW',activation_state='INACTIVE',enabled=false,ingress_enabled=false,pulse_enabled=false,egress_enabled=false where id=$1", [job.component_id, revision.rows[0].id]);
-    const updated = await client.query(
-      `update component_onboarding_job set manifest=$2::jsonb,manifest_digest=$3,request_digest=$3,state='IN_REVIEW',
-        gate_results='[]'::jsonb,credential_claim_digest=null,credential_claim_expires_at=null,failure_code=null,
-        lock_version=lock_version+1,updated_at=now() where id=$1 and lock_version=$4 returning *`,
-      [params.jobId, JSON.stringify(params.manifest), digest, params.expectedLockVersion]
-    );
-    if (!updated.rowCount) throw Object.assign(new Error("lock_version_conflict"), { statusCode: 412 });
-    await client.query(
-      `insert into component_onboarding_revision_request(job_id,idempotency_key,request_digest)
-       values ($1,$2,$3)`,
-      [params.jobId, params.idempotencyKey, digest]
-    );
-    await appendAudit(client, {
-      eventType: "component_onboarding.revised", actorType: "integration_token", actorId: params.integrationTokenId,
-      objectType: "component", objectId: String(job.component_id), after: { revision: manifestRevision(params.manifest), manifestDigest: digest }, correlationId: params.correlationId
-    });
-    return componentOnboardingView(updated.rows[0]);
-  });
-}
-
-export async function evaluateComponentReadiness(db: Db, params: {
-  jobId: string;
-  integrationTokenId: string;
-  accessTokenHmacKey: Buffer;
-  accessTokenHmacKeyId: string;
-  vaultMasterKey: Buffer;
-  vaultMasterKeyId: string;
-  integrationTokenHmacKey: Buffer;
-  integrationTokenHmacKeyId: string;
-  correlationId: string;
-}): Promise<{ job: Record<string, unknown>; accessToken?: string }> {
-  await runAuthorizationReadinessProbes(db, {
-    jobId: params.jobId,
-    integrationTokenId: params.integrationTokenId,
-    hmacKey: params.accessTokenHmacKey,
-    hmacKeyId: params.accessTokenHmacKeyId,
-    correlationId: params.correlationId
-  });
-  await runSecretReadinessProbes(db, {
-    jobId: params.jobId, integrationTokenId: params.integrationTokenId,
-    vaultMasterKey: params.vaultMasterKey, vaultMasterKeyId: params.vaultMasterKeyId,
-    accessTokenHmacKey: params.accessTokenHmacKey,
-    integrationTokenHmacKey: params.integrationTokenHmacKey,
-    integrationTokenHmacKeyId: params.integrationTokenHmacKeyId,
-    correlationId: params.correlationId
-  });
-  return tx(db, async (client) => {
-    const jobResult = await client.query(
-      "select * from component_onboarding_job where id=$1 and integration_token_id=$2 for update",
-      [params.jobId, params.integrationTokenId]
-    );
-    if (!jobResult.rowCount) throw Object.assign(new Error("not_found"), { statusCode: 404 });
-    const job = jobResult.rows[0];
-    if (["CANCELLED", "FAILED"].includes(String(job.state))) throw Object.assign(new Error("invalid_state"), { statusCode: 409 });
-    const manifest = validateComponentManifest(job.manifest);
-    const authorizationSnapshot = job.authorization_snapshot && typeof job.authorization_snapshot === "object"
-      ? job.authorization_snapshot as Record<string, unknown>
-      : {};
-    const componentCurrent = await client.query(
-      `select c.active_revision_id,c.principal_id,c.policy_epoch as component_policy_epoch,p.policy_epoch as principal_policy_epoch,p.revocation_epoch as principal_revocation_epoch
-         from component c join principal p on p.id=c.principal_id where c.id=$1 for update of c,p`,
-      [job.component_id]
-    );
-    const activeRevisionId = optionalText(componentCurrent.rows[0]?.active_revision_id);
-    if (!activeRevisionId) throw Object.assign(new Error("catalog_incompatible"), { statusCode: 409 });
-    let pendingAccessToken: string | undefined;
-    let accessDigest: Buffer | null = job.principal_access_token_digest ?? null;
-    let accessFingerprint: string | null = job.principal_access_token_fingerprint ?? null;
-    let accessCiphertext: string | null = optionalText(job.principal_access_token_ciphertext);
-    let accessCiphertextKeyId: string | null = optionalText(job.principal_access_token_key_id);
-    if (!accessDigest) {
-      const issued = issueOpaqueSecret();
-      pendingAccessToken = issued.value;
-      accessDigest = hmacToken(issued.value, params.accessTokenHmacKey);
-      accessFingerprint = issued.fingerprint;
-      accessCiphertext = encryptVaultSecret(issued.value, params.vaultMasterKey, {
-        keyId: params.vaultMasterKeyId,
-        settingKey: `component-onboarding:${params.jobId}`
-      });
-      accessCiphertextKeyId = params.vaultMasterKeyId;
-      const accessScopes = [...new Set([...manifest.capabilities, ...manifest.tools.map((tool) => text(tool.scope)), ...manifest.endpoints.map((endpoint) => text(endpoint.scope))])].filter(Boolean);
-      await client.query(
-        `insert into principal_access_token(
-          lookup_digest,key_id,fingerprint,source_principal_id,target_component_id,audience,scope_names,
-          issued_policy_epoch,issued_revocation_epoch,expires_at
-        ) values ($1,$2,$3,$4,null,'*',$5::text[],$6,$7,'infinity')`,
-        [accessDigest, params.accessTokenHmacKeyId, issued.fingerprint, componentCurrent.rows[0].principal_id, accessScopes,
-          componentCurrent.rows[0].principal_policy_epoch, componentCurrent.rows[0].principal_revocation_epoch]
-      );
-      await client.query("update principal set status='ACTIVE',updated_at=now() where id=$1", [componentCurrent.rows[0].principal_id]);
-    } else if (accessCiphertext && accessCiphertextKeyId) {
-      pendingAccessToken = decryptVaultSecret(accessCiphertext, new Map([[accessCiphertextKeyId, params.vaultMasterKey]]), `component-onboarding:${params.jobId}`);
-    }
-    const gates = await gateResults(client as unknown as Db, String(job.component_id), manifest, authorizationSnapshot);
-    await persistGateEvidence(client, String(job.component_id), activeRevisionId, gates, params.correlationId);
-    const passed = gates.every((gate) => gate.status === "PASS");
-    const accessToken = passed && !job.principal_access_token_handed_off_at ? pendingAccessToken : undefined;
-    const updated = await client.query(
-      `update component_onboarding_job
-          set state=$2, gate_results=$3::jsonb,
-              principal_access_token_digest=coalesce(principal_access_token_digest,$4),
-              principal_access_token_fingerprint=coalesce(principal_access_token_fingerprint,$5),
-              principal_access_token_ciphertext=case when $6 then null else coalesce(principal_access_token_ciphertext,$7) end,
-              principal_access_token_key_id=case when $6 then null else coalesce(principal_access_token_key_id,$8) end,
-              principal_access_token_handed_off_at=case when $6 then now() else principal_access_token_handed_off_at end,
-              lock_version=lock_version+1, updated_at=now()
-        where id=$1 returning *`,
-      [params.jobId, passed ? "ACTIVE" : "BLOCKED", JSON.stringify(gates), accessDigest, accessFingerprint, Boolean(accessToken), accessCiphertext, accessCiphertextKeyId]
-    );
-    if (accessToken) {
-      await client.query(
-        "update integration_token set revoked_at=coalesce(revoked_at,now()), lock_version=lock_version+1 where id=$1 and revoked_at is null",
-        [params.integrationTokenId]
-      );
-    }
-    await client.query(
-      `update component
-          set lifecycle_state=$2,
-              activation_state=$3,
-              monitoring_state=case when $4 then 'HEALTHY' else 'PENDING' end,
-              enabled=$4,
-              ingress_enabled=$4,
-              pulse_enabled=$4,
-              egress_enabled=$4,
-              operational_state=case when $4 then 'HEALTHY' else operational_state end,
-              activated_at=case when $4 then coalesce(activated_at,now()) else activated_at end
-        where id=$1`,
-      [job.component_id, passed ? "ACTIVE" : "REVIEW", passed ? "ACTIVE" : "BLOCKED", passed]
-    );
-    if (!passed) {
-      const currentPolicy = await client.query("select policy_epoch from component where id=$1 for update", [job.component_id]);
-      if (!currentPolicy.rowCount) throw Object.assign(new Error("not_found"), { statusCode: 404 });
-      await queueReadinessControlProbes(client, {
-        componentId: String(job.component_id), revisionId: activeRevisionId,
-        policyEpoch: Number(currentPolicy.rows[0].policy_epoch), correlationId: params.correlationId, gates
-      });
-    }
-    if (passed) {
-      await client.query(
-        "update principal set status='ACTIVE',updated_at=now() where id=$1",
-        [componentCurrent.rows[0].principal_id]
-      );
-    }
-    await client.query(
-      `update component_revision set validation_state=$2,approved_at=case when $2='APPROVED' then now() else approved_at end
-        where id=(select active_revision_id from component where id=$1)`,
-      [job.component_id, passed ? "APPROVED" : "PENDING"]
-    );
-    await appendAudit(client, {
-      eventType: "component_onboarding.readiness_evaluated", actorType: "integration_token", actorId: params.integrationTokenId,
-      objectType: "component", objectId: String(job.component_id), after: { passed, gates }, correlationId: params.correlationId
-    });
-    return { job: componentOnboardingView(updated.rows[0]), ...(accessToken ? { accessToken } : {}) };
-  });
-}
-
-export async function cancelComponentOnboarding(db: Db, jobId: string, integrationTokenId: string, correlationId: string): Promise<Record<string, unknown>> {
-  return tx(db, async (client) => {
-    const current = await client.query(
-      `select * from component_onboarding_job
-        where id=$1 and integration_token_id=$2 and state not in ('ACTIVE','CANCELLED')
-        for update`,
-      [jobId, integrationTokenId]
-    );
-    if (!current.rowCount) throw Object.assign(new Error("invalid_state"), { statusCode: 409 });
-    await cleanupComponentOnboardingRow(client, current.rows[0], "component_onboarding.cancelled", correlationId);
-    const updated = await client.query("select * from component_onboarding_job where id=$1", [jobId]);
-    return componentOnboardingView(updated.rows[0]);
-  });
-}
-
-export async function cleanupExpiredComponentOnboardings(db: Db, correlationId: string): Promise<number> {
-  return tx(db, async (client) => {
-    const expired = await client.query(
-      `select job.*
-         from component_onboarding_job job
-         join integration_token token on token.id=job.integration_token_id
-        where token.expires_at <= now()
-          and job.credential_id is null
-          and job.state not in ('CANCELLED','FAILED')
-        for update of job`,
-    );
-    for (const row of expired.rows) {
-      await cleanupComponentOnboardingRow(client, row, "component_onboarding.expired_cleanup", correlationId);
-    }
-    return expired.rowCount ?? 0;
-  });
 }
 
 export type ComponentPulseEnvelope = {
@@ -1957,7 +1335,7 @@ export async function markStaleComponentHeartbeats(db: Db, staleAfterSeconds: nu
       `select id,policy_epoch
          from component
         where lifecycle_state='ACTIVE' and enabled=true
-          and registration_type='GENERIC_COMPONENT'
+          and registration_type in ('GENERIC_COMPONENT','INTERNAL_GENERATED')
         order by id
         for update`
     );
@@ -2036,24 +1414,6 @@ export async function recordComponentMonitoringWatchdog(db: Db, params: {
       requestDigest: evidenceDigest({ componentId: params.componentId, probe: "runtime_watchdog" }),
       responseDigest: evidenceDigest(params.evidence), variant: "runtime_health"
     });
-    if (params.pass) {
-      for (const [gate, reasonCode] of [
-        ["EXTERNAL_TARGET_OUTBOUND", "runtime_tls_egress_probe_passed"],
-        ["TCP_TLS_EGRESS_ALLOWED", "runtime_tls_egress_probe_passed"],
-        ["DEPENDENCY_READY", "runtime_readiness_probe_passed"],
-        ["DRAIN_HANDOFF", "runtime_readiness_probe_passed"],
-        ["WORKER_SINGLE_ACTIVE", "runtime_readiness_probe_passed"],
-        ["PERSISTENT_STORAGE_MOUNT", "runtime_readiness_probe_passed"],
-        ["SECRET_ALLOWED_RUNTIME", "runtime_readiness_probe_passed"]
-      ] as const) {
-        await recordActiveGateEvidence(client, {
-          componentId: params.componentId, revisionId: String(component.rows[0].active_revision_id), gate,
-          pass: true, reasonCode, evidence: params.evidence, correlationId: params.correlationId,
-          requestDigest: evidenceDigest({ componentId: params.componentId, probe: "runtime_watchdog", gate }),
-          responseDigest: evidenceDigest(params.evidence), variant: "runtime_health"
-        });
-      }
-    }
     // Monitoring health is fail-closed at authorization time, but must not
     // invalidate an in-flight control callback's policy epoch.
     await client.query("select set_config('kcml.watchdog_health_transition','true',true)");
@@ -2277,28 +1637,17 @@ export async function recordComponentControlAck(db: Db, componentId: string, inp
 }
 
 export async function queueComponentE2ERun(db: Db, params: {
-  componentId?: string;
-  jobId?: string;
-  integrationTokenId?: string;
+  componentId: string;
   correlationId: string;
 }): Promise<Record<string, unknown>> {
   return tx(db, async (client) => {
-    const target = params.jobId
-      ? await client.query(
-        `select c.id,c.active_revision_id,rt.runtime_digest
-           from component_onboarding_job job
-           join component c on c.id=job.component_id
-           join component_runtime_target rt on rt.component_id=c.id and rt.revision_id=c.active_revision_id
-          where job.id=$1 and job.integration_token_id=$2 for update of c`,
-        [params.jobId, params.integrationTokenId]
-      )
-      : await client.query(
-        `select c.id,c.active_revision_id,rt.runtime_digest
-           from component c
-           join component_runtime_target rt on rt.component_id=c.id and rt.revision_id=c.active_revision_id
-          where c.id=$1 for update of c`,
-        [params.componentId]
-      );
+    const target = await client.query(
+      `select c.id,c.active_revision_id,rt.runtime_digest
+         from component c
+         join component_runtime_target rt on rt.component_id=c.id and rt.revision_id=c.active_revision_id
+        where c.id=$1 for update of c`,
+      [params.componentId]
+    );
     if (!target.rowCount) throw Object.assign(new Error("e2e_target_not_found"), { statusCode: 404 });
     const row = target.rows[0];
     const fixtures = await client.query("select count(*)::int as count from component_e2e_fixture where revision_id=$1", [row.active_revision_id]);
@@ -2315,9 +1664,11 @@ export async function queueComponentE2ERun(db: Db, params: {
        values ($1,$2,$3,'QUEUED',$4,now()+interval '15 minutes') returning *`,
       [row.id, row.active_revision_id, row.runtime_digest, params.correlationId]
     );
-    await appendAudit(client, { eventType: "component.e2e.queued", actorType: params.integrationTokenId ? "integration_token" : "admin",
-      actorId: params.integrationTokenId, objectType: "component_e2e_run", objectId: String(inserted.rows[0].id),
-      after: { componentId: row.id, revisionId: row.active_revision_id, runtimeDigest: row.runtime_digest }, correlationId: params.correlationId });
+    await appendAudit(client, {
+      eventType: "component.e2e.queued", actorType: "system", actorId: null,
+      objectType: "component_e2e_run", objectId: String(inserted.rows[0].id),
+      after: { componentId: row.id, revisionId: row.active_revision_id, runtimeDigest: row.runtime_digest }, correlationId: params.correlationId
+    });
     return inserted.rows[0] as Record<string, unknown>;
   });
 }
@@ -2364,18 +1715,6 @@ export async function getComponent(db: Db, id: string): Promise<Record<string, u
        join component c on c.principal_id=token.source_principal_id
       where c.id=$1
       order by token.created_at desc`,
-    [id]
-  );
-  const onboardingToken = await db.query(
-    `select token.label,token.fingerprint,token.expires_at,job.state
-       from component_onboarding_job job
-       join integration_token token on token.id=job.integration_token_id
-      where job.component_id=$1
-        and job.principal_access_token_handed_off_at is null
-        and token.revoked_at is null
-        and token.expires_at>now()
-      order by job.created_at desc
-      limit 1`,
     [id]
   );
   const [readinessGates, controlDispatches, stateObservations, heartbeats, runtimeTargets, tools, endpoints, pulseMasks,
@@ -2432,7 +1771,6 @@ export async function getComponent(db: Db, id: string): Promise<Record<string, u
     ...componentView(result.rows[0]),
     permissions: permissions.rows,
     accessTokens: accessTokens.rows,
-    currentOnboardingToken: onboardingToken.rowCount ? onboardingToken.rows[0] : null,
     readinessGates: readinessGates.rows,
     controlDispatches: controlDispatches.rows,
     stateObservations: stateObservations.rows,
@@ -2531,7 +1869,7 @@ export async function setComponentActivation(db: Db, params: { componentId: stri
             order by gate_key,executed_at desc
          )
          select count(*)::int as gate_count,
-                count(*) filter (where status='PASS')::int as pass_count
+                count(*) filter (where status in ('PASS','NOT_APPLICABLE'))::int as pass_count
            from latest`,
         [params.componentId, component.active_revision_id, component.active_manifest_digest, component.runtime_digest, [...ACTIVATION_GATES]]
       );
@@ -2701,17 +2039,12 @@ export async function setComponentLifecycle(db: Db, params: {
           where principal_kind='COMPONENT' and principal_id=$1 and revoked_at is null`,
         [params.componentId, params.actorId]
       );
-      const transferredSecretGrants = await client.query(
-        `update integration_token_secret_grant set revoked_at=coalesce(revoked_at,now()),revoked_by=$2
-          where transferred_component_id=$1 and revoked_at is null`,
-        [params.componentId, params.actorId]
-      );
       dashboardCleanup = {
         nodes: nodes.rowCount ?? 0,
         connections: connections.rowCount ?? 0,
         permissions: permissions.rowCount ?? 0,
         secretGrants: secretGrants.rowCount ?? 0,
-        transferredSecretGrants: transferredSecretGrants.rowCount ?? 0
+        transferredSecretGrants: 0
       };
     }
     await appendAudit(client, {

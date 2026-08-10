@@ -27,10 +27,10 @@ describe("operational config environment import", () => {
     })).toBe(true);
 
     expect(shouldRefreshExistingOperationalSetting({
-      key: "githubOwner",
-      envKey: "GITHUB_OWNER",
+      key: "monitorIntervalMs",
+      envKey: "MONITOR_INTERVAL_MS",
       options: { refreshBuildId: true },
-      env: { GITHUB_OWNER: "example" }
+      env: { MONITOR_INTERVAL_MS: "30000" }
     })).toBe(false);
   });
 });

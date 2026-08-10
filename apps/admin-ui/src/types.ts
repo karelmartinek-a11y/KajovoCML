@@ -1,4 +1,4 @@
-export type Page = "dashboard" | "registered" | "identities" | "components" | "external" | "monitoring" | "integration" | "secrets" | "tokens" | "permissions" | "audit" | "config" | "security" | "admins";
+export type Page = "dashboard" | "generation" | "registered" | "identities" | "components" | "external" | "monitoring" | "secrets" | "tokens" | "permissions" | "audit" | "config" | "security" | "admins";
 export type AdminRole = "OWNER" | "ADMIN" | "AUDITOR";
 export type Session = { authenticated: boolean; account: string | null; role: AdminRole | null; bootstrapRequired?: boolean };
 export type ReleaseInfo = {
@@ -80,12 +80,6 @@ export type ComponentAccessToken = {
   rotated_at: string | null;
   rotation_reason: string | null;
 };
-export type ComponentOnboardingToken = {
-  label: string;
-  fingerprint: string;
-  expires_at: string;
-  state: string;
-};
 export type Component = {
   id: string;
   code: string;
@@ -128,7 +122,6 @@ export type Component = {
   updatedAt: string;
   permissions?: ComponentPermission[];
   accessTokens?: ComponentAccessToken[];
-  currentOnboardingToken?: ComponentOnboardingToken | null;
   readinessGates?: Array<{
     gate_key: string;
     status: string;
@@ -284,81 +277,6 @@ export type AuditEvent = {
   };
 };
 export type SecretResult = { publicId: string; label: string; clientSecret: string; fingerprint: string; expiresAt: string | null };
-export type IntegrationToken = {
-  id: string;
-  label: string;
-  fingerprint: string;
-  descriptor: {
-    summary: string;
-    businessPurpose: string;
-    serviceOwner: string;
-    technicalOwner: string;
-    criticality: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
-  };
-  releaseVersion?: string;
-  jobId: string | null;
-  issuedAt: string;
-  initialExpiresAt: string;
-  expiresAt: string;
-  maxExpiresAt: string;
-  lastUsedAt: string | null;
-  revokedAt: string | null;
-  active: boolean;
-  jobState: string | null;
-  code: string | null;
-  hostname: string | null;
-  heartbeatAt: string | null;
-  tokenExtendedAt: string | null;
-  secretGrants: Array<{
-    id: string;
-    secretStableName: string | null;
-    allSecrets: boolean;
-    grantedAt: string;
-    revokedAt: string | null;
-    transferredComponentId: string | null;
-    transferredComponentPublicId: string | null;
-    transferredAt: string | null;
-  }>;
-};
-export type IntegrationSecret = IntegrationToken & {
-  token: string;
-  onboardingCatalogUrl: string;
-  onboardingCatalogFileName: string;
-  programmerApiUrl: string;
-  intakeUrls?: {
-    recommendedIntakeUrl: string;
-    nativeComponentIntakeUrl: string;
-    componentCatalogUrl: string;
-    repositoryComponentCatalogVersion: string;
-    repositoryComponentCatalogPath: string;
-    repositoryComponentCatalogFileName: string;
-    secretApiDiscoveryUrl?: string;
-  };
-};
-export type OnboardingGate = { gate_name: string; stage: string; status: string; evidence: Record<string, unknown>; correlation_id: string; started_at: string | null; completed_at: string | null };
-export type OnboardingEvent = { id: number; from_state: string | null; to_state: string; event_type: string; detail: Record<string, unknown>; correlation_id: string; created_at: string };
-export type OnboardingJob = {
-  id: string;
-  state: string;
-  correlationId: string;
-  lockVersion: number;
-  sourceRevision: number;
-  code: string | null;
-  hostname: string | null;
-  resource: string | null;
-  toolName: string | null;
-  serverId: string | null;
-  githubPrUrl: string | null;
-  imageDigest: string | null;
-  sbomDigest: string | null;
-  blockingErrorCode: string | null;
-  blockingErrorDetail: string | null;
-  createdAt: string | null;
-  updatedAt: string | null;
-  completedAt: string | null;
-  gates?: OnboardingGate[];
-  events?: OnboardingEvent[];
-};
 export type MonitoringProbe = { id: number; server_id: string; code: string; hostname: string; probe_type: string; status: string; latency_ms: number | null; evidence?: Record<string, unknown>; correlation_id: string; checked_at: string };
 export type OperationalAlert = {
   id: string;
@@ -474,22 +392,14 @@ export type OperationalConfigSetting = {
   restartPending: boolean;
   updatedAt: string | null;
 };
-export type OnboardingDescriptor = {
-  summary: string;
-  businessPurpose: string;
-  serviceOwner: string;
-  technicalOwner: string;
-  criticality: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
-};
-
 export const pageNames: Record<Page, string> = {
   dashboard: "Dashboard",
+  generation: "Generování",
   registered: "Registrované prvky",
   identities: "Tokeny a identity",
   components: "Katalog komponent",
   external: "Externí strany",
   monitoring: "Monitoring komponent",
-  integration: "Integrační tokeny",
   secrets: "Správa tajemství",
   tokens: "Přístupové tokeny",
   permissions: "Správa oprávnění",
@@ -523,9 +433,8 @@ export type DashboardPort = {
 };
 export type DashboardNode = {
   id: string;
-  lifecyclePhase: "PRE_REGISTRATION" | "REGISTERED";
+  lifecyclePhase: "REGISTERED";
   label: string;
-  integrationTokenId: string | null;
   componentId: string | null;
   principalId: string | null;
   code: string | null;
@@ -545,7 +454,6 @@ export type DashboardNode = {
   suspensionReason: string | null;
   tokenFingerprint: string | null;
   tokenLastUsedAt: string | null;
-  integrationTokenExpiresAt: string | null;
   critical: boolean;
   position: { x: number; y: number };
   secrets: Array<{ secretId: string; stableName: string; status: string; source: string }>;
@@ -616,11 +524,10 @@ export type DashboardDeregistrationPreview = {
   display_name: string;
   token_count: number;
   direct_secret_grant_count: number;
-  transferred_secret_grant_count: number;
   connection_count: number;
   requiresMfa: true;
   typedConfirmation: string;
-  requiresCompleteOnboarding: true;
+  requiresRegisteredComponent: true;
 };
 export type DashboardTopology = {
   generatedAt: string;
@@ -635,7 +542,7 @@ export type DashboardTopology = {
 };
 export type DashboardIdentityCard = {
   nodeId: string;
-  identityType: "INTEGRATION_TOKEN" | "COMPONENT";
+  identityType: "COMPONENT";
   displayName: string;
   code: string | null;
   publicId: string | null;
@@ -643,5 +550,4 @@ export type DashboardIdentityCard = {
   fingerprint: string | null;
   lastUsedAt: string | null;
   componentId: string | null;
-  integrationTokenId: string | null;
 };

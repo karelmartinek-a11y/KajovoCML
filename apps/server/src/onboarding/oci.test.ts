@@ -16,7 +16,7 @@ describe("OCI command environment", () => {
       HOME: "/var/lib/kcml",
       CONFIG_VAULT_MASTER_KEY_BASE64: "vault-secret",
       DATABASE_URL: "postgres://secret",
-      GITHUB_TOKEN: "github-secret"
+      LEGACY_EXTERNAL_TOKEN: "external-secret"
     });
     expect(environment).toEqual({ PATH: "/usr/bin", HOME: "/var/lib/kcml" });
   });

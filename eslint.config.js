@@ -3,11 +3,15 @@ import tseslint from "typescript-eslint";
 
 export default tseslint.config(
   {
-    ignores: ["**/dist/**", "**/coverage/**", "**/node_modules/**", "**/._*", "components/**", "eslint.config.js", "vitest.config.mjs", "deploy/alert-sink/*.mjs", "deploy/handler-runtime/*.mjs", "deploy/scripts/*.mjs", "scripts/onboarding/*.mjs", "scripts/check-capability-parity.mjs", "scripts/clean-appledouble.mjs", "scripts/external-api-soak.mjs", "scripts/generate-mcp-onboarding-catalog.mjs", "scripts/generate-repository-component-catalog.mjs", "scripts/validate-repository-components.mjs", "scripts/classify-repository-component-changes.mjs", "scripts/finalize-repository-component-manifest.mjs", "scripts/repository-component-contract.mjs", "scripts/test-repository-component-change-classifier.mjs", "scripts/test-repository-component-deploy-receipt.mjs", "scripts/test-repository-component-finalizer.mjs", "scripts/test-repository-component-validator.mjs", "scripts/test-repository-component-attestations.mjs", "scripts/verify-repository-component-attestations.mjs"]
+    ignores: ["**/dist/**", "**/coverage/**", "**/node_modules/**", "**/._*", "components/**", "eslint.config.js", "vitest.config.mjs", "deploy/alert-sink/*.mjs", "deploy/handler-runtime/*.mjs", "deploy/scripts/*.mjs", "scripts/check-capability-parity.mjs", "scripts/check-internal-generation-contract.mjs", "scripts/clean-appledouble.mjs", "scripts/external-api-soak.mjs", "scripts/test-generated-component-runtime.mjs"]
   },
   js.configs.recommended,
-  ...tseslint.configs.recommendedTypeChecked,
+  ...tseslint.configs.recommendedTypeChecked.map((config) => ({
+    ...config,
+    files: ["**/*.{ts,tsx}"]
+  })),
   {
+    files: ["**/*.{ts,tsx}"],
     languageOptions: {
       parserOptions: {
         projectService: true,
@@ -22,6 +26,18 @@ export default tseslint.config(
       "@typescript-eslint/no-unsafe-member-access": "off",
       "@typescript-eslint/no-unsafe-argument": "off",
       "@typescript-eslint/require-await": "off"
+    }
+  },
+  {
+    files: ["**/*.mjs"],
+    languageOptions: { sourceType: "module" },
+    rules: {
+      // Runtime modules execute under Node.js and are checked with node --check
+      // plus their integration tests; they are intentionally not TypeScript
+      // project-service inputs.
+      "no-undef": "off",
+      "no-console": "off",
+      "no-unsafe-finally": "off"
     }
   }
 );

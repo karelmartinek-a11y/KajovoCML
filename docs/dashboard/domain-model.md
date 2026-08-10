@@ -2,7 +2,7 @@
 
 ## Autoritativní identity
 
-Dashboard používá `dashboard_visual_node` jako stabilní vizuální identitu. Před registrací je uzel navázán na `integration_token`; po úspěšném onboardingu se tentýž řádek atomicky přepne na `component` a `principal`. Plná hodnota tokenu se do uzlu, layoutu, API ani DOM nepřenáší.
+Dashboard zobrazuje pouze registrované CML komponenty. Interní `Generování` vytváří `component`, `principal`, kanonickou runtime identitu a `dashboard_visual_node` v jedné CML-owned lifecycle cestě; žádný pre-registration integration-token handoff není produktovou cestou.
 
 ## Čtyři oddělené pravdy PULSE
 
@@ -11,11 +11,11 @@ Dashboard používá `dashboard_visual_node` jako stabilní vizuální identitu.
 3. `authorization_desired`, `component_permission`, tokenový scope/audience a případná suspendace určují účinnou autorizaci.
 4. `component_operation_event` je jediný zdroj živé runtime indikace.
 
-Odebrání oprávnění ponechá edge. Rozpojení edge je samostatná operace. Žádná z těchto operací nemaže komponentu ani celý bearer token.
+Odebrání oprávnění ponechá edge. Rozpojení edge je samostatná operace. Žádná z těchto operací nemaže komponentu ani její runtime identitu.
 
 ## Secret granty
 
-Předregistrační uzel používá `integration_token_secret_grant`. Registrovaný uzel používá kanonický komponentový grant a současně respektuje již existující přenesené onboardingové granty. Dashboard i přesný Secret Manager volají stejný serverový command s bezpečnou identitou uzlu; drag payload nikdy neobsahuje bearer token.
+Registrovaný uzel používá výhradně kanonický `secret_grant` pro `COMPONENT` identitu. Dashboard i Secret Manager volají stejný serverový command; drag payload nepřenáší runtime bearer ani hodnotu secretu. OWNER může plaintext credential zadat v důvěryhodném OWNER toku, ale trvalé runtime použití je vždy přes existující KajovoCML Secret Manager.
 
 ## Suspendace
 
@@ -23,4 +23,4 @@ Předregistrační uzel používá `integration_token_secret_grant`. Registrovan
 
 ## Destruktivní deregistrace
 
-Deregistrace je explicitní command s preview dopadu, čerstvým heslem, TOTP, typed confirmation a idempotency key. Zneplatní aktivní credentialy, granty a incidentní spojení, ale auditní historii nemaže.
+Deregistrace je explicitní command s preview dopadu, čerstvým heslem, TOTP, typed confirmation a idempotency key. Zneplatní aktivní credentialy, granty a incidentní spojení, ale auditní historii nemaže. Nová schopnost po deregistraci vzniká přes interní `Generování`.

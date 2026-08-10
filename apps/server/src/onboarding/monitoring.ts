@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import dns from "node:dns/promises";
-import http from "node:http";
 import tls from "node:tls";
+import http from "node:http";
 import type { MonitoringConfig } from "../config.js";
 import type { Db } from "../db.js";
 import { tx } from "../db.js";
@@ -19,6 +19,9 @@ import { archivePendingAuditEvents } from "../domain/audit-archive.js";
 import { verifyAuditChain } from "../domain/audit.js";
 import { evaluateOperationalState } from "../domain/monitoring-policy.js";
 import { markStaleComponentHeartbeats, queueComponentHeartbeatChallenge, recordComponentMonitoringWatchdog } from "../domain/component.js";
+import { probeUdsComponentRuntime } from "../domain/component-runtime-health.js";
+import { enqueueGeneratedRepairJob } from "../domain/generation.js";
+import { attemptGeneratedRepairEnqueueWithCmlEvidence } from "./generated-repair-enqueue.mjs";
 import { runSyntheticMonitoringProbe } from "./activation.js";
 import { OciRuntime } from "./oci.js";
 import { fetchThroughEgress } from "../domain/egress-client.js";
@@ -135,12 +138,12 @@ async function measured(name: ProbeName, fn: () => Promise<Record<string, unknow
 
 function socketHealth(socketPath: string): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
-    const request = http.request({ socketPath, path: "/health", method: "GET", timeout: 3_000 }, (response) => {
+    const request = http.request({ socketPath, path: "/health", method: "GET", timeout: 2_000 }, (response) => {
       response.resume();
-      if (response.statusCode === 200) resolve({ status: response.statusCode });
-      else reject(new Error(`handler_health_status:${response.statusCode}`));
+      if (response.statusCode === 200) resolve({ status: 200, socketPath });
+      else reject(new Error(`worker_readiness_failed:${response.statusCode ?? 0}`));
     });
-    request.on("timeout", () => request.destroy(new Error("handler_health_timeout")));
+    request.on("timeout", () => request.destroy(new Error("worker_readiness_timeout")));
     request.on("error", reject);
     request.end();
   });
@@ -190,6 +193,21 @@ async function dependencyHealth(manifest: OnboardingManifest): Promise<Record<st
     statuses.push({ host: url.hostname, status: response.status });
   }
   return { dependencyCount: dependencies.length, statuses };
+}
+
+
+export async function enqueueGeneratedRepairFromMonitoring(
+  db: Db, componentId: string, evidence: Record<string, unknown>, correlationId: string,
+  enqueue: typeof enqueueGeneratedRepairJob = enqueueGeneratedRepairJob
+): Promise<unknown> {
+  return attemptGeneratedRepairEnqueueWithCmlEvidence({
+    componentId, correlationId, evidence,
+    enqueue: () => enqueue(db, componentId, evidence, correlationId),
+    withTransaction: async (operation) => { await tx(db, async (client) => { await operation(client); }); },
+    raiseAlert: async (client, input) => raiseAlert(client as Parameters<typeof raiseAlert>[0], input as Parameters<typeof raiseAlert>[1]),
+    appendAudit: async (client, input) => appendAudit(client as Parameters<typeof appendAudit>[0], input as Parameters<typeof appendAudit>[1]),
+    closeAlert: async (client, input) => closeAlert(client as Parameters<typeof closeAlert>[0], input as Parameters<typeof closeAlert>[1])
+  });
 }
 
 export class MonitoringScheduler {
@@ -251,6 +269,32 @@ export class MonitoringScheduler {
         }
       }
       const componentCorrelationId = randomUUID();
+      const generatedStaleCandidates = await this.db.query(
+        `select c.id,c.code,max(h.heartbeat_at) last_heartbeat,c.activated_at,
+                coalesce((r.manifest->'monitoring'->>'staleAfterSeconds')::int,180) stale_after_seconds
+           from component c
+           join component_revision r on r.id=c.active_revision_id
+           left join component_heartbeat h on h.component_id=c.id
+          where c.registration_type='INTERNAL_GENERATED' and c.lifecycle_state='ACTIVE' and c.enabled=true
+          group by c.id,c.code,c.activated_at,r.manifest
+         having coalesce(max(h.heartbeat_at),c.activated_at) is not null
+            and coalesce(max(h.heartbeat_at),c.activated_at) < now() - (coalesce((r.manifest->'monitoring'->>'staleAfterSeconds')::int,180)||' seconds')::interval`
+      );
+      // Queue repair while the component is still in its active OWNER state. The
+      // canonical heartbeat transition below may fail-close a severely stale
+      // component by setting enabled=false; doing repair enqueue afterwards would
+      // incorrectly suppress recovery of the very fault that triggered it.
+      for (const row of generatedStaleCandidates.rows) {
+        await enqueueGeneratedRepairFromMonitoring(this.db, String(row.id), {
+          source: "component_heartbeat_watchdog",
+          probe: "heartbeat",
+          status: "STALE",
+          code: String(row.code),
+          staleAfterSeconds: Number(row.stale_after_seconds),
+          lastHeartbeat: row.last_heartbeat ? new Date(row.last_heartbeat).toISOString() : null,
+          activatedAt: row.activated_at ? new Date(row.activated_at).toISOString() : null
+        }, componentCorrelationId);
+      }
       const staleComponents = await markStaleComponentHeartbeats(this.db, 180, 600, componentCorrelationId);
       await tx(this.db, async (client) => {
         if (staleComponents > 0) {
@@ -261,7 +305,7 @@ export class MonitoringScheduler {
         }
       });
       const activeComponents = await this.db.query(
-        "select id from component where lifecycle_state='ACTIVE' and enabled=true and registration_type='GENERIC_COMPONENT' order by kcml_number"
+        "select id from component where lifecycle_state='ACTIVE' and enabled=true and registration_type in ('GENERIC_COMPONENT','INTERNAL_GENERATED') order by kcml_number"
       );
       for (const component of activeComponents.rows) {
         try {
@@ -272,7 +316,7 @@ export class MonitoringScheduler {
         }
       }
       const componentRuntimeTargets = await this.db.query(
-        `select component.id,component.hostname,target.transport,target.upstream,target.expected_tls_identity,target.socket_path
+        `select component.id,component.hostname,component.registration_type,target.transport,target.upstream,target.expected_tls_identity,target.socket_path
            from component join component_runtime_target target on target.component_id=component.id and target.revision_id=component.active_revision_id
           where component.lifecycle_state in ('REVIEW','APPROVED','ACTIVE') and component.deregistered_at is null
           order by component.kcml_number`
@@ -280,7 +324,7 @@ export class MonitoringScheduler {
       for (const component of componentRuntimeTargets.rows) {
         const correlationId = randomUUID();
         const probe = await measured("readiness", async () => {
-          if (component.transport === "UDS") return socketHealth(String(component.socket_path));
+          if (component.transport === "UDS") return probeUdsComponentRuntime(String(component.socket_path));
           if (component.transport !== "HTTPS" || !component.upstream || !component.expected_tls_identity) throw new Error("component_runtime_target_invalid");
           const upstream = new URL(String(component.upstream));
           if (upstream.protocol !== "https:" || upstream.hostname !== String(component.expected_tls_identity)) throw new Error("component_tls_identity_invalid");
@@ -298,6 +342,15 @@ export class MonitoringScheduler {
           componentId: String(component.id), pass: probe.status === "PASS",
           evidence: { transport: component.transport, latencyMs: probe.latencyMs, ...probe.evidence }, correlationId
         });
+        if (probe.status !== "PASS" && String(component.registration_type) === "INTERNAL_GENERATED") {
+          await enqueueGeneratedRepairFromMonitoring(this.db, String(component.id), {
+            source: "component_monitoring_watchdog",
+            probe: "readiness",
+            transport: component.transport,
+            latencyMs: probe.latencyMs,
+            ...probe.evidence
+          }, correlationId);
+        }
       }
       const externalTargets = await listExternalApiMonitoringTargets(this.db);
       for (const target of externalTargets) {

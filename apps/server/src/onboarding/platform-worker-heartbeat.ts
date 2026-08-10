@@ -1,6 +1,6 @@
 import type { Db } from "../db.js";
 
-export type PlatformWorkerKind = "COMPONENT_CONTROL" | "COMPONENT_E2E";
+export type PlatformWorkerKind = "COMPONENT_CONTROL" | "COMPONENT_E2E" | "GENERATION";
 
 export async function recordPlatformWorkerHeartbeat(db: Db, input: {
   workerKind: PlatformWorkerKind;

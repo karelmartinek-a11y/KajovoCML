@@ -23,7 +23,6 @@ function legacyConfig() {
     CONFIG_VAULT_MASTER_KEY_BASE64: vaultKey.toString("base64"),
     CONFIG_VAULT_MASTER_KEY_ID: "vault-test",
     ACCESS_TOKEN_HMAC_KEY_BASE64: secret(1),
-    INTEGRATION_TOKEN_HMAC_KEY_BASE64: secret(2),
     EGRESS_CAPABILITY_HMAC_KEY_BASE64: secret(3),
     SESSION_SECRET_BASE64: secret(4),
     CSRF_SECRET_BASE64: secret(5),
@@ -48,54 +47,15 @@ describe("operational configuration registry", () => {
     expect(effective.UI_TIME_ZONE).toBe("UTC");
   });
 
-  it("allows token-only GitHub onboarding config from DB without GitHub App secrets", async () => {
-    const prodBootstrap = loadBootstrapConfig({
-      NODE_ENV: "production",
-      KCML_PROCESS_ROLE: "worker",
-      DATABASE_URL: "postgres://unused/test",
-      CONFIG_VAULT_MASTER_KEY_BASE64: vaultKey.toString("base64"),
-      CONFIG_VAULT_MASTER_KEY_ID: "vault-test"
-    });
-    const githubTokenCiphertext = encryptVaultSecret("github-token-with-sufficient-length", vaultKey, {
-      keyId: "vault-test",
-      settingKey: "githubToken"
-    });
-    const query = vi.fn(async (sql: string) => {
-      if (sql.startsWith("select key,value_json")) {
-        return {
-          rowCount: 10,
-          rows: [
-            { key: "buildId", value_json: "release-1", secret_ciphertext: null, is_secret: false, version: 1 },
-            { key: "publicBaseDomain", value_json: "hcasc.cz", secret_ciphertext: null, is_secret: false, version: 1 },
-            { key: "adminHost", value_json: "admin.hcasc.cz", secret_ciphertext: null, is_secret: false, version: 1 },
-            { key: "authHost", value_json: "auth.hcasc.cz", secret_ciphertext: null, is_secret: false, version: 1 },
-            { key: "registerHost", value_json: "register.hcasc.cz", secret_ciphertext: null, is_secret: false, version: 1 },
-            { key: "githubOwner", value_json: "example", secret_ciphertext: null, is_secret: false, version: 1 },
-            { key: "githubRepo", value_json: "repository", secret_ciphertext: null, is_secret: false, version: 1 },
-            { key: "githubToken", value_json: null, secret_ciphertext: githubTokenCiphertext, is_secret: true, version: 1 },
-            { key: "ociImageNamespace", value_json: "example/handlers", secret_ciphertext: null, is_secret: false, version: 1 },
-            { key: "ociCertificateIdentity", value_json: "https://github.com/example/repository/.github/workflows/onboarding-build.yml@refs/heads/main", secret_ciphertext: null, is_secret: false, version: 1 },
-            { key: "egressCapabilityHmacKey", value_json: null, secret_ciphertext: encryptVaultSecret(Buffer.alloc(32, 3).toString("base64"), vaultKey, { keyId: "vault-test", settingKey: "egressCapabilityHmacKey" }), is_secret: true, version: 1 }
-          ]
-        };
-      }
-      return { rowCount: 0, rows: [] };
-    });
-    const db = { query } as unknown as Db;
-    const effective = await loadConfigFromDb(db, prodBootstrap);
-    expect(effective.GITHUB_TOKEN).toBe("github-token-with-sufficient-length");
-    expect(effective.GITHUB_APP_PRIVATE_KEY_BASE64).toBeUndefined();
-  });
-
   it("never exposes plaintext secrets in the admin view", async () => {
-    const ciphertext = encryptVaultSecret("plaintext-must-not-leak", vaultKey, { keyId: "vault-test", settingKey: "githubToken" });
+    const ciphertext = encryptVaultSecret("plaintext-must-not-leak", vaultKey, { keyId: "vault-test", settingKey: "alertPrimaryHmacKey" });
     const query = vi.fn(async (sql: string) => {
-      if (sql.includes("from operational_config_setting")) return { rowCount: 1, rows: [{ key: "githubToken", value_json: null, secret_ciphertext: ciphertext, is_secret: true, version: 3 }] };
+      if (sql.includes("from operational_config_setting")) return { rowCount: 1, rows: [{ key: "alertPrimaryHmacKey", value_json: null, secret_ciphertext: ciphertext, is_secret: true, version: 3 }] };
       if (sql.includes("from operational_config_applied")) return { rowCount: 0, rows: [] };
       return { rowCount: 0, rows: [] };
     });
     const settings = await listOperationalConfig({ query } as unknown as Db, legacyConfig());
-    expect(settings.find((setting) => setting.key === "githubToken")).toMatchObject({ value: null, configured: true, version: 3 });
+    expect(settings.find((setting) => setting.key === "alertPrimaryHmacKey")).toMatchObject({ value: null, configured: true, version: 3 });
     expect(JSON.stringify(settings)).not.toContain("plaintext-must-not-leak");
   });
 
@@ -109,8 +69,8 @@ describe("operational configuration registry", () => {
     });
     const client = { query, release: vi.fn() };
     const db = { query, connect: vi.fn(async () => client) } as unknown as Db;
-    const plaintext = "github-token-with-sufficient-length";
-    await updateOperationalConfig(db, legacyConfig(), "00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002", "githubToken", plaintext, 0);
+    const plaintext = Buffer.alloc(32, 42).toString("base64");
+    await updateOperationalConfig(db, legacyConfig(), "00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002", "alertPrimaryHmacKey", plaintext, 0);
     const insert = calls.find((call) => call.sql.includes("insert into operational_config_setting"));
     expect(insert?.params?.[1]).toBeNull();
     expect(String(insert?.params?.[2])).toMatch(/^vault:v1:/);

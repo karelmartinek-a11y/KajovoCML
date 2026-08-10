@@ -89,13 +89,6 @@ function hostnameSchema(label: string, defaultValue?: string) {
   });
 }
 
-function validateGitHubToken(value: string): string {
-  if (!value.trim()) throw new Error("GITHUB_TOKEN must not be blank");
-  if (/\s/.test(value)) throw new Error("GITHUB_TOKEN must not contain whitespace");
-  if (value.length < 20) throw new Error("GITHUB_TOKEN is too short");
-  return value;
-}
-
 function validateTimeZone(value: string): string {
   const normalized = value.trim();
   try {
@@ -203,8 +196,6 @@ const envSchema = z.object({
   CONFIG_VAULT_MASTER_KEY_ID: z.string().trim().min(1).max(120).default("config-v1"),
   ACCESS_TOKEN_HMAC_KEY_BASE64: roleBase64Secret,
   ACCESS_TOKEN_HMAC_KEY_ID: z.string().min(1).default("v1"),
-  INTEGRATION_TOKEN_HMAC_KEY_BASE64: roleBase64Secret,
-  INTEGRATION_TOKEN_HMAC_KEY_ID: z.string().min(1).default("v1"),
   EGRESS_CAPABILITY_HMAC_KEY_BASE64: roleBase64Secret,
   SESSION_SECRET_BASE64: roleBase64Secret,
   CSRF_SECRET_BASE64: roleBase64Secret,
@@ -215,29 +206,13 @@ const envSchema = z.object({
   ADMIN_HOST: hostnameSchema("ADMIN_HOST", "admin.example.invalid"),
   AUTH_HOST: hostnameSchema("AUTH_HOST", "auth.example.invalid"),
   REGISTER_HOST: hostnameSchema("REGISTER_HOST", "register.example.invalid"),
-  QUARANTINE_ROOT: z.string().default("/var/lib/kcml/onboarding"),
-  ONBOARDING_WORKER_ENABLED: z.string().optional().transform((value) => value === "true"),
-  ONBOARDING_WORKER_INTERVAL_MS: z.coerce.number().int().min(1_000).default(15_000),
+  COMPONENT_WORKER_INTERVAL_MS: z.coerce.number().int().min(1_000).max(300_000).default(15_000),
   MONITOR_ENABLED: z.string().optional().transform((value) => value === "true"),
   MONITOR_INTERVAL_MS: z.coerce.number().int().min(15_000).max(900_000).default(60_000),
   ALERT_PRIMARY_WEBHOOK_URL: z.string().url().startsWith("https://").optional(),
   ALERT_PRIMARY_HMAC_KEY_BASE64: optionalBase64Secret,
   ALERT_BACKUP_WEBHOOK_URL: z.string().url().startsWith("https://").optional(),
   ALERT_BACKUP_HMAC_KEY_BASE64: optionalBase64Secret,
-  GITHUB_OWNER: z.string().min(1).optional(),
-  GITHUB_REPO: z.string().min(1).optional(),
-  GITHUB_TOKEN: z.string().optional().transform((value, ctx) => {
-    if (!value) return undefined;
-    try {
-      return validateGitHubToken(value);
-    } catch (error) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: error instanceof Error ? error.message : "invalid GITHUB_TOKEN" });
-      return z.NEVER;
-    }
-  }),
-  GITHUB_APP_ID: z.string().min(1).optional(),
-  GITHUB_APP_INSTALLATION_ID: z.string().min(1).optional(),
-  GITHUB_APP_PRIVATE_KEY_BASE64: z.string().min(1).optional(),
   OCI_REGISTRY: z.string().default("ghcr.io"),
   OCI_IMAGE_NAMESPACE: z.string().min(1).optional(),
   OCI_CERTIFICATE_IDENTITY: z.string().url().startsWith("https://github.com/").optional(),
@@ -245,6 +220,15 @@ const envSchema = z.object({
   PODMAN_BINARY: z.string().default("podman"),
   COSIGN_BINARY: z.string().default("cosign"),
   RUNTIME_SOCKET_ROOT: z.string().default("/var/lib/kcml/runtime"),
+  GENERATION_WORKER_ENABLED: z.string().optional().transform((value) => value === "true"),
+  GENERATION_WORKER_INTERVAL_MS: z.coerce.number().int().min(1_000).max(300_000).default(5_000),
+  GENERATION_ROOT: z.string().default("/var/lib/kcml/generation"),
+  GENERATION_SOURCE_ROOT: z.string().default("/opt/kcml/current"),
+  GENERATED_COMPONENT_ROOT: z.string().default("/var/lib/kcml/generated-components"),
+  GENERATION_OPENAI_MODEL: z.string().trim().min(1).max(120).default("gpt-5.1"),
+  CHROMIUM_BINARY: z.string().default("chromium"),
+  GENERATION_PRIVILEGED_HELPER: z.string().default("/usr/local/sbin/kcml-generated-runtime-helper"),
+  SYSTEMCTL_BINARY: z.string().default("systemctl"),
   EGRESS_PROXY_SOCKET_PATH: z.string().default("/var/lib/kcml/egress/proxy.sock"),
   SECRET_BROKER_SOCKET_PATH: z.string().default("/var/lib/kcml/secret-broker/proxy.sock"),
   WILDCARD_TLS_CERT_PATH: z.string().default("/etc/kcml/tls/fullchain.pem"),
@@ -263,10 +247,10 @@ const envSchema = z.object({
   MFA_ALLOW_PLAINTEXT_LEGACY: z.string().optional().transform((value) => value === "true")
 }).superRefine((config, ctx) => {
   const requiredSecrets: Partial<Record<typeof config.KCML_PROCESS_ROLE, Array<keyof typeof config>>> = {
-    all: ["ACCESS_TOKEN_HMAC_KEY_BASE64", "INTEGRATION_TOKEN_HMAC_KEY_BASE64", "EGRESS_CAPABILITY_HMAC_KEY_BASE64", "SESSION_SECRET_BASE64", "CSRF_SECRET_BASE64", "MFA_ENCRYPTION_KEY_BASE64"],
-    web: ["ACCESS_TOKEN_HMAC_KEY_BASE64", "INTEGRATION_TOKEN_HMAC_KEY_BASE64", "EGRESS_CAPABILITY_HMAC_KEY_BASE64", "SESSION_SECRET_BASE64", "CSRF_SECRET_BASE64", "MFA_ENCRYPTION_KEY_BASE64"],
+    all: ["ACCESS_TOKEN_HMAC_KEY_BASE64", "EGRESS_CAPABILITY_HMAC_KEY_BASE64", "SESSION_SECRET_BASE64", "CSRF_SECRET_BASE64", "MFA_ENCRYPTION_KEY_BASE64"],
+    web: ["ACCESS_TOKEN_HMAC_KEY_BASE64", "EGRESS_CAPABILITY_HMAC_KEY_BASE64", "SESSION_SECRET_BASE64", "CSRF_SECRET_BASE64", "MFA_ENCRYPTION_KEY_BASE64"],
     monitor: ["EGRESS_CAPABILITY_HMAC_KEY_BASE64"],
-    worker: ["EGRESS_CAPABILITY_HMAC_KEY_BASE64"],
+    worker: ["ACCESS_TOKEN_HMAC_KEY_BASE64", "EGRESS_CAPABILITY_HMAC_KEY_BASE64"],
     egress: ["EGRESS_CAPABILITY_HMAC_KEY_BASE64"],
     "secret-broker": ["ACCESS_TOKEN_HMAC_KEY_BASE64"],
     "admin-sync": ["MFA_ENCRYPTION_KEY_BASE64"]
@@ -278,15 +262,10 @@ const envSchema = z.object({
     }
   }
   const independentKeyPairs = [
-    ["ACCESS_TOKEN_HMAC_KEY_BASE64", "INTEGRATION_TOKEN_HMAC_KEY_BASE64"],
     ["ACCESS_TOKEN_HMAC_KEY_BASE64", "EGRESS_CAPABILITY_HMAC_KEY_BASE64"],
     ["ACCESS_TOKEN_HMAC_KEY_BASE64", "SESSION_SECRET_BASE64"],
     ["ACCESS_TOKEN_HMAC_KEY_BASE64", "CSRF_SECRET_BASE64"],
     ["ACCESS_TOKEN_HMAC_KEY_BASE64", "MFA_ENCRYPTION_KEY_BASE64"],
-    ["INTEGRATION_TOKEN_HMAC_KEY_BASE64", "EGRESS_CAPABILITY_HMAC_KEY_BASE64"],
-    ["INTEGRATION_TOKEN_HMAC_KEY_BASE64", "SESSION_SECRET_BASE64"],
-    ["INTEGRATION_TOKEN_HMAC_KEY_BASE64", "CSRF_SECRET_BASE64"],
-    ["INTEGRATION_TOKEN_HMAC_KEY_BASE64", "MFA_ENCRYPTION_KEY_BASE64"],
     ["EGRESS_CAPABILITY_HMAC_KEY_BASE64", "SESSION_SECRET_BASE64"],
     ["EGRESS_CAPABILITY_HMAC_KEY_BASE64", "CSRF_SECRET_BASE64"],
     ["EGRESS_CAPABILITY_HMAC_KEY_BASE64", "MFA_ENCRYPTION_KEY_BASE64"],
@@ -306,20 +285,6 @@ const envSchema = z.object({
         path: [rightKey],
         message: `${leftKey} and ${rightKey} must be independent`
       });
-    }
-  }
-  if (config.ONBOARDING_WORKER_ENABLED && ["all", "worker"].includes(config.KCML_PROCESS_ROLE)) {
-    for (const key of ["GITHUB_OWNER", "GITHUB_REPO", "OCI_IMAGE_NAMESPACE", "OCI_CERTIFICATE_IDENTITY"] as const) {
-      if (!config[key]) ctx.addIssue({ code: z.ZodIssueCode.custom, path: [key], message: `${key} is required when onboarding worker is enabled` });
-    }
-    if (!config.GITHUB_TOKEN) {
-      for (const key of ["GITHUB_APP_ID", "GITHUB_APP_INSTALLATION_ID", "GITHUB_APP_PRIVATE_KEY_BASE64"] as const) {
-        if (!config[key]) ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: [key],
-          message: `${key} is required when onboarding worker uses GitHub App authentication`
-        });
-      }
     }
   }
   if (config.MONITOR_ENABLED && ["all", "monitor"].includes(config.KCML_PROCESS_ROLE)) {
@@ -345,9 +310,9 @@ const envSchema = z.object({
 });
 
 type ParsedEnvConfig = z.infer<typeof envSchema>;
-export type MutableRuntimeConfigKey = "ONBOARDING_WORKER_INTERVAL_MS" | "MONITOR_INTERVAL_MS" | "LOG_LEVEL" | "UI_TIME_ZONE";
+export type MutableRuntimeConfigKey = "GENERATION_WORKER_INTERVAL_MS" | "MONITOR_INTERVAL_MS" | "LOG_LEVEL" | "UI_TIME_ZONE";
 
-const mutableRuntimeConfigKeys = ["ONBOARDING_WORKER_INTERVAL_MS", "MONITOR_INTERVAL_MS", "LOG_LEVEL", "UI_TIME_ZONE"] as const satisfies ReadonlyArray<MutableRuntimeConfigKey>;
+const mutableRuntimeConfigKeys = ["GENERATION_WORKER_INTERVAL_MS", "MONITOR_INTERVAL_MS", "LOG_LEVEL", "UI_TIME_ZONE"] as const satisfies ReadonlyArray<MutableRuntimeConfigKey>;
 
 const bootstrapEnvSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
@@ -372,10 +337,10 @@ export type WebAppConfig = HostRoutingConfig & Pick<AppConfig, "NODE_ENV" | "LOG
 export type OAuthConfig = Pick<AppConfig, "AUTH_HOST" | "ACCESS_TOKEN_HMAC_KEY_BASE64" | "ACCESS_TOKEN_HMAC_KEY_ID">;
 export type ReferenceExternalApiConfig = Pick<AppConfig, "PUBLIC_BASE_DOMAIN">;
 export type McpHttpConfig = Pick<AppConfig, "PUBLIC_BASE_DOMAIN" | "AUTH_HOST" | "ACCESS_TOKEN_HMAC_KEY_BASE64">;
-export type IntegrationTokenConfig = Pick<AppConfig, "INTEGRATION_TOKEN_HMAC_KEY_BASE64" | "INTEGRATION_TOKEN_HMAC_KEY_ID">;
+export type GenerationRouteConfig = Pick<AppConfig, "PUBLIC_BASE_DOMAIN" | "SESSION_SECRET_BASE64" | "CONFIG_VAULT_MASTER_KEY_BASE64" | "CONFIG_VAULT_MASTER_KEY_ID" | "ACCESS_TOKEN_HMAC_KEY_BASE64" | "ACCESS_TOKEN_HMAC_KEY_ID" | "GENERATION_OPENAI_MODEL" | "GENERATION_ROOT" | "GENERATION_SOURCE_ROOT" | "GENERATED_COMPONENT_ROOT" | "RUNTIME_SOCKET_ROOT" | "GENERATION_PRIVILEGED_HELPER" | "SYSTEMCTL_BINARY" | "CHROMIUM_BINARY">;
+export type GenerationWorkerConfig = GenerationRouteConfig & Pick<AppConfig, "GENERATION_WORKER_INTERVAL_MS" | "BUILD_ID">;
 export type EgressClientConfig = Pick<AppConfig, "EGRESS_PROXY_SOCKET_PATH" | "EGRESS_CAPABILITY_HMAC_KEY_BASE64">;
-export type SecretBrokerConfig = Pick<AppConfig, "SECRET_BROKER_SOCKET_PATH" | "ACCESS_TOKEN_HMAC_KEY_BASE64" | "CONFIG_VAULT_MASTER_KEY_BASE64" | "CONFIG_VAULT_MASTER_KEY_ID" | "INTEGRATION_TOKEN_HMAC_KEY_BASE64" | "INTEGRATION_TOKEN_HMAC_KEY_ID">;
-export type OnboardingRouteConfig = HostRoutingConfig & IntegrationTokenConfig & Pick<AppConfig, "QUARANTINE_ROOT" | "ONBOARDING_WORKER_ENABLED" | "MFA_ENCRYPTION_KEY_BASE64" | "MFA_ALLOW_PLAINTEXT_LEGACY" | "SESSION_SECRET_BASE64" | "EGRESS_PROXY_SOCKET_PATH" | "EGRESS_CAPABILITY_HMAC_KEY_BASE64">;
+export type SecretBrokerConfig = Pick<AppConfig, "SECRET_BROKER_SOCKET_PATH" | "ACCESS_TOKEN_HMAC_KEY_BASE64" | "CONFIG_VAULT_MASTER_KEY_BASE64" | "CONFIG_VAULT_MASTER_KEY_ID">;
 export type ExternalApiRegistrationConfig = Pick<AppConfig, "PUBLIC_BASE_DOMAIN"> & EgressClientConfig;
 export type ReadinessConfig = Pick<AppConfig, "MONITOR_ENABLED" | "MONITOR_INTERVAL_MS" | "BUILD_ID">;
 export type AdminSessionConfig = Pick<AppConfig, "SESSION_SECRET_BASE64">;
@@ -384,26 +349,25 @@ export type AdminRoutesConfig = HostRoutingConfig
   & AdminSessionConfig
   & AdminReauthConfig
   & ReadinessConfig
-  & Pick<AppConfig, "ADMIN_BOOTSTRAP_USERNAME" | "ADMIN_BOOTSTRAP_SECRET" | "BUILD_ID" | "CONFIG_VAULT_MASTER_KEY_BASE64" | "CONFIG_VAULT_MASTER_KEY_ID" | "ACCESS_TOKEN_HMAC_KEY_BASE64" | "INTEGRATION_TOKEN_HMAC_KEY_BASE64" | "INTEGRATION_TOKEN_HMAC_KEY_ID">;
+  & Pick<AppConfig, "ADMIN_BOOTSTRAP_USERNAME" | "ADMIN_BOOTSTRAP_SECRET" | "BUILD_ID" | "CONFIG_VAULT_MASTER_KEY_BASE64" | "CONFIG_VAULT_MASTER_KEY_ID" | "ACCESS_TOKEN_HMAC_KEY_BASE64">;
 export type ExternalApiGatewayConfig = Pick<AppConfig, "PUBLIC_BASE_DOMAIN" | "ACCESS_TOKEN_HMAC_KEY_BASE64"> & EgressClientConfig;
 export type AlertDeliveryConfig = Pick<AppConfig, "ALERT_PRIMARY_WEBHOOK_URL" | "ALERT_PRIMARY_HMAC_KEY_BASE64" | "ALERT_BACKUP_WEBHOOK_URL" | "ALERT_BACKUP_HMAC_KEY_BASE64">;
-export type GitHubOnboardingConfig = Pick<AppConfig, "GITHUB_TOKEN" | "GITHUB_APP_ID" | "GITHUB_APP_INSTALLATION_ID" | "GITHUB_APP_PRIVATE_KEY_BASE64" | "GITHUB_OWNER" | "GITHUB_REPO">;
 export type ActivationConfig = Pick<AppConfig, "AUTH_HOST" | "PUBLIC_BASE_DOMAIN">;
 export type EgressProxyConfig = EgressClientConfig & Pick<AppConfig, "NODE_ENV">;
 export type OciRuntimeConfig = Pick<AppConfig, "OCI_IMAGE_NAMESPACE" | "OCI_REGISTRY" | "OCI_CERTIFICATE_IDENTITY" | "OCI_CERTIFICATE_OIDC_ISSUER" | "PODMAN_BINARY" | "COSIGN_BINARY" | "RUNTIME_SOCKET_ROOT" | "EGRESS_PROXY_SOCKET_PATH" | "SECRET_BROKER_SOCKET_PATH">;
-export type WorkerConfig = GitHubOnboardingConfig & ActivationConfig & EgressClientConfig & OciRuntimeConfig
-  & Pick<AppConfig, "ONBOARDING_WORKER_INTERVAL_MS" | "ACCESS_TOKEN_HMAC_KEY_BASE64" | "CONFIG_VAULT_MASTER_KEY_BASE64" | "CONFIG_VAULT_MASTER_KEY_ID">;
+export type WorkerConfig = ActivationConfig & EgressClientConfig & OciRuntimeConfig
+  & Pick<AppConfig, "COMPONENT_WORKER_INTERVAL_MS" | "ACCESS_TOKEN_HMAC_KEY_BASE64" | "CONFIG_VAULT_MASTER_KEY_BASE64" | "CONFIG_VAULT_MASTER_KEY_ID">;
 export type MonitoringConfig = AlertDeliveryConfig & EgressClientConfig & OciRuntimeConfig & Pick<AppConfig, "AUTH_HOST" | "MONITOR_INTERVAL_MS" | "AUDIT_ARCHIVE_PATH">;
 export type AppServerConfig = WebAppConfig
   & AdminRoutesConfig
   & OAuthConfig
   & McpHttpConfig
   & ExternalApiGatewayConfig
-  & OnboardingRouteConfig;
+  & GenerationRouteConfig;
 
 export function runtimeConfigDefaults(config: RuntimeDefaultsConfig = {}): Pick<RuntimeConfig, MutableRuntimeConfigKey> {
   return {
-    ONBOARDING_WORKER_INTERVAL_MS: config.ONBOARDING_WORKER_INTERVAL_MS ?? 15_000,
+    GENERATION_WORKER_INTERVAL_MS: config.GENERATION_WORKER_INTERVAL_MS ?? 5_000,
     MONITOR_INTERVAL_MS: config.MONITOR_INTERVAL_MS ?? 60_000,
     LOG_LEVEL: config.LOG_LEVEL ?? "info",
     UI_TIME_ZONE: config.UI_TIME_ZONE ?? "Europe/Prague"
@@ -416,7 +380,6 @@ function parseConfig(env: NodeJS.ProcessEnv, options: { allowAdminTotpSecret?: b
     "DATABASE_URL",
     "CONFIG_VAULT_MASTER_KEY_BASE64",
     "ACCESS_TOKEN_HMAC_KEY_BASE64",
-    "INTEGRATION_TOKEN_HMAC_KEY_BASE64",
     "EGRESS_CAPABILITY_HMAC_KEY_BASE64",
     "SESSION_SECRET_BASE64",
     "CSRF_SECRET_BASE64",
@@ -425,8 +388,6 @@ function parseConfig(env: NodeJS.ProcessEnv, options: { allowAdminTotpSecret?: b
     "ADMIN_TOTP_SECRET",
     "ALERT_PRIMARY_HMAC_KEY_BASE64",
     "ALERT_BACKUP_HMAC_KEY_BASE64",
-    "GITHUB_TOKEN",
-    "GITHUB_APP_PRIVATE_KEY_BASE64"
   ] as const) {
     if (!resolved[key]) resolved[key] = readSecretFile(env, key);
   }

@@ -7,16 +7,13 @@ import {
   CheckCircle2,
   ChevronDown,
   CircleHelp,
-  ClipboardCopy,
   Clock3,
-  Download,
   GitBranchPlus,
   LoaderCircle,
   MoreHorizontal,
   OctagonAlert,
   PauseCircle,
   PlayCircle,
-  Plus,
   RefreshCw,
   Rocket,
   Radar,
@@ -26,8 +23,7 @@ import {
   ShieldAlert,
   ShieldCheck,
   Terminal,
-  Trash2,
-  Workflow
+  Trash2
 } from "lucide-react";
 import "./styles.css";
 import { AppLayout, PageRouter } from "./app-layout.js";
@@ -38,6 +34,7 @@ import { IconButton, MetricCard, Modal, PageHeader } from "./common.js";
 import { ComponentCatalogPage } from "./component-page.js";
 import { DashboardPage } from "./dashboard-page.js";
 import { ExternalComponentsPage } from "./external-components-page.js";
+import { GenerationPage } from "./generation-page.js";
 import { RegisteredElementsPage } from "./registered-elements-page.js";
 import {
   CreateCredentialModal,
@@ -47,10 +44,8 @@ import {
   PermissionsPage,
   RenameCredentialModal
 } from "./credential-pages.js";
-import { onboardingHandoffText } from "./onboarding-handoff.js";
 import { OperationalConfigPage } from "./operational-config-page.js";
 import { SecretsPage } from "./secrets-page.js";
-import { formatMinuteSecondCountdown, getIntegrationTokenLifecycle } from "./integration-token-lifecycle.js";
 import { REAUTH_REQUIRED_EVENT, SESSION_EXPIRED_EVENT } from "./session-auth.js";
 import {
   acknowledgeOperationalAlert,
@@ -88,16 +83,12 @@ import {
   type ExternalInboundPermission,
   type PlatformWorkerAccessStatus,
   type ExternalTarget,
-  type IntegrationSecret,
-  type IntegrationToken,
   type AccessTokenCredential,
   type AccessTokenPermission,
   type ManagedSecret,
   type MonitoringProbe,
   type MonitoringOverview,
   type MonitoringProfile,
-  type OnboardingDescriptor,
-  type OnboardingJob,
   type OperationalConfigSetting,
   type OperationalAlert,
   type Page,
@@ -108,8 +99,6 @@ import {
   type Session
 } from "./types.js";
 import { ApiRequestError, api, csrf, describeApiError, formatDate, formatLocalDateTimeInput, prettyJson, setUiTimeZone } from "./ui-helpers.js";
-
-const integrationTokenActionLabel = "Vygenerovat Integrační token";
 
 function recertificationTone(phase: Server["recertification"]["phase"]): "ok" | "warn" | "danger" | "neutral" {
   if (phase === "VALID") return "ok";
@@ -124,6 +113,12 @@ function formatBoundary(seconds: number | null): string {
   const hours = Math.floor((seconds % 86_400) / 3_600);
   if (days > 0) return `${days} d ${hours} h`;
   return formatMinuteSecondCountdown(seconds * 1_000);
+}
+
+function formatMinuteSecondCountdown(remainingMs: number): string {
+  const totalSeconds = Math.max(0, Math.ceil(remainingMs / 1_000));
+  const minutes = Math.floor(totalSeconds / 60);
+  return `${minutes} min ${String(totalSeconds % 60).padStart(2, "0")} s`;
 }
 
 function operationalTone(state: Server["operationalState"]): "ok" | "warn" | "danger" | "neutral" {
@@ -142,7 +137,7 @@ function registrationLabel(server: Server): string {
 
 function recommendedAction(server: Server): { title: string; detail: string } {
   if (!server.enabled) return { title: "Nejdřív obnovit provoz", detail: "Server je vypnutý. Další test nebo aktivace dává smysl až po znovuzapnutí." };
-  if (server.registrationState === "TRIAL") return { title: "Dokončit safe test", detail: "Úspěšný test může server povýšit z TRIAL do ACTIVE a uzavřít onboarding." };
+  if (server.registrationState === "TRIAL") return { title: "Dokončit safe test", detail: "Úspěšný test může server povýšit z TRIAL do ACTIVE a uzavřít původní registrační ověření." };
   if (server.operationalState === "UNHEALTHY") return { title: "Prověřit monitoring a znovu otestovat", detail: "Server je aktivní, ale monitor hlásí kritický problém. Otestování pomůže rychle ověřit funkční kontrakt." };
   return { title: "Server je připraven pro provozní údržbu", detail: "Můžete provést bezpečný test, založit revizi nebo upravit monitoring podle potřeby." };
 }
@@ -215,136 +210,6 @@ function shortBuildLabel(releaseInfo: ReleaseInfo | null): string {
 
 function releaseLabel(releaseInfo: ReleaseInfo | null): string {
   return releaseInfo ? `Release ${releaseInfo.applicationVersion}` : "Release se načítá";
-}
-
-function CreateIntegrationTokenModal({ catalogVersion, secrets, onClose, onCreated }: { catalogVersion: string; secrets: ManagedSecret[]; onClose: () => void; onCreated: (secret: IntegrationSecret) => void }) {
-  const [label, setLabel] = useState("");
-  const [summary, setSummary] = useState("");
-  const [businessPurpose, setBusinessPurpose] = useState("");
-  const [serviceOwner, setServiceOwner] = useState("");
-  const [technicalOwner, setTechnicalOwner] = useState("");
-  const [criticality, setCriticality] = useState<OnboardingDescriptor["criticality"]>("MEDIUM");
-  const [grantAllSecrets, setGrantAllSecrets] = useState(false);
-  const [selectedSecrets, setSelectedSecrets] = useState<string[]>([]);
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-  async function submit(event: React.FormEvent) {
-    event.preventDefault();
-    if (!label.trim()) { setError("Zadej označení tokenu."); return; }
-    if (!summary.trim() || !businessPurpose.trim() || !serviceOwner.trim() || !technicalOwner.trim()) {
-      setError("Vyplň shrnutí, účel i oba vlastníky serveru.");
-      return;
-    }
-    setBusy(true);
-    setError("");
-    try {
-      const result = await api<IntegrationSecret>("/api/integration-tokens", {
-        method: "POST",
-        headers: { "x-csrf-token": csrf() },
-        body: JSON.stringify({
-          label: label.trim(),
-          descriptor: {
-            summary: summary.trim(),
-            businessPurpose: businessPurpose.trim(),
-            serviceOwner: serviceOwner.trim(),
-            technicalOwner: technicalOwner.trim(),
-            criticality
-          },
-          secretGrants: grantAllSecrets
-            ? [{ allSecrets: true }]
-            : selectedSecrets.map((secretStableName) => ({ secretStableName }))
-        })
-      });
-      onCreated(result);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Token se nepodařilo vytvořit");
-    } finally {
-      setBusy(false);
-    }
-  }
-  return (
-    <Modal title={integrationTokenActionLabel} onClose={onClose}>
-      <form className="modal-form" onSubmit={(event) => { void submit(event); }}>
-        <div className="form-intro"><span className="modal-icon"><Workflow size={20} /></span><p>KajovoCML {catalogVersion}, strukturovaný descriptor a integrační token.</p></div>
-        <label>Označení tokenu<span className="field-hint">Krátký interní název pro pozdější dohledání tokenu.</span><input autoFocus value={label} onChange={(event) => setLabel(event.target.value)} maxLength={120} placeholder="Např. Fakturační onboarding" /></label>
-        <div className="permission-preview">
-          <strong>Rozsah tokenu</strong>
-          <span>Token platí 24 hodin a umožní úspěšně integrovat jeden libovolný prvek splňující onboarding katalog {catalogVersion}. Umí číst jen zde přidělené KCML Secrets a po předání přístupového tokenu automaticky pozbývá platnost.</span>
-        </div>
-        <div className="descriptor-grid">
-          <label>Shrnutí serveru<span className="field-hint">Jednovětý popis integračního záměru.</span><textarea value={summary} onChange={(event) => setSummary(event.target.value)} maxLength={120} rows={3} placeholder="Např. Zpracování fakturačních podkladů" /></label>
-          <label>Účel serveru<span className="field-hint">Formální business purpose, který se předá dál.</span><textarea value={businessPurpose} onChange={(event) => setBusinessPurpose(event.target.value)} maxLength={400} rows={3} placeholder="Např. Automatizace fakturačního workflow" /></label>
-          <label>Vlastník služby<input value={serviceOwner} onChange={(event) => setServiceOwner(event.target.value)} maxLength={160} placeholder="Např. Finance Ops" /></label>
-          <label>Technický vlastník<input value={technicalOwner} onChange={(event) => setTechnicalOwner(event.target.value)} maxLength={160} placeholder="Např. Platform Engineering" /></label>
-          <label>Kritičnost<select value={criticality} onChange={(event) => setCriticality(event.target.value as OnboardingDescriptor["criticality"])}><option value="LOW">Low</option><option value="MEDIUM">Medium</option><option value="HIGH">High</option><option value="CRITICAL">Critical</option></select></label>
-        </div>
-        <div className="permission-preview">
-          <strong>Secret grants pro onboarding</strong>
-          <label className="checkbox-line"><input type="checkbox" checked={grantAllSecrets} onChange={(event) => { setGrantAllSecrets(event.target.checked); if (event.target.checked) setSelectedSecrets([]); }} /> Povolím všechny aktivní KCML Secrets pro tento integrační token</label>
-          {!grantAllSecrets ? <label>Konkrétní secrets<select multiple value={selectedSecrets} onChange={(event) => setSelectedSecrets(Array.from(event.target.selectedOptions, (option) => option.value))}>
-            {secrets.filter((secret) => secret.status === "ACTIVE").map((secret) => <option key={secret.id} value={secret.stableName}>{secret.stableName}</option>)}
-          </select><span className="field-hint">Výběr je podle stabilního názvu. Do pole nikdy nevkládejte plnou hodnotu tokenu ani public ID komponenty.</span></label> : null}
-        </div>
-        {error && <p className="error">{error}</p>}
-        <footer className="modal-actions"><button type="button" className="secondary" onClick={onClose} disabled={busy}>Zrušit</button><button type="submit" disabled={busy}><Rocket size={16} /> {busy ? "Generuji…" : integrationTokenActionLabel}</button></footer>
-      </form>
-    </Modal>
-  );
-}
-
-function IntegrationSecretModal({ secret, catalogVersion, onClose }: { secret: IntegrationSecret; catalogVersion: string; onClose: () => void }) {
-  const [copied, setCopied] = useState<"token" | "instructions" | null>(null);
-  async function copyToken() {
-    await navigator.clipboard.writeText(secret.token);
-    setCopied("token");
-  }
-  async function copyInstructions() {
-    await navigator.clipboard.writeText(onboardingHandoffText({
-      label: secret.label,
-      descriptor: secret.descriptor,
-      token: secret.token,
-      initialExpiresAt: secret.initialExpiresAt,
-      programmerApiUrl: secret.programmerApiUrl,
-      intakeUrls: secret.intakeUrls,
-      catalogVersion,
-      secretGrants: secret.secretGrants
-    }));
-    setCopied("instructions");
-  }
-  const recommendedIntakeUrl = secret.intakeUrls?.recommendedIntakeUrl ?? secret.programmerApiUrl;
-  return (
-    <Modal title="Podklady pro programátora jsou připravené" onClose={onClose}>
-      <div className="secret-dialog">
-        <div className="notice success"><CheckCircle2 size={18} /><span><strong>Vaše práce tímto končí.</strong><br />Programátorovi předejte onboarding katalog a token. Stav, opravitelné chyby i nahrání nové revize obslouží sám přes programátorské API až do zeleného výsledku.</span></div>
-        <div className="handoff-step"><span>1</span><div><strong>Onboarding katalog</strong><p>Závazný registrační kontrakt {catalogVersion}.</p><a className="button-link secondary" href={secret.onboardingCatalogUrl} download={secret.onboardingCatalogFileName}><Download size={16} /> Stáhnout onboarding katalog</a></div></div>
-        <div className="handoff-step"><span>2</span><div><strong>Server descriptor</strong><p>{secret.descriptor.summary}</p><dl className="descriptor-dl"><dt>Účel</dt><dd>{secret.descriptor.businessPurpose}</dd><dt>Vlastník služby</dt><dd>{secret.descriptor.serviceOwner}</dd><dt>Technický vlastník</dt><dd>{secret.descriptor.technicalOwner}</dd><dt>Kritičnost</dt><dd>{secret.descriptor.criticality}</dd></dl></div></div>
-        <div className="handoff-step"><span>3</span><div><strong>Integrační token</strong><p>Plnou hodnotu lze zobrazit i předat v tomto handoffu. První upload musí programátor provést do {formatDate(secret.initialExpiresAt)}.</p><div className="secret-once"><code>{secret.token}</code><small>Fingerprint {secret.fingerprint}</small></div><button type="button" className="secondary" onClick={() => { void copyToken(); }}><ClipboardCopy size={16} /> {copied === "token" ? "Token zkopírován" : "Zkopírovat token"}</button></div></div>
-        <div className="handoff-step"><span>4</span><div><strong>Programátorské API</strong><p>{recommendedIntakeUrl}</p><dl className="descriptor-dl"><dt>Rozsah</dt><dd>Jeden libovolný prvek</dd><dt>Intake</dt><dd>{secret.intakeUrls?.nativeComponentIntakeUrl ?? recommendedIntakeUrl}</dd></dl></div></div>
-        <div className="handoff-step"><span>5</span><div><strong>Secret API a granty</strong><p>Discovery endpoint je {secret.intakeUrls?.secretApiDiscoveryUrl ?? "nedostupný"}.</p><dl className="descriptor-dl"><dt>Granty</dt><dd>{secret.secretGrants.length ? secret.secretGrants.map((grant) => grant.allSecrets ? "ALL_SECRETS" : grant.secretStableName).join(", ") : "žádné"}</dd><dt>Pravidlo</dt><dd>Neexistující a negrantovaný secret musí vracet stejnou nerozlišitelnou odpověď.</dd></dl></div></div>
-        <div className="handoff-step"><span>6</span><div><strong>Aktuální katalogy</strong><p>Program musí použít aktivní component katalog a odpovídající source katalog pro in-repo variantu. Aktuální testovací source katalog je `repository-component-1.1`.</p><dl className="descriptor-dl"><dt>Component katalog</dt><dd>{secret.intakeUrls?.componentCatalogUrl ?? secret.onboardingCatalogUrl}</dd><dt>Source katalog</dt><dd>{secret.intakeUrls?.repositoryComponentCatalogPath ?? "docs/onboarding-catalogs/repository-component-1.1.json"}</dd></dl></div></div>
-        <div className="permission-preview"><strong>Co proběhne po uploadu</strong><span>Kanonický component intake ověří generický manifest, skutečný runtime a readiness gates. KájovoCML přidělí identitu, převede secret grants na komponentní identitu, po úplném úspěchu jednorázově předá dlouhodobý přístupový token a komponentu automaticky aktivuje.</span></div>
-        <footer className="modal-actions"><button className="secondary" onClick={onClose}>Zavřít</button><button onClick={() => { void copyInstructions(); }}><ClipboardCopy size={16} /> {copied === "instructions" ? "Pokyny zkopírovány" : "Zkopírovat pokyny i token"}</button></footer>
-      </div>
-    </Modal>
-  );
-}
-
-function IntegrationConfirmModal({ token, action, onClose, onConfirm }: { token: IntegrationToken; action: "revoke" | "delete"; onClose: () => void; onConfirm: () => Promise<void> }) {
-  const [typed, setTyped] = useState("");
-  const [busy, setBusy] = useState(false);
-  async function confirmAction() {
-    setBusy(true);
-    try { await onConfirm(); } finally { setBusy(false); }
-  }
-  return (
-    <Modal title={action === "revoke" ? "Revokovat integrační token?" : "Smazat záznam tokenu?"} onClose={onClose}>
-      <div className="modal-form">
-        <p className="destructive-copy">{action === "revoke" ? "Programátorské API token okamžitě odmítne. Běžící krok jobu skončí fail-closed a nebude znovu pronajat." : "Token bude revokován a skryt z přehledu; auditní a onboardingová stopa zůstane zachována."}</p>
-        <label>Pro potvrzení opiš označení<input value={typed} onChange={(event) => setTyped(event.target.value)} placeholder={token.label} /></label>
-        <footer className="modal-actions"><button className="secondary" onClick={onClose}>Zrušit</button><button className="danger-button" disabled={typed !== token.label || busy} onClick={() => { void confirmAction(); }}>{action === "revoke" ? "Revokovat" : "Smazat"}</button></footer>
-      </div>
-    </Modal>
-  );
 }
 
 function ServerTestFlowModal({
@@ -762,7 +627,7 @@ function MonitoringPage({
   probes,
   overview,
   onRefresh,
-  onAutomatedOnboarding,
+  onGenerate,
   onToggleEnabled,
   onRunTest,
   onLoadMonitoringProfile,
@@ -780,7 +645,7 @@ function MonitoringPage({
   probes: MonitoringProbe[];
   overview: MonitoringOverview;
   onRefresh: () => void;
-  onAutomatedOnboarding: () => void;
+  onGenerate: () => void;
   onToggleEnabled: (server: Server, enabled: boolean) => Promise<void>;
   onRunTest: (server: Server) => Promise<ServerTestResult>;
   onLoadMonitoringProfile: (server: Server) => Promise<MonitoringProfile>;
@@ -824,7 +689,7 @@ function MonitoringPage({
   return (
     <>
       <PageHeader title="Monitoring komponent" description="Provozní stav kompatibilních MCP profilů, recertifikace a alerting">
-        <button onClick={onAutomatedOnboarding}><Rocket size={17} /> {integrationTokenActionLabel}</button>
+        <button onClick={onGenerate}><Rocket size={17} /> Generovat nový prvek</button>
         <IconButton label="Obnovit monitoring" onClick={onRefresh}><RefreshCw size={17} /></IconButton>
         <label className="range-select"><Clock3 size={16} /><select value={timeRange} onChange={(event) => setTimeRange(event.target.value)} aria-label="Časový rozsah monitoringu"><option value="24h">Posledních 24 hodin</option><option value="7d">Posledních 7 dní</option><option value="30d">Posledních 30 dní</option></select><ChevronDown size={15} /></label>
       </PageHeader>
@@ -937,7 +802,7 @@ function DeleteServerModal({
   return (
     <Modal title="Smazat registraci serveru" onClose={onClose}>
       <form className="modal-form" onSubmit={(event) => { void submit(event); }}>
-        <div className="notice error"><AlertTriangle size={18} /><span>Server bude kompletně odstraněn z registru KCML. Pokud se bude registrovat znovu, musí být vystaven nový onboarding token a proběhne celý onboarding od začátku.</span></div>
+        <div className="notice error"><AlertTriangle size={18} /><span>Server bude kompletně odstraněn z registru KCML. Pokud má být schopnost znovu vytvořena jako interní CML prvek, založte nový běh v sekci Generování.</span></div>
         <label>Důvod smazání<textarea autoFocus value={reason} onChange={(event) => setReason(event.target.value)} minLength={10} maxLength={1000} rows={4} /></label>
         <label>Pro potvrzení opište přesný KCML kód<input value={confirmedCode} onChange={(event) => setConfirmedCode(event.target.value)} placeholder={server.code} /></label>
         <input type="text" autoComplete="username" value={accountName ?? ""} readOnly hidden />
@@ -980,124 +845,6 @@ function AlertSuppressionModal({ alert, onClose, onSubmit }: { alert: Operationa
   );
 }
 
-function OnboardingJobModal({ jobId, onClose, onCancel, onReleaseQuarantine }: { jobId: string; onClose: () => void; onCancel: (jobId: string) => Promise<void>; onReleaseQuarantine: (job: OnboardingJob) => void }) {
-  const [job, setJob] = useState<OnboardingJob | null>(null);
-  const [error, setError] = useState("");
-  useEffect(() => {
-    void api<{ job: OnboardingJob }>(`/api/onboarding-jobs/${jobId}`).then((result) => setJob(result.job)).catch((err) => setError(err instanceof Error ? err.message : "Detail se nepodařilo načíst"));
-  }, [jobId]);
-  return (
-    <Modal title="Detail onboarding jobu" onClose={onClose}>
-      {!job ? <div className="server-detail">{error ? <p className="error">{error}</p> : <p>Načítám detail…</p>}</div> : <div className="job-detail">
-        <div className="server-detail-status"><span className={`status-dot ${job.state === "ACTIVE" ? "ok" : ["FAILED", "QUARANTINED", "CANCELLED"].includes(job.state) ? "danger" : "warn"}`} /><strong>{job.state}</strong><span>{job.code ?? "Bez identity"}</span></div>
-        <dl className="job-metadata"><dt>Job ID</dt><dd><code>{job.id}</code></dd><dt>Correlation ID</dt><dd><code>{job.correlationId}</code></dd><dt>HTTPS resource</dt><dd>{job.resource ? <a href={job.resource} target="_blank" rel="noreferrer">{job.resource}</a> : "-"}</dd><dt>PR / CI</dt><dd>{job.githubPrUrl ? <a href={job.githubPrUrl} target="_blank" rel="noreferrer">Otevřít pull request</a> : "-"}</dd><dt>Image digest</dt><dd><code>{job.imageDigest ?? "-"}</code></dd><dt>SBOM digest</dt><dd><code>{job.sbomDigest ?? "-"}</code></dd><dt>Revize zdrojů</dt><dd>{job.sourceRevision}</dd></dl>
-        {job.blockingErrorCode ? <div className="notice error"><AlertTriangle size={18} /><span><strong>{job.blockingErrorCode}</strong><br />{job.blockingErrorDetail}</span></div> : null}
-        <section><h3>Bezpečnostní a aktivační brány</h3><div className="gate-grid">{job.gates?.map((gate) => <article key={gate.gate_name}><span className={`status-dot ${gate.status === "PASS" ? "ok" : ["FAIL", "QUARANTINED"].includes(gate.status) ? "danger" : "warn"}`} /><div><strong>{gate.gate_name}</strong><small>{gate.stage} · {gate.status}</small></div></article>)}</div></section>
-        <section><h3>Časová osa</h3><ol className="job-timeline">{job.events?.map((event) => <li key={event.id}><span className="status-dot ok" /><div><strong>{event.event_type}</strong><small>{event.from_state ?? "START"} → {event.to_state} · {formatDate(event.created_at)}</small><code>{event.correlation_id}</code></div></li>)}</ol></section>
-        <footer className="modal-actions"><button className="secondary" onClick={onClose}>Zavřít</button>{job.state === "QUARANTINED" ? <button className="danger-button" onClick={() => onReleaseQuarantine(job)}>Schválit novou revizi</button> : null}{!["ACTIVE", "FAILED", "QUARANTINED", "CANCELLED"].includes(job.state) ? <button className="danger-button" onClick={() => { void onCancel(job.id); }}>Zrušit job</button> : null}</footer>
-      </div>}
-    </Modal>
-  );
-}
-
-function QuarantineReleaseModal({
-  job,
-  accountName,
-  onClose,
-  onReleased
-}: {
-  job: OnboardingJob;
-  accountName: string | null;
-  onClose: () => void;
-  onReleased: () => Promise<void>;
-}) {
-  const [confirmedCode, setConfirmedCode] = useState("");
-  const [reason, setReason] = useState("");
-  const [password, setPassword] = useState("");
-  const [totp, setTotp] = useState("");
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-  async function submit(event: React.FormEvent) {
-    event.preventDefault();
-    setBusy(true);
-    setError("");
-    try {
-      await api(`/api/onboarding-jobs/${job.id}/release-quarantine`, {
-        method: "POST",
-        headers: { "x-csrf-token": csrf() },
-        body: JSON.stringify({ confirmedCode: confirmedCode.trim(), reason: reason.trim(), password, totp: totp.trim() })
-      });
-      await onReleased();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Uvolnění karantény selhalo");
-    } finally {
-      setBusy(false);
-    }
-  }
-  return (
-    <Modal title="Schválit novou registrační revizi" onClose={onClose}>
-      <form className="modal-form" onSubmit={(event) => { void submit(event); }}>
-        <div className="notice error"><AlertTriangle size={18} /><span>Server zůstane vypnutý. Tato ruční akce pouze povolí nahrání nové revize a její kompletní bezpečnostní přetestování.</span></div>
-        <label>Důvod a doložená náprava<textarea autoFocus value={reason} onChange={(event) => setReason(event.target.value)} minLength={10} maxLength={1000} rows={4} /></label>
-        <label>Pro potvrzení opište přesný KCML kód<input value={confirmedCode} onChange={(event) => setConfirmedCode(event.target.value)} placeholder={job.code ?? "KCML…"} /></label>
-        <input type="text" autoComplete="username" value={accountName ?? ""} readOnly hidden />
-        <label>Heslo administrátora<input name="password" value={password} onChange={(event) => setPassword(event.target.value)} type="password" autoComplete="current-password" /></label>
-        <label>Jednorázový MFA kód (je-li zapnutý)<input value={totp} onChange={(event) => setTotp(event.target.value)} inputMode="numeric" autoComplete="one-time-code" /></label>
-        {error ? <p className="error">{error}</p> : null}
-        <footer className="modal-actions"><button type="button" className="secondary" onClick={onClose}>Zrušit</button><button type="submit" className="danger-button" disabled={busy || confirmedCode !== job.code || reason.trim().length < 10 || !password}>{busy ? "Ověřuji…" : "Schválit novou revizi"}</button></footer>
-      </form>
-    </Modal>
-  );
-}
-
-function IntegrationTokenRunIndicator({ token, nowMs }: { token: IntegrationToken; nowMs: number }) {
-  const lifecycle = getIntegrationTokenLifecycle(token, nowMs);
-  return (
-    <div className={`integration-run-state ${lifecycle.runState}`} title={lifecycle.protectionLabel}>
-      <span className="integration-run-heading"><span className="integration-run-dot" /><strong>{lifecycle.runLabel}</strong></span>
-      <span className={`integration-protection ${lifecycle.protectionActive ? "protected" : "unprotected"}`}>
-        {lifecycle.protectionActive ? <ShieldCheck size={13} /> : <Clock3 size={13} />}{lifecycle.protectionLabel}
-      </span>
-    </div>
-  );
-}
-
-function IntegrationTokenExpiry({ token, nowMs }: { token: IntegrationToken; nowMs: number }) {
-  const lifecycle = getIntegrationTokenLifecycle(token, nowMs);
-  return (
-    <div className={`token-countdown ${lifecycle.tokenValid ? "valid" : "expired"}`} aria-label={lifecycle.tokenValid ? `Platnost končí za ${formatMinuteSecondCountdown(lifecycle.currentRemainingMs)}` : "Platnost tokenu skončila"}>
-      <strong>{formatMinuteSecondCountdown(lifecycle.currentRemainingMs)}</strong>
-      <small>{lifecycle.tokenValid ? `Končí ${formatDate(token.expiresAt)}` : "Token již nelze použít"}</small>
-    </div>
-  );
-}
-
-function IntegrationTokensPage({ tokens, jobs, onCreate, onOpenJob, onRevoke, onDelete, onRefresh }: { tokens: IntegrationToken[]; jobs: OnboardingJob[]; onCreate: () => void; onOpenJob: (id: string) => void; onRevoke: (token: IntegrationToken) => void; onDelete: (token: IntegrationToken) => void; onRefresh: () => void }) {
-  const [query, setQuery] = useState("");
-  const [nowMs, setNowMs] = useState(() => Date.now());
-  useEffect(() => {
-    const countdownTimer = window.setInterval(() => setNowMs(Date.now()), 1_000);
-    const refreshTimer = window.setInterval(onRefresh, 15_000);
-    return () => {
-      window.clearInterval(countdownTimer);
-      window.clearInterval(refreshTimer);
-    };
-  }, [onRefresh]);
-  const filtered = tokens.filter((token) => `${token.label} ${token.descriptor.summary} ${token.fingerprint} ${token.code ?? ""}`.toLowerCase().includes(query.toLowerCase()));
-  return (
-    <>
-      <PageHeader title="Integrační tokeny" description="Označení integračního toku, strukturovaný descriptor a jednorázový token pro úspěšnou integraci jednoho prvku.">
-        <label className="search-box"><Search size={16} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Hledat token, job nebo KCML…" aria-label="Hledat integrační token" /></label>
-        <button onClick={onCreate}><Plus size={17} /> {integrationTokenActionLabel}</button><IconButton label="Obnovit" onClick={onRefresh}><RefreshCw size={17} /></IconButton>
-      </PageHeader>
-      <section className="panel table-panel"><div className="panel-head"><div><h2>Vydané tokeny</h2><p>Plná hodnota je v create response a handoffu; tento přehled trvale uchovává fingerprint.</p></div><span className="panel-count">{filtered.length} záznamů</span></div>
-        {filtered.length === 0 ? <div className="empty-state"><Workflow size={34} /><strong>Žádné integrační tokeny</strong><p>Vygeneruj první token a předej jej programátorovi bezpečným kanálem.</p></div> : <div className="table-scroll"><table className="integration-token-table"><thead><tr><th>Token</th><th>KCML / job</th><th>Secret grants</th><th>Stav integrace</th><th>Platnost 24 hodin</th><th>Akce</th></tr></thead><tbody>{filtered.map((token) => <tr key={token.id}><td><strong>{token.label}</strong><span className="cell-subtitle">{token.descriptor.summary}</span><span className="cell-subtitle">Vydán {formatDate(token.issuedAt)}</span><code className="cell-fingerprint">{token.fingerprint}</code><span className="cell-subtitle">jeden libovolný prvek · spotřeba až po úplném úspěchu</span></td><td>{token.code ?? "Čeká na upload"}<span className="cell-subtitle">{token.jobId ? token.jobId.slice(0, 8) : "Nevázaný"}</span></td><td>{token.secretGrants.length ? token.secretGrants.map((grant) => grant.allSecrets ? "ALL_SECRETS" : grant.secretStableName).join(", ") : "žádné"}<span className="cell-subtitle">{token.secretGrants.some((grant) => grant.transferredComponentPublicId) ? `převedeno na ${token.secretGrants.find((grant) => grant.transferredComponentPublicId)?.transferredComponentPublicId}` : "čeká na převod"}</span></td><td><div className="integration-state-cell"><span className={`badge ${token.active ? "ok" : "danger"}`}>{token.jobState ?? (token.active ? "PŘIPRAVEN" : "NEPLATNÝ")}</span><IntegrationTokenRunIndicator token={token} nowMs={nowMs} /></div></td><td><div className="token-timing-cell"><IntegrationTokenExpiry token={token} nowMs={nowMs} /></div></td><td><div className="row-actions integration-row-actions">{token.jobId ? <button className="small-button" onClick={() => onOpenJob(token.jobId!)}>Detail</button> : null}<button className="small-button" disabled={!token.active} onClick={() => onRevoke(token)}>Revokovat</button><button className="small-button danger-link" onClick={() => onDelete(token)}>Smazat</button></div></td></tr>)}</tbody></table></div>}
-      </section>
-      <section className="panel"><div className="panel-head"><h2>Onboardingové joby</h2><span className="panel-count">{jobs.length} jobů</span></div>{jobs.length === 0 ? <div className="empty-state server-empty"><Rocket size={32} /><strong>Zatím nebyl zahájen žádný upload</strong></div> : <div className="job-cards">{jobs.map((job) => <button key={job.id} onClick={() => onOpenJob(job.id)}><span className={`status-dot ${job.state === "ACTIVE" ? "ok" : ["FAILED", "QUARANTINED", "CANCELLED"].includes(job.state) ? "danger" : "warn"}`} /><span><strong>{job.code ?? "Čeká na identitu"}</strong><small>{job.state} · {formatDate(job.updatedAt)}</small></span><ChevronDown className="item-chevron" size={15} /></button>)}</div>}</section>
-    </>
-  );
-}
-
 function Dashboard({ accountName, role, releaseInfo, onLogout }: { accountName: string | null; role: AdminRole; releaseInfo: ReleaseInfo | null; onLogout: () => void }) {
   const [page, setPage] = useState<Page>(role === "OWNER" ? "dashboard" : "components");
   const [components, setComponents] = useState<Component[]>([]);
@@ -1114,9 +861,7 @@ function Dashboard({ accountName, role, releaseInfo, onLogout }: { accountName: 
   const [security, setSecurity] = useState<AdminSecurity | null>(null);
   const [adminAccounts, setAdminAccounts] = useState<AdminAccount[]>([]);
   const [operationalConfig, setOperationalConfig] = useState<OperationalConfigSetting[]>([]);
-  const [integrationTokens, setIntegrationTokens] = useState<IntegrationToken[]>([]);
   const [managedSecrets, setManagedSecrets] = useState<ManagedSecret[]>([]);
-  const [onboardingJobs, setOnboardingJobs] = useState<OnboardingJob[]>([]);
   const [probes, setProbes] = useState<MonitoringProbe[]>([]);
   const [monitoringOverview, setMonitoringOverview] = useState<MonitoringOverview>({ alerts: [], deliveries: [], stateHistory: [], scheduler: null });
   const [selectedCredentialId, setSelectedCredentialId] = useState<string | null>(null);
@@ -1124,11 +869,6 @@ function Dashboard({ accountName, role, releaseInfo, onLogout }: { accountName: 
   const [savingPermissions, setSavingPermissions] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [secret, setSecret] = useState<SecretResult | null>(null);
-  const [integrationCreate, setIntegrationCreate] = useState<boolean>(false);
-  const [integrationSecret, setIntegrationSecret] = useState<IntegrationSecret | null>(null);
-  const [integrationConfirm, setIntegrationConfirm] = useState<{ token: IntegrationToken; action: "revoke" | "delete" } | null>(null);
-  const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
-  const [quarantineRelease, setQuarantineRelease] = useState<OnboardingJob | null>(null);
   const [confirm, setConfirm] = useState<{ credential: AccessTokenCredential; action: "revoke" | "delete" } | null>(null);
   const [renameCredential, setRenameCredential] = useState<AccessTokenCredential | null>(null);
   const [error, setError] = useState("");
@@ -1136,7 +876,7 @@ function Dashboard({ accountName, role, releaseInfo, onLogout }: { accountName: 
   async function load() {
     setError("");
     try {
-      const [componentRes, externalPrincipalRes, externalTargetRes, externalPermissionRes, externalInboundPermissionRes, platformWorkerAccessRes, serverRes, credentialRes, auditRes, integrationRes, jobsRes, probesRes, monitoringRes, securityRes, integrityRes, adminAccountsRes, configRes, secretsRes] = await Promise.all([
+      const [componentRes, externalPrincipalRes, externalTargetRes, externalPermissionRes, externalInboundPermissionRes, platformWorkerAccessRes, serverRes, credentialRes, auditRes, probesRes, monitoringRes, securityRes, integrityRes, adminAccountsRes, configRes, secretsRes] = await Promise.all([
         api<{ components: Component[] }>("/api/components"),
         api<{ principals: ExternalPrincipal[] }>("/api/external-principals"),
         api<{ targets: ExternalTarget[] }>("/api/external-targets"),
@@ -1146,8 +886,6 @@ function Dashboard({ accountName, role, releaseInfo, onLogout }: { accountName: 
         api<{ servers: Server[] }>("/api/mcp-servers"),
         api<{ credentials: AccessTokenCredential[] }>("/api/kaja"),
         api<AuditResponse>("/api/audit"),
-        api<{ tokens: IntegrationToken[] }>("/api/integration-tokens"),
-        api<{ jobs: OnboardingJob[] }>("/api/onboarding-jobs"),
         api<{ probes: MonitoringProbe[] }>("/api/monitoring-probes"),
         api<MonitoringOverview>("/api/monitoring-overview"),
         api<AdminSecurity>("/api/admin-security"),
@@ -1169,9 +907,7 @@ function Dashboard({ accountName, role, releaseInfo, onLogout }: { accountName: 
       setAuditIntegrity(integrityRes);
       const configuredTimeZone = configRes.settings.find((setting) => setting.key === "uiTimeZone")?.value;
       if (typeof configuredTimeZone === "string") setUiTimeZone(configuredTimeZone);
-      setIntegrationTokens(integrationRes.tokens);
       setManagedSecrets(secretsRes.secrets);
-      setOnboardingJobs(jobsRes.jobs);
       setProbes(probesRes.probes);
       setMonitoringOverview(monitoringRes);
       setSecurity(securityRes);
@@ -1227,19 +963,6 @@ function Dashboard({ accountName, role, releaseInfo, onLogout }: { accountName: 
     await load();
   }
 
-  async function runIntegrationConfirm() {
-    if (!integrationConfirm) return;
-    await api(`/api/integration-tokens/${integrationConfirm.token.id}/${integrationConfirm.action}`, { method: "POST", headers: { "x-csrf-token": csrf() }, body: "{}" });
-    setIntegrationConfirm(null);
-    await load();
-  }
-
-  async function cancelOnboardingJob(jobId: string) {
-    await api(`/api/onboarding-jobs/${jobId}/cancel`, { method: "POST", headers: { "x-csrf-token": csrf() }, body: "{}" });
-    setSelectedJobId(null);
-    await load();
-  }
-
   async function logout() {
     await api("/api/logout", { method: "POST", headers: { "x-csrf-token": csrf() }, body: "{}" });
     onLogout();
@@ -1267,7 +990,7 @@ function Dashboard({ accountName, role, releaseInfo, onLogout }: { accountName: 
 
   async function startServerRevision(server: Server) {
     await createServerRevision(server);
-    setPage("integration");
+    setPage("components");
     await load();
   }
 
@@ -1519,17 +1242,13 @@ function Dashboard({ accountName, role, releaseInfo, onLogout }: { accountName: 
         {secret && <CredentialSecretModal secret={secret} onClose={() => setSecret(null)} />}
         {confirm && <CredentialConfirmModal credential={confirm.credential} action={confirm.action} onClose={() => setConfirm(null)} onConfirm={runConfirm} />}
         {renameCredential && <RenameCredentialModal credential={renameCredential} onClose={() => setRenameCredential(null)} onRename={renameCredentialLabel} />}
-        {integrationCreate && <CreateIntegrationTokenModal catalogVersion={catalogVersion} secrets={managedSecrets} onClose={() => setIntegrationCreate(false)} onCreated={(created) => { setIntegrationCreate(false); setIntegrationSecret(created); setPage("integration"); void load(); }} />}
-        {integrationSecret && <IntegrationSecretModal secret={integrationSecret} catalogVersion={catalogVersion} onClose={() => setIntegrationSecret(null)} />}
-        {integrationConfirm && <IntegrationConfirmModal token={integrationConfirm.token} action={integrationConfirm.action} onClose={() => setIntegrationConfirm(null)} onConfirm={runIntegrationConfirm} />}
-        {selectedJobId && <OnboardingJobModal jobId={selectedJobId} onClose={() => setSelectedJobId(null)} onCancel={cancelOnboardingJob} onReleaseQuarantine={(job) => { setSelectedJobId(null); setQuarantineRelease(job); }} />}
-        {quarantineRelease && <QuarantineReleaseModal job={quarantineRelease} accountName={accountName} onClose={() => setQuarantineRelease(null)} onReleased={async () => { setQuarantineRelease(null); await load(); }} />}
       </>}
     >
       <PageRouter page={page} routes={{
-        dashboard: role === "OWNER" ? <DashboardPage releaseInfo={releaseInfo} onOpenStandardPage={(target) => setPage(target === "integration" || target === "tokens" ? "identities" : target)} /> : null,
+        dashboard: role === "OWNER" ? <DashboardPage releaseInfo={releaseInfo} onOpenStandardPage={(target) => setPage(target === "tokens" ? "identities" : target)} /> : null,
+        generation: role === "OWNER" ? <GenerationPage /> : null,
         registered: role === "OWNER" ? <RegisteredElementsPage onOpenPage={setPage} /> : null,
-        identities: role !== "AUDITOR" ? <section className="identity-center-page"><IntegrationTokensPage tokens={integrationTokens} jobs={onboardingJobs} onCreate={() => setIntegrationCreate(true)} onOpenJob={setSelectedJobId} onRevoke={(token) => setIntegrationConfirm({ token, action: "revoke" })} onDelete={(token) => setIntegrationConfirm({ token, action: "delete" })} onRefresh={() => { void load(); }} /><CredentialsPage credentials={credentials} components={components} onOpenCreate={() => setCreateOpen(true)} onEditPermissions={openPermissions} onRename={setRenameCredential} onConfirm={(credential, action) => setConfirm({ credential, action })} onComponentTokenRevoke={async (component, token) => { await updateComponent(component, () => revokeComponentAccessTokenRequest(component, token.id), "Revokace přístupového tokenu selhala"); }} onComponentTokenRotate={async (component, token) => { const result = await rotateComponentAccessTokenRequest(component, token.id); setComponents((current) => current.map((entry) => entry.id === result.component.id ? result.component : entry)); return result.accessToken; }} onRefresh={() => { void load(); }} /></section> : null,
+        identities: role !== "AUDITOR" ? <section className="identity-center-page"><CredentialsPage credentials={credentials} components={components} onOpenCreate={() => setCreateOpen(true)} onEditPermissions={openPermissions} onRename={setRenameCredential} onConfirm={(credential, action) => setConfirm({ credential, action })} onComponentTokenRevoke={async (component, token) => { await updateComponent(component, () => revokeComponentAccessTokenRequest(component, token.id), "Revokace přístupového tokenu selhala"); }} onComponentTokenRotate={async (component, token) => { const result = await rotateComponentAccessTokenRequest(component, token.id); setComponents((current) => current.map((entry) => entry.id === result.component.id ? result.component : entry)); return result.accessToken; }} onRefresh={() => { void load(); }} /></section> : null,
         components: <ComponentCatalogPage components={components} platformWorkerAccess={platformWorkerAccess} role={role} onRefresh={() => { void load(); }} onLoadDetail={loadComponentDetail} onToggle={toggleComponent}
           onRotatePlatformWorkerAccess={async () => { const result = await api<{ status: PlatformWorkerAccessStatus; accessToken: { token: string; fingerprint: string } }>("/api/platform-worker-access/rotate", { method: "POST", headers: { "x-csrf-token": csrf() }, body: "{}" }); setPlatformWorkerAccess(result.status); return result.accessToken; }}
           onLifecycle={(component, action) => updateComponent(component, () => setComponentLifecycleRequest(component, action), "Změna lifecycle komponenty selhala")}
@@ -1551,10 +1270,9 @@ function Dashboard({ accountName, role, releaseInfo, onLogout }: { accountName: 
           onSetTargetStatus={async (target, status) => { await api(`/api/external-targets/${target.id}/status`, { method: "POST", headers: { "x-csrf-token": csrf() }, body: JSON.stringify({ status }) }); await load(); }}
           onSetPermission={async (input) => { await api("/api/external-permissions", { method: "PUT", headers: { "x-csrf-token": csrf() }, body: JSON.stringify(input) }); await load(); }}
           onSetInboundPermission={async (input) => { await api("/api/external-inbound-permissions", { method: "POST", headers: { "x-csrf-token": csrf() }, body: JSON.stringify(input) }); await load(); }} />,
-        monitoring: <MonitoringPage servers={servers} accountName={accountName} catalogVersion={catalogVersion} probes={probes} overview={monitoringOverview} onRefresh={() => { void load(); }} onAutomatedOnboarding={() => setIntegrationCreate(true)} onToggleEnabled={toggleServerEnabled} onRunTest={runServerTest} onLoadMonitoringProfile={loadMonitoringProfile} onSaveMonitoringProfile={saveMonitoringProfile} onStartRevision={startServerRevision} onDeleteServer={deleteServerRegistration} onTestWebhook={testAlertWebhooks} onAcknowledgeAlert={acknowledgeAlert} onSuppressAlert={suppressAlert} onRetryDelivery={retryAlertDelivery} />,
-        integration: <IntegrationTokensPage tokens={integrationTokens} jobs={onboardingJobs} onCreate={() => setIntegrationCreate(true)} onOpenJob={setSelectedJobId} onRevoke={(token) => setIntegrationConfirm({ token, action: "revoke" })} onDelete={(token) => setIntegrationConfirm({ token, action: "delete" })} onRefresh={() => { void load(); }} />,
+        monitoring: <MonitoringPage servers={servers} accountName={accountName} catalogVersion={catalogVersion} probes={probes} overview={monitoringOverview} onRefresh={() => { void load(); }} onGenerate={() => setPage("generation")} onToggleEnabled={toggleServerEnabled} onRunTest={runServerTest} onLoadMonitoringProfile={loadMonitoringProfile} onSaveMonitoringProfile={saveMonitoringProfile} onStartRevision={startServerRevision} onDeleteServer={deleteServerRegistration} onTestWebhook={testAlertWebhooks} onAcknowledgeAlert={acknowledgeAlert} onSuppressAlert={suppressAlert} onRetryDelivery={retryAlertDelivery} />,
         secrets: role !== "AUDITOR" ? <SecretsPage secrets={managedSecrets} accountName={accountName} role={role} onRefresh={() => { void refreshSecrets(); }} /> : null,
-        tokens: <section className="identity-center-page"><IntegrationTokensPage tokens={integrationTokens} jobs={onboardingJobs} onCreate={() => setIntegrationCreate(true)} onOpenJob={setSelectedJobId} onRevoke={(token) => setIntegrationConfirm({ token, action: "revoke" })} onDelete={(token) => setIntegrationConfirm({ token, action: "delete" })} onRefresh={() => { void load(); }} /><CredentialsPage credentials={credentials} components={components} onOpenCreate={() => setCreateOpen(true)} onEditPermissions={openPermissions} onRename={setRenameCredential} onConfirm={(credential, action) => setConfirm({ credential, action })} onComponentTokenRevoke={role === "AUDITOR" ? undefined : async (component, token) => { await updateComponent(component, () => revokeComponentAccessTokenRequest(component, token.id), "Revokace přístupového tokenu selhala"); }} onComponentTokenRotate={role === "AUDITOR" ? undefined : async (component, token) => { const result = await rotateComponentAccessTokenRequest(component, token.id); setComponents((current) => current.map((entry) => entry.id === result.component.id ? result.component : entry)); return result.accessToken; }} onRefresh={() => { void load(); }} /></section>,
+        tokens: <section className="identity-center-page"><CredentialsPage credentials={credentials} components={components} onOpenCreate={() => setCreateOpen(true)} onEditPermissions={openPermissions} onRename={setRenameCredential} onConfirm={(credential, action) => setConfirm({ credential, action })} onComponentTokenRevoke={role === "AUDITOR" ? undefined : async (component, token) => { await updateComponent(component, () => revokeComponentAccessTokenRequest(component, token.id), "Revokace přístupového tokenu selhala"); }} onComponentTokenRotate={role === "AUDITOR" ? undefined : async (component, token) => { const result = await rotateComponentAccessTokenRequest(component, token.id); setComponents((current) => current.map((entry) => entry.id === result.component.id ? result.component : entry)); return result.accessToken; }} onRefresh={() => { void load(); }} /></section>,
         permissions: <PermissionsPage credentials={credentials} servers={servers} selectedId={selectedCredentialId} permissions={permissions} saving={savingPermissions} onSelect={setSelectedCredentialId} onChange={setPermissions} onSave={() => { void savePermissions(); }} />,
         audit: <AuditPage events={events} nextCursor={auditNextCursor} integrity={auditIntegrity} onLoadMore={loadMoreAudit} onLoadDetail={loadAuditDetail} onRefresh={refreshAudit} onRefreshIntegrity={refreshAuditIntegrity} />,
         config: <OperationalConfigPage settings={operationalConfig} onRefresh={refreshOperationalConfig} onSave={saveOperationalConfig} />,

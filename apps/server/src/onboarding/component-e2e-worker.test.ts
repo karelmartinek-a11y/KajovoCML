@@ -52,8 +52,9 @@ describe("KCML E2E worker", () => {
         expected_digest: "sha256:631f4d836f9d199ee9721cc528112d8b61d2b90455bb214dd364596b487fe6b6",
         invocation_kind: "TOOL", invocation_name: "inventory.lookup", timeout_ms: 5000, cleanup_contract: { required: false }
       }] };
-      if (sql.startsWith("select name,output_schema from component_tool_contract")) return { rowCount: 1, rows: [{
+      if (sql.startsWith("select name,scope_name,output_schema from component_tool_contract")) return { rowCount: 1, rows: [{
         name: "inventory.lookup",
+        scope_name: "mcp.tools.call",
         output_schema: { type: "object", required: ["available"], properties: { available: { type: "boolean" } }, additionalProperties: false }
       }] };
       if (sql.startsWith("select endpoint_id,path from component_endpoint_contract") || sql.startsWith("select direction,pulse_type from component_pulse_mask")) {

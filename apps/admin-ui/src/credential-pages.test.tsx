@@ -51,6 +51,6 @@ describe("credential terminology", () => {
     expect(screen.getByRole("heading", { name: "Dlouhodobé přístupové tokeny komponent" })).toBeTruthy();
     expect(screen.getByText("KCML0002")).toBeTruthy();
     expect(screen.getByText("mcp.tools.call")).toBeTruthy();
-    expect(screen.getByText(/onboardingový token sem nepatří/i)).toBeTruthy();
+    expect(screen.getByText(/kanonickou dlouhodobou runtime identitu/i)).toBeTruthy();
   });
 });

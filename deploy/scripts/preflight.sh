@@ -10,26 +10,9 @@ test -n "${AUTH_HOST:-}"
 test -n "${REGISTER_HOST:-}"
 test -n "${KCML_COMPONENT_HOST_SUFFIX:-}"
 test -n "${ACCESS_TOKEN_HMAC_KEY_BASE64:-}"
-test -n "${INTEGRATION_TOKEN_HMAC_KEY_BASE64:-}"
-test -n "${EGRESS_CAPABILITY_HMAC_KEY_BASE64:-}"
-test -n "${SESSION_SECRET_BASE64:-}"
-test -n "${CSRF_SECRET_BASE64:-}"
-test -n "${MFA_ENCRYPTION_KEY_BASE64:-}"
-test "${ONBOARDING_WORKER_ENABLED:-}" = "true"
-test -n "${GITHUB_OWNER:-}"
-test -n "${GITHUB_REPO:-}"
-if [ -z "${GITHUB_TOKEN:-}" ]; then
-  test -n "${GITHUB_APP_ID:-}"
-  test -n "${GITHUB_APP_INSTALLATION_ID:-}"
-  test -n "${GITHUB_APP_PRIVATE_KEY_BASE64:-}"
-fi
-test -n "${OCI_IMAGE_NAMESPACE:-}"
-test -n "${OCI_CERTIFICATE_IDENTITY:-}"
-case "${OCI_CERTIFICATE_IDENTITY}" in
-  https://github.com/*/.github/workflows/onboarding-build.yml@refs/heads/main) ;;
-  *) echo "invalid OCI_CERTIFICATE_IDENTITY" >&2; exit 1 ;;
-esac
-test "${OCI_CERTIFICATE_OIDC_ISSUER:-https://token.actions.githubusercontent.com}" = "https://token.actions.githubusercontent.com"
+test "${GENERATION_WORKER_ENABLED:-}" = "true"
+test -n "${GENERATION_ROOT:-/var/lib/kcml/generation}"
+test -n "${GENERATED_COMPONENT_ROOT:-/var/lib/kcml/generated-components}"
 test "${MONITOR_ENABLED:-}" = "true"
 test -n "${ALERT_PRIMARY_WEBHOOK_URL:-}"
 test -n "${ALERT_PRIMARY_HMAC_KEY_BASE64:-}"
@@ -43,38 +26,23 @@ test -f "$tls_key_path"
 openssl x509 -in "$tls_cert_path" -checkend 86400 -noout
 openssl x509 -in "$tls_cert_path" -noout -text | grep -F "DNS:*.${PUBLIC_BASE_DOMAIN}" >/dev/null
 openssl x509 -in "$tls_cert_path" -noout -text | grep -F "DNS:*.${KCML_COMPONENT_HOST_SUFFIX}" >/dev/null
-command -v "${PODMAN_BINARY:-podman}" >/dev/null
 command -v systemd-run >/dev/null
-command -v "${COSIGN_BINARY:-cosign}" >/dev/null
+command -v systemd-creds >/dev/null
+test -x /usr/bin/unshare
+test -x /usr/bin/mount
+test -x /usr/sbin/chroot
+test -x /usr/bin/setpriv
+test -x /usr/bin/env
+command -v "${SYSTEMCTL_BINARY:-systemctl}" >/dev/null
+command -v "${CHROMIUM_BINARY:-chromium}" >/dev/null
 command -v age >/dev/null
 test -r "${AGE_RECIPIENT_FILE:-/etc/kcml/backup.age.recipient}"
-grep -Eq '^kcml:' /etc/subuid
-grep -Eq '^kcml:' /etc/subgid
-install -d -m 0700 -o kcml -g kcml /run/kcml-podman
-install -d -m 0700 -o kcml -g kcml /var/lib/kcml/podman /var/lib/kcml/podman/data /var/lib/kcml/podman/config
-kcml_uid="$(id -u kcml)"
-loginctl enable-linger kcml
-systemctl start "user@${kcml_uid}.service"
-test -S "/run/user/${kcml_uid}/bus"
-podman_binary="$(command -v "${PODMAN_BINARY:-podman}")"
-runuser -u kcml -- env \
-  XDG_RUNTIME_DIR="/run/user/${kcml_uid}" \
-  DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${kcml_uid}/bus" \
-  systemd-run --user --quiet --wait --pipe --collect --unit=kcml-podman-preflight \
-    --property WorkingDirectory=/var/lib/kcml/podman \
-    --property UMask=0077 \
-    --setenv HOME=/var/lib/kcml/podman \
-    --setenv USER=kcml \
-    --setenv LOGNAME=kcml \
-    --setenv XDG_DATA_HOME=/var/lib/kcml/podman/data \
-    --setenv XDG_CONFIG_HOME=/var/lib/kcml/podman/config \
-    --setenv "XDG_RUNTIME_DIR=/run/user/${kcml_uid}" \
-    --setenv "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${kcml_uid}/bus" \
-    "${podman_binary}" info --format '{{.Host.Security.Rootless}}' | grep -Fx true >/dev/null
+install -d -m 0750 -o kcml -g kcml "${GENERATION_ROOT:-/var/lib/kcml/generation}" "${GENERATED_COMPONENT_ROOT:-/var/lib/kcml/generated-components}"
+if ! id kcml-runtime >/dev/null 2>&1; then useradd --system --gid kcml --home-dir /nonexistent --shell /usr/sbin/nologin kcml-runtime; fi
+runuser -u kcml-runtime -- /usr/bin/setpriv --no-new-privs /usr/bin/unshare --user --map-root-user --mount --net --ipc --uts --pid --fork --kill-child=SIGKILL /bin/true
+install -d -m 0770 -o kcml-runtime -g kcml "${RUNTIME_SOCKET_ROOT:-/var/lib/kcml/runtime}"
 audit_archive_dir="$(dirname "${AUDIT_ARCHIVE_PATH:-/var/lib/kcml/audit/archive.jsonl}")"
-install -d -m 0700 -o kcml -g kcml "${QUARANTINE_ROOT:-/var/lib/kcml/onboarding}" "${RUNTIME_SOCKET_ROOT:-/var/lib/kcml/runtime}" /var/lib/kcml/egress "$audit_archive_dir"
-runuser -u kcml -- test -w "${QUARANTINE_ROOT:-/var/lib/kcml/onboarding}"
-runuser -u kcml -- test -w "${RUNTIME_SOCKET_ROOT:-/var/lib/kcml/runtime}"
+install -d -m 0700 -o kcml -g kcml /var/lib/kcml/egress "$audit_archive_dir"
 runuser -u kcml -- test -w /var/lib/kcml/egress
 runuser -u kcml -- test -w "$audit_archive_dir"
 for service in web worker monitor egress migrator admin-sync alert-primary-sink alert-backup-sink; do

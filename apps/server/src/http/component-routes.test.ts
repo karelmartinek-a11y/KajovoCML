@@ -16,7 +16,6 @@ describe("component public route protection", () => {
       NODE_ENV: "test",
       DATABASE_URL: "postgres://unused/test",
       ACCESS_TOKEN_HMAC_KEY_BASE64: secret(1),
-      INTEGRATION_TOKEN_HMAC_KEY_BASE64: secret(2),
       EGRESS_CAPABILITY_HMAC_KEY_BASE64: secret(3),
       SESSION_SECRET_BASE64: secret(4),
       CSRF_SECRET_BASE64: secret(5),
@@ -49,7 +48,7 @@ describe("component public route protection", () => {
     registerComponentRoutes(discoveryApp, { query } as unknown as Db, loadConfig({
       NODE_ENV: "test", DATABASE_URL: "postgres://unused/test", PUBLIC_BASE_DOMAIN: "hcasc.cz",
       ADMIN_HOST: "admin.hcasc.cz", AUTH_HOST: "auth.hcasc.cz", REGISTER_HOST: "register.hcasc.cz",
-      ACCESS_TOKEN_HMAC_KEY_BASE64: secret(1), INTEGRATION_TOKEN_HMAC_KEY_BASE64: secret(2),
+      ACCESS_TOKEN_HMAC_KEY_BASE64: secret(1),
       EGRESS_CAPABILITY_HMAC_KEY_BASE64: secret(3), SESSION_SECRET_BASE64: secret(4),
       CSRF_SECRET_BASE64: secret(5), MFA_ENCRYPTION_KEY_BASE64: secret(6)
     }));
@@ -67,42 +66,27 @@ describe("component public route protection", () => {
     expect(query).not.toHaveBeenCalled();
   });
 
-  it("requires idempotency key and If-Match for v2 component revisions", async () => {
-    const query = vi.fn(async () => ({
-      rowCount: 1,
-      rows: [{
-        id: "10000000-0000-0000-0000-000000000001",
-        onboarding_job_id: null,
-        fingerprint: "fp-test",
-        expires_at: new Date(Date.now() + 60_000).toISOString(),
-        max_expires_at: new Date(Date.now() + 120_000).toISOString(),
-        service_kind: "MCP",
-        allowed_pipeline: "MCP_ONBOARDING",
-        token_kind: "SINGLE_COMPONENT",
-        release_version: KCML_RELEASE.catalogVersion,
-        max_child_jobs: 1
-      }]
-    }));
-    const revisionApp = Fastify();
-    registerComponentRoutes(revisionApp, { query } as unknown as Db, loadConfig({
+  it("keeps the retired external component-onboarding intake unavailable", async () => {
+    const query = vi.fn(async () => ({ rowCount: 0, rows: [] }));
+    const retiredApp = Fastify();
+    registerComponentRoutes(retiredApp, { query } as unknown as Db, loadConfig({
       NODE_ENV: "test", DATABASE_URL: "postgres://unused/test", PUBLIC_BASE_DOMAIN: "hcasc.cz",
       ADMIN_HOST: "admin.hcasc.cz", AUTH_HOST: "auth.hcasc.cz", REGISTER_HOST: "register.hcasc.cz",
-      ACCESS_TOKEN_HMAC_KEY_BASE64: secret(1), INTEGRATION_TOKEN_HMAC_KEY_BASE64: secret(2),
+      ACCESS_TOKEN_HMAC_KEY_BASE64: secret(1),
       EGRESS_CAPABILITY_HMAC_KEY_BASE64: secret(3), SESSION_SECRET_BASE64: secret(4),
       CSRF_SECRET_BASE64: secret(5), MFA_ENCRYPTION_KEY_BASE64: secret(6)
     }));
-    await revisionApp.ready();
-    const response = await revisionApp.inject({
+    await retiredApp.ready();
+    const response = await retiredApp.inject({
       method: "POST",
       url: "/v2/component-onboardings/20000000-0000-0000-0000-000000000002/revisions",
       headers: { host: "register.hcasc.cz", authorization: `Bearer kci_${"a".repeat(80)}` },
       payload: {}
     });
-    await revisionApp.close();
+    await retiredApp.close();
 
-    expect(response.statusCode).toBe(400);
-    expect(response.json()).toMatchObject({ error: "idempotency_key_and_if_match_required" });
-    expect(query).toHaveBeenCalledTimes(2);
+    expect(response.statusCode).toBe(404);
+    expect(query).not.toHaveBeenCalled();
   });
 
   it("retires the parallel component MCP endpoint", async () => {

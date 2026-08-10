@@ -3,16 +3,21 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import Fastify from "fastify";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AppServerConfig } from "../config.js";
 import type { Db } from "../db.js";
 import { handleCanonicalMcp } from "./component-mcp-runtime.js";
+
+vi.mock("../domain/secret-manager.js", () => ({
+  platformWorkerSecretPrincipal: async () => ({ kind: "PLATFORM", id: "platform-worker", publicId: "KCML-PLATFORM-WORKER", auditActorType: "platform" }),
+  resolveSecret: async () => ({ value: "kca_internal-runtime-token", fingerprint: "runtime-fingerprint", versionId: "runtime-secret-version" })
+}));
 
 const hmacKey = Buffer.alloc(32, 7);
 const component = {
   id: "90000000-0000-4000-8000-000000000001", code: "KCML90001", hostname: "kcml90001.kajovocml.hcasc.cz",
   enabled: true, ingressEnabled: true, lifecycleState: "ACTIVE", activationState: "ACTIVE", operationalState: "HEALTHY",
-  activeRevisionId: "90000000-0000-4000-8000-000000000002", revision: "1.0.0"
+  activeRevisionId: "90000000-0000-4000-8000-000000000002", revision: "1.0.0", registrationType: "INTERNAL_GENERATED"
 };
 
 const cleanup: string[] = [];
@@ -27,7 +32,7 @@ function fakeDb(socketPath: string, activeCount = 0): Db {
     }] };
     if (sql.includes("from principal_access_token token")) return { rowCount: 1, rows: [{
       source_client_id: "KCML90001", source_principal_status: "ACTIVE", current_source_revocation_epoch: 1,
-      source_principal_kind: "COMPONENT",
+      source_principal_kind: "COMPONENT", source_principal_id: "90000000-0000-4000-8000-000000000005",
       issued_revocation_epoch: 1, source_component_id: component.id, source_component_code: component.code,
       source_enabled: true, source_lifecycle_state: "ACTIVE", target_component_id: component.id,
       target_component_code: component.code, target_hostname: component.hostname, target_enabled: true,
@@ -42,6 +47,7 @@ function fakeDb(socketPath: string, activeCount = 0): Db {
     if (sql.includes("from component_runtime_target")) return { rowCount: 1, rows: [{
       transport: "UDS", upstream: socketPath, socket_path: socketPath, status: "HEALTHY"
     }] };
+    if (sql.includes("from component_runtime_identity")) return { rowCount: 1, rows: [{ stable_secret_name: "KCML90001_RUNTIME_ACCESS_TOKEN" }] };
     if (sql.includes("insert into component_operation_lease")) return { rowCount: 1, rows: [{ id: "90000000-0000-4000-8000-000000000003" }] };
     return { rowCount: 0, rows: [] };
   };
@@ -60,9 +66,10 @@ describe("canonical component MCP runtime", () => {
       request.on("data", (chunk: Buffer) => chunks.push(Buffer.from(chunk)));
       request.on("end", () => {
         received.push(JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>);
-        expect(request.headers.authorization).toBe("Bearer long-lived-token");
+        expect(request.url).toBe("/mcp");
+        expect(request.headers.authorization).toBe("Bearer kca_internal-runtime-token");
         response.writeHead(200, { "content-type": "application/json" });
-        response.end(JSON.stringify({ result: { ok: true } }));
+        response.end(JSON.stringify({ jsonrpc: "2.0", id: "90000000-0000-4000-8000-000000000004", result: { structuredContent: { ok: true } } }));
       });
     });
     await new Promise<void>((resolve) => runtime.listen(socketPath, resolve));
@@ -71,13 +78,13 @@ describe("canonical component MCP runtime", () => {
     const config = { ACCESS_TOKEN_HMAC_KEY_BASE64: hmacKey } as AppServerConfig;
     app.post("/mcp", { config: { rateLimit: { max: 120, timeWindow: "1 minute", groupId: "mcp-http-test" } } }, (request, reply) => handleCanonicalMcp(request, reply, db, config, component, "90000000-0000-4000-8000-000000000004"));
     const reply = await app.inject({
-      method: "POST", url: "/mcp", headers: { authorization: "Bearer long-lived-token", host: component.hostname },
+      method: "POST", url: "/mcp", headers: { authorization: "Bearer external-caller-token", host: component.hostname },
       payload: { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "inventory", arguments: {} } }
     });
     expect(reply.statusCode).toBe(200);
     expect(reply.json().result).toMatchObject({ structuredContent: { ok: true }, isError: false });
     expect(received).toHaveLength(1);
-    expect(received[0]).toMatchObject({ operation: "tools/call", tool: "inventory" });
+    expect(received[0]).toMatchObject({ method: "tools/call", params: { name: "inventory", arguments: {} } });
     await app.close();
     await new Promise<void>((resolve, reject) => runtime.close((error) => error ? reject(error) : resolve()));
   });

@@ -10,6 +10,7 @@ import { appendAudit } from "../domain/audit.js";
 import { authorizeComponentCall } from "../domain/component-auth.js";
 import { fetchThroughEgress } from "../domain/egress-client.js";
 import { KCML_RELEASE } from "../domain/release.js";
+import { platformWorkerSecretPrincipal, resolveSecret } from "../domain/secret-manager.js";
 import { jsonRpcError, jsonRpcResult, respondToJsonRpc, sendJsonRpc } from "./json-rpc.js";
 
 const rpcSchema = z.object({
@@ -32,6 +33,7 @@ type RuntimeComponent = {
   operationalState: string;
   activeRevisionId: string;
   revision: string;
+  registrationType: string;
 };
 
 type ToolContract = {
@@ -57,7 +59,7 @@ function bearer(request: FastifyRequest): string | null {
 
 export async function canonicalMcpComponent(db: Db, hostname: string): Promise<RuntimeComponent | null> {
   const result = await db.query(
-    `select c.id,c.code,c.hostname,c.enabled,c.ingress_enabled,c.lifecycle_state,c.activation_state,c.operational_state,
+    `select c.id,c.code,c.hostname,c.enabled,c.ingress_enabled,c.lifecycle_state,c.activation_state,c.operational_state,c.registration_type,
             c.active_revision_id,r.revision
        from component c
        join component_revision r on r.id=c.active_revision_id and r.component_id=c.id
@@ -70,7 +72,7 @@ export async function canonicalMcpComponent(db: Db, hostname: string): Promise<R
     id: String(row.id), code: String(row.code), hostname: String(row.hostname), enabled: Boolean(row.enabled),
     ingressEnabled: Boolean(row.ingress_enabled), lifecycleState: String(row.lifecycle_state),
     activationState: String(row.activation_state), operationalState: String(row.operational_state),
-    activeRevisionId: String(row.active_revision_id), revision: String(row.revision)
+    activeRevisionId: String(row.active_revision_id), revision: String(row.revision), registrationType: String(row.registration_type)
   };
 }
 
@@ -118,6 +120,64 @@ async function udsDispatch(socketPath: string, payload: Buffer, token: string, t
   });
 }
 
+async function generatedRuntimeCredential(db: Db, config: AppServerConfig, componentId: string, correlationId: string): Promise<string> {
+  const identity = await db.query(
+    "select stable_secret_name from component_runtime_identity where component_id=$1",
+    [componentId]
+  );
+  if (!identity.rowCount) throw Object.assign(new Error("generated_runtime_identity_missing"), { statusCode: 503 });
+  const principal = await platformWorkerSecretPrincipal(db);
+  return (await resolveSecret(db, config, principal, String(identity.rows[0].stable_secret_name), correlationId)).value;
+}
+
+async function dispatchGeneratedRuntime(
+  db: Db,
+  config: AppServerConfig,
+  component: RuntimeComponent,
+  socketPath: string,
+  tool: ToolContract,
+  args: unknown,
+  correlationId: string
+): Promise<unknown> {
+  const runtimeToken = await generatedRuntimeCredential(db, config, component.id, correlationId);
+  const payload = Buffer.from(JSON.stringify({
+    jsonrpc: "2.0",
+    id: correlationId,
+    method: "tools/call",
+    params: { name: tool.name, arguments: args ?? {} }
+  }));
+  if (payload.length > maxBytes(tool.limits, "requestMaxBytes", 1_048_576)) throw Object.assign(new Error("request_too_large"), { statusCode: 413 });
+  const response = await new Promise<Buffer>((resolve, reject) => {
+    const request = http.request({
+      socketPath,
+      path: "/mcp",
+      method: "POST",
+      timeout: tool.timeoutMs,
+      headers: { authorization: `Bearer ${runtimeToken}`, "content-type": "application/json", "content-length": payload.length }
+    }, (runtimeResponse) => {
+      const chunks: Buffer[] = [];
+      runtimeResponse.on("data", (chunk: Buffer) => chunks.push(Buffer.from(chunk)));
+      runtimeResponse.on("error", reject);
+      runtimeResponse.on("end", () => {
+        const body = Buffer.concat(chunks);
+        if (!runtimeResponse.statusCode || runtimeResponse.statusCode < 200 || runtimeResponse.statusCode >= 300) {
+          reject(Object.assign(new Error("runtime_rejected"), { statusCode: runtimeResponse.statusCode ?? 502, responseBody: body }));
+          return;
+        }
+        resolve(body);
+      });
+    });
+    request.on("timeout", () => request.destroy(new Error("runtime_timeout")));
+    request.on("error", reject);
+    request.end(payload);
+  });
+  if (response.length > maxBytes(tool.limits, "responseMaxBytes", 5_242_880)) throw Object.assign(new Error("response_too_large"), { statusCode: 502 });
+  const parsed = JSON.parse(response.toString("utf8")) as { error?: { message?: string }; result?: { structuredContent?: unknown } };
+  if (parsed.error) throw Object.assign(new Error(`runtime_mcp_error:${parsed.error.message ?? "unknown"}`), { statusCode: 502 });
+  if (!parsed.result || !Object.hasOwn(parsed.result, "structuredContent")) throw Object.assign(new Error("runtime_mcp_result_missing"), { statusCode: 502 });
+  return parsed.result.structuredContent;
+}
+
 async function dispatch(db: Db, config: AppServerConfig, component: RuntimeComponent, tool: ToolContract, args: unknown, token: string, correlationId: string, decisionId: string): Promise<unknown> {
   const target = await db.query(
     `select transport,upstream,expected_tls_identity,socket_path,status
@@ -125,6 +185,10 @@ async function dispatch(db: Db, config: AppServerConfig, component: RuntimeCompo
     [component.id, component.activeRevisionId]
   );
   if (!target.rowCount || target.rows[0].status === "DISABLED") throw Object.assign(new Error("runtime_target_unavailable"), { statusCode: 503 });
+  if (component.registrationType === "INTERNAL_GENERATED") {
+    if (target.rows[0].transport !== "UDS" || !target.rows[0].socket_path) throw Object.assign(new Error("generated_runtime_target_must_be_uds"), { statusCode: 503 });
+    return dispatchGeneratedRuntime(db, config, component, String(target.rows[0].socket_path), tool, args, correlationId);
+  }
   const payload = Buffer.from(JSON.stringify({
     operation: "tools/call", tool: tool.name, arguments: args ?? {},
     authorization: { authority: "KCML", decisionId, correlationId, targetComponent: component.code }
@@ -159,14 +223,19 @@ export async function handleCanonicalMcp(request: FastifyRequest, reply: Fastify
   const body = parsed.data;
   const token = bearer(request);
   if (!token) return reply.code(401).header("www-authenticate", "Bearer").send({ code: "invalid_token", correlationId });
+  const parsedCall = body.method === "tools/call" ? callSchema.safeParse(body.params) : null;
+  if (body.method === "tools/call" && !parsedCall?.success) return respondToJsonRpc(reply, body.id, jsonRpcError(body.id, -32602, "Invalid params", correlationId));
+  const tools = body.method === "tools/call" || body.method === "tools/list" ? await toolsForComponent(db, component) : [];
+  const requestedTool = parsedCall?.success ? tools.find((candidate) => candidate.name === parsedCall.data.name) : undefined;
+  if (parsedCall?.success && !requestedTool) return respondToJsonRpc(reply, body.id, jsonRpcError(body.id, -32602, "Unknown tool", correlationId));
   const scope = body.method === "initialize" ? "mcp.initialize"
     : body.method === "notifications/initialized" ? "mcp.notifications.initialized"
-      : body.method === "tools/list" ? "mcp.tools.list" : "mcp.tools.call";
-  const route = body.method === "tools/call" && callSchema.safeParse(body.params).success
-    ? `/mcp/tools/${callSchema.parse(body.params).name}` : "/mcp";
+      : body.method === "tools/list" ? "mcp.tools.list"
+        : requestedTool?.scopeName ?? "mcp.tools.call";
+  const route = parsedCall?.success ? `/mcp/tools/${parsedCall.data.name}` : "/mcp";
   const decision = await authorizeComponentCall(db, {
     token, audience: `https://${component.hostname}`, host: component.hostname, scope, route,
-    hmacKey: config.ACCESS_TOKEN_HMAC_KEY_BASE64, correlationId
+    hmacKey: config.ACCESS_TOKEN_HMAC_KEY_BASE64, correlationId, allowGenerationProbe: true
   });
   if (!decision.allow) return reply.code(decision.reasonCode === "invalid_token" || decision.reasonCode === "expired_token" || decision.reasonCode === "revoked_token" ? 401 : 403)
     .send({ code: decision.reasonCode, correlationId, decisionId: decision.decisionId });
@@ -175,18 +244,17 @@ export async function handleCanonicalMcp(request: FastifyRequest, reply: Fastify
     protocolVersion: KCML_RELEASE.mcpProtocolVersion, capabilities: { tools: {} }, serverInfo: { name: component.code, version: component.revision }
   }));
   if (body.method === "notifications/initialized") return reply.code(202).send();
-  const tools = await toolsForComponent(db, component);
   if (body.method === "tools/list") return respond(jsonRpcResult(body.id, {
     tools: tools.map((tool) => ({ name: tool.name, title: tool.title, description: tool.description, inputSchema: tool.inputSchema, outputSchema: tool.outputSchema, annotations: tool.annotations }))
   }));
   if (body.method !== "tools/call") return respond(jsonRpcError(body.id, -32601, "Method not found", correlationId));
-  const call = callSchema.safeParse(body.params);
-  if (!call.success) return respond(jsonRpcError(body.id, -32602, "Invalid params", correlationId));
-  const tool = tools.find((candidate) => candidate.name === call.data.name);
-  if (!tool) return respond(jsonRpcError(body.id, -32602, "Unknown tool", correlationId));
+  const call = parsedCall;
+  if (!call?.success || !requestedTool) return respond(jsonRpcError(body.id, -32602, "Invalid params", correlationId));
+  const tool = requestedTool;
   const validateInput = ajv.compile(tool.inputSchema);
   if (!validateInput(call.data.arguments ?? {})) return respond(jsonRpcError(body.id, -32602, "Input schema validation failed", correlationId, { issues: validateInput.errors ?? [] }));
   const inputJson = JSON.stringify(call.data.arguments ?? {});
+  if (!decision.sourcePrincipalId) throw Object.assign(new Error("source_principal_unavailable"), { statusCode: 403 });
   let lease: string;
   try {
     lease = await tx(db, async (client) => {
@@ -210,14 +278,13 @@ export async function handleCanonicalMcp(request: FastifyRequest, reply: Fastify
       `insert into component_operation_lease(
         source_principal_id,target_component_id,operation_kind,operation_name,input_payload,input_digest,
         expires_at,correlation_id,token_fingerprint,permission_epoch
-      ) select source.principal_id,$2,'TOOL',$3,$4::jsonb,
+      ) values ($1,$2,'TOOL',$3,$4::jsonb,
                'sha256:'||encode(sha256(convert_to(($4::jsonb)::text,'utf8')),'hex'),
-               now()+($5||' milliseconds')::interval,$6,$7,$8
-          from component source where source.id=$1 returning id`,
-      [decision.sourceComponentId, component.id, tool.name, inputJson, tool.timeoutMs, correlationId, decision.tokenFingerprint, decision.policyEpoch]
+               now()+($5||' milliseconds')::interval,$6,$7,$8) returning id`,
+      [decision.sourcePrincipalId, component.id, tool.name, inputJson, tool.timeoutMs, correlationId, decision.tokenFingerprint, decision.policyEpoch]
     );
     if (!inserted.rowCount) throw Object.assign(new Error("source_principal_unavailable"), { statusCode: 403 });
-    await appendAudit(client, { eventType: "component.operation.started", actorType: "component", actorId: decision.sourceComponentId,
+    await appendAudit(client, { eventType: "component.operation.started", actorType: decision.sourcePrincipalKind === "EXTERNAL" ? "external" : decision.sourcePrincipalKind === "PLATFORM" ? "platform" : "component", actorId: decision.sourceComponentId ?? decision.sourcePrincipalId,
       objectType: "component_operation_lease", objectId: String(inserted.rows[0].id), after: { targetComponentId: component.id, tool: tool.name, inputDigest: sha256(inputJson), decisionId: decision.decisionId }, correlationId });
     return String(inserted.rows[0].id);
     });
@@ -238,14 +305,14 @@ export async function handleCanonicalMcp(request: FastifyRequest, reply: Fastify
           output_digest='sha256:'||encode(sha256(convert_to(($2::jsonb)::text,'utf8')),'hex'),success=true,finished_at=now() where id=$1`,
         [lease, outputJson]
       );
-      await appendAudit(client, { eventType: "component.operation.succeeded", actorType: "component", actorId: decision.sourceComponentId,
+      await appendAudit(client, { eventType: "component.operation.succeeded", actorType: decision.sourcePrincipalKind === "EXTERNAL" ? "external" : decision.sourcePrincipalKind === "PLATFORM" ? "platform" : "component", actorId: decision.sourceComponentId ?? decision.sourcePrincipalId,
         objectType: "component_operation_lease", objectId: lease, after: { outputDigest: sha256(outputJson), tool: tool.name }, correlationId });
     });
     return respond(jsonRpcResult(body.id, { structuredContent: output, content: [{ type: "text", text: outputJson }], isError: false }));
   } catch (error) {
     await tx(db, async (client) => {
       await client.query("update component_operation_lease set success=false,finished_at=now(),process_trace=$2::jsonb where id=$1", [lease, JSON.stringify({ error: error instanceof Error ? error.message : "runtime_failed" })]);
-      await appendAudit(client, { eventType: "component.operation.failed", actorType: "component", actorId: decision.sourceComponentId,
+      await appendAudit(client, { eventType: "component.operation.failed", actorType: decision.sourcePrincipalKind === "EXTERNAL" ? "external" : decision.sourcePrincipalKind === "PLATFORM" ? "platform" : "component", actorId: decision.sourceComponentId ?? decision.sourcePrincipalId,
         objectType: "component_operation_lease", objectId: lease, after: { errorCode: error instanceof Error ? error.message : "runtime_failed", tool: tool.name }, correlationId });
     });
     return respond(jsonRpcError(body.id, -32603, "Runtime operation failed", correlationId, { code: error instanceof Error ? error.message.toUpperCase() : "RUNTIME_FAILED" }));

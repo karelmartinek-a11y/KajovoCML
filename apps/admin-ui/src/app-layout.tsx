@@ -10,6 +10,7 @@ import {
   LogOut,
   Plus,
   ShieldCheck,
+  Sparkles,
   SlidersHorizontal,
   Terminal,
   Workflow
@@ -54,6 +55,7 @@ export function AppLayout({
         <div className="brand-row"><span className="brand-mark"><ShieldCheck size={22} /></span><div><strong>KCML</strong><span>{releaseLabel}</span></div></div>
         <nav>
           {role === "OWNER" ? navigationButton("dashboard", "Dashboard", <LayoutDashboard size={18} />) : null}
+          {role === "OWNER" ? navigationButton("generation", "Generování", <Sparkles size={18} />) : null}
           {role === "OWNER" ? navigationButton("registered", "Registrované prvky", <Activity size={18} />) : null}
           {navigationButton("components", "Katalog komponent", <Boxes size={18} />)}
           {navigationButton("external", "Externí strany", <Workflow size={18} />)}

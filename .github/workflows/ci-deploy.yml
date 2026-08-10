@@ -42,6 +42,7 @@ jobs:
           --health-retries 10
     env:
       CI: "true"
+      CHROMIUM_BINARY: /usr/bin/google-chrome
       NODE_ENV: test
       DATABASE_URL: postgres://kcml:kcml-test@127.0.0.1:5432/kcml_test
       KCML_UPGRADE_DATABASE_URL: postgres://kcml:kcml-test@127.0.0.1:5432/kcml_upgrade_test
@@ -66,7 +67,6 @@ jobs:
       - name: Deployment and alert-sink checks
         run: |
           bash -n deploy/scripts/*.sh scripts/*.sh
-          bash scripts/test-ci-deploy-workflow.sh
           bash scripts/test-install-release-guards.sh
           bash scripts/test-split-service-config.sh
           bash scripts/test-render-nginx-config.sh
@@ -99,7 +99,6 @@ jobs:
             apps/server/src/domain/component-db.test.ts \
             apps/server/src/domain/external-api-db.test.ts \
             apps/server/src/domain/mcp-policy-db.test.ts \
-            apps/server/src/domain/onboarding-db.test.ts \
             apps/server/src/domain/operational-config-db.test.ts \
             apps/server/src/domain/server-state-db.test.ts \
             apps/server/src/http/postgres-rate-limit-store-db.test.ts \
@@ -251,16 +250,12 @@ jobs:
         if: steps.freshness.outputs.should_deploy == 'true'
         env:
           PASS: ${{ secrets.PASS }}
-          GHCR_TOKEN: ${{ github.token }}
-          GHCR_ACTOR: ${{ github.actor }}
           KCML_FACTORY_RESET_CONFIRM: ${{ github.event_name == 'workflow_dispatch' && inputs.perform_factory_reset && inputs.factory_reset_confirmation || '' }}
         run: |
           set -euo pipefail
           echo "::add-mask::$PASS"
-          echo "::add-mask::$GHCR_TOKEN"
           test -n "$PASS"
-          test -n "$GHCR_TOKEN"
-          sudo --preserve-env=PASS,GHCR_TOKEN,GHCR_ACTOR,KCML_FACTORY_RESET_CONFIRM /usr/local/sbin/kcml-deploy-wrapper \
+          sudo --preserve-env=PASS,KCML_FACTORY_RESET_CONFIRM /usr/local/sbin/kcml-deploy-wrapper \
             "${{ runner.temp }}/kcml-release/kcml-release.tar.zst" \
             "${{ github.repository }}" \
             "${{ github.sha }}" \

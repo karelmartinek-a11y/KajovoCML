@@ -1,3 +1,5 @@
+> **HISTORICAL/SUPERSEDED (2026-08-09):** pre-internal-generation Dashboard notes. `docs/SSOT_CURRENT.md` and `docs/ARCHITECTURE.md` override lifecycle/creation statements below.
+
 # Kompatibilitní matice Dashboardu
 
 | Oblast | Stav | Poznámka |

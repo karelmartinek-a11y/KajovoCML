@@ -269,7 +269,7 @@ function SecretDetailModal({ secret, accountName, identityCards, onClose, onChan
             <div className="secret-identity-card-list">{identityCards.filter((identity) => `${identity.displayName} ${identity.code ?? ""} ${identity.publicId ?? ""} ${identity.fingerprint ?? ""}`.toLowerCase().includes(identityQuery.toLowerCase())).map((identity) => {
               const granted = recentIdentityGrants.has(identity.nodeId) || grants.some((grant) => (identity.componentId && grant.principalId === identity.componentId) || (identity.code && grant.principalPublicId === identity.code));
               return <article key={identity.nodeId} draggable={identity.status === "ACTIVE"} onDragStart={(event) => event.dataTransfer.setData("application/x-kcml-identity-node", identity.nodeId)}>
-                <div><span className={`status-dot ${identity.status === "ACTIVE" ? "ok" : "warn"}`} /><span><strong>{identity.code ?? identity.displayName}</strong><small>{identity.identityType === "INTEGRATION_TOKEN" ? "Předregistrační integrační token" : "Registrovaná komponentová identita"}</small></span></div>
+                <div><span className={`status-dot ${identity.status === "ACTIVE" ? "ok" : "warn"}`} /><span><strong>{identity.code ?? identity.displayName}</strong><small>Registrovaná komponentová identita</small></span></div>
                 <code>{identity.fingerprint ?? identity.publicId ?? "veřejný identifikátor není k dispozici"}</code>
                 <button type="button" className="small-button" disabled={deleted || identity.status !== "ACTIVE" || granted} onClick={() => { void grantIdentity(identity); }}>{granted ? "Již přiděleno" : "Přidělit"}</button>
               </article>;
