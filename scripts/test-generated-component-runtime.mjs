@@ -1,14 +1,24 @@
 #!/usr/bin/env node
+import { spawnSync } from "node:child_process";
 import http from "node:http";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import crypto from "node:crypto";
+import { fileURLToPath } from "node:url";
+const selfPath = fileURLToPath(import.meta.url);
 
 if (process.platform !== "linux") {
   console.log(`UNSUPPORTED generated component runtime fixture requires Linux sandbox runtime; current platform is ${process.platform}`);
   process.exit(0);
+}
+
+if (typeof process.getuid === "function" && process.getuid() !== 0 && process.env.KCML_SANDBOX_TEST_ELEVATED !== "1") {
+  const elevated = spawnSync("/usr/bin/sudo", ["-n", "env", `PATH=${process.env.PATH || "/usr/bin:/usr/sbin:/bin:/sbin"}`, "KCML_SANDBOX_TEST_ELEVATED=1", process.execPath, selfPath], { stdio: "inherit" });
+  if (elevated.status === 0) process.exit(0);
+  if (elevated.status !== null) process.exit(elevated.status);
+  throw elevated.error ?? new Error("generated_component_runtime_sudo_failed");
 }
 
 const root = await mkdtemp(path.join(tmpdir(), "kcml-generated-runtime-"));

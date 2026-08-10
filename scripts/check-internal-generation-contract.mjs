@@ -43,7 +43,13 @@ await access("scripts/test-generation-browser.mjs");
 await access("scripts/test-generated-platform-live.mjs");
 try { await access("deploy/scripts/kcml-deploy-wrapper.sh"); throw new Error("production install: retired GitHub/GHCR deploy wrapper still exists"); } catch (error) { if (error?.code !== "ENOENT") throw error; }
 const migration = await text("apps/server/src/migrations/009_internal_generation.sql");
-for (const table of ["generation_job", "generation_component", "component_runtime_identity", "local_component_release"]) requireText(migration, `CREATE TABLE ${table}`, "generation migration");
+for (const table of ["generation_job", "generation_component", "component_runtime_identity", "local_component_release"]) {
+  const qualified = `CREATE TABLE public.${table}`;
+  const unqualified = `CREATE TABLE ${table}`;
+  if (!migration.includes(qualified) && !migration.includes(unqualified)) {
+    throw new Error(`generation migration: missing ${qualified}`);
+  }
+}
 const ui = await text("apps/admin-ui/src/app-layout.tsx");
 requireText(ui, 'navigationButton("generation", "Generování"', "OWNER navigation");
 for (const file of ["deploy/systemd/kcml-generation-worker.service", "deploy/systemd/kcml-generated-component@.service", "deploy/scripts/kcml-generated-runtime-helper", "apps/server/src/http/generation-routes.ts"]) await access(file);

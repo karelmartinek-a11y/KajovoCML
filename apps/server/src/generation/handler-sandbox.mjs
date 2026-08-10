@@ -56,12 +56,19 @@ export class GeneratedHandlerSandbox {
 
   async #start(handlerPath, componentCode) {
     this.sandboxRoot = await mkdtemp(join(tmpdir(), "kcml-handler-sandbox-"));
-    const args = [
-      "--user", "--map-root-user", "--mount", "--net", "--ipc", "--uts", "--pid", "--fork", "--kill-child=SIGKILL",
+    const runningAsRoot = typeof process.getuid === "function" && process.getuid() === 0;
+    const shouldUseSudo = process.platform === "linux" && process.env.CI === "true" && !runningAsRoot;
+    const namespaceFlags = runningAsRoot
+      ? ["--mount", "--net", "--ipc", "--uts", "--pid", "--fork", "--kill-child=SIGKILL"]
+      : ["--user", "--map-root-user", "--mount", "--net", "--ipc", "--uts", "--pid", "--fork", "--kill-child=SIGKILL"];
+    const unshareArgs = [
+      ...namespaceFlags,
       "/bin/sh", "-eu", "-c", namespaceScript, "kcml-handler-sandbox",
       this.sandboxRoot, process.execPath, handlerPath, workerPath, componentCode
     ];
-    this.child = spawn("/usr/bin/unshare", args, {
+    const command = shouldUseSudo ? "/usr/bin/sudo" : "/usr/bin/unshare";
+    const args = shouldUseSudo ? ["-n", "/usr/bin/unshare", ...unshareArgs] : unshareArgs;
+    this.child = spawn(command, args, {
       stdio: ["pipe", "pipe", "pipe"],
       env: { PATH: "/usr/bin:/usr/sbin:/bin:/sbin", LANG: "C.UTF-8" }
     });

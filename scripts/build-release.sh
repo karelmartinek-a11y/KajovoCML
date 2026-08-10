@@ -47,6 +47,10 @@ cp -R docs/releases "$destination/docs/releases" 2>/dev/null || true
 # Release artifacts must exclude test sources/outputs so retired onboarding-only
 # strings in fixtures never leak into production packages.
 find "$destination/apps/server" -type f \( -name '*.test.js' -o -name '*.test.d.ts' -o -name '*.test.ts' -o -name '*.test.tsx' \) -delete
+# pnpm's legacy deploy leaves a self-referential workspace symlink in the
+# flattened virtual store.  It points back to the build checkout rather than
+# into the release, so it is neither usable at runtime nor safe to ship.
+find "$destination/apps/server/node_modules" -type l -path '*/@kcml/server' -delete
 find "$destination" -type f -name '._*' -delete
 
 jq -n \

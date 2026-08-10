@@ -17,6 +17,7 @@ let callbackUrl = null;
 let deployCompleted = false;
 let providerConfigured = false;
 const challengeToken = "provider-challenge-token";
+const safeChallenge = /^[A-Za-z0-9-]{1,200}$/;
 
 async function startCandidate() {
   candidateServer = https.createServer({ key, cert }, (req, res) => {
@@ -24,7 +25,9 @@ async function startCandidate() {
     if (url.pathname === "/health") { res.end("ok"); return; }
     if (url.pathname === "/webhooks/provider") {
       if (url.searchParams.get("verify_token") !== challengeToken) { res.statusCode = 403; res.end("denied"); return; }
-      res.end(url.searchParams.get("challenge") || "");
+      const challenge = url.searchParams.get("challenge") || "";
+      if (!safeChallenge.test(challenge)) { res.statusCode = 400; res.end("invalid challenge"); return; }
+      res.end(challenge);
       return;
     }
     res.statusCode = 404; res.end("not found");
@@ -50,7 +53,10 @@ async function get(url) {
 async function providerRegisterCallback(url) {
   if (!deployCompleted || !url) throw new Error("provider_refuses_non_live_callback");
   const challenge = `challenge-${Date.now()}`;
-  const response = await get(`${url}?verify_token=${encodeURIComponent(challengeToken)}&challenge=${encodeURIComponent(challenge)}`);
+  const callback = new URL(url);
+  callback.searchParams.set("verify_token", challengeToken);
+  callback.searchParams.set("challenge", challenge);
+  const response = await get(callback);
   if (response.status !== 200 || response.body !== challenge) throw new Error("provider_callback_challenge_failed");
   providerConfigured = true;
 }

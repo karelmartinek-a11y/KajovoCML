@@ -26,6 +26,7 @@ const platformGrants = new Set();
 const order = [];
 let jobState = "INTEGRATING";
 let ownerPrompts = 0;
+const safeChallenge = /^[A-Za-z0-9-]{1,200}$/;
 
 function activeSecret(name) {
   const secret = secretStore.get(name);
@@ -68,7 +69,10 @@ async function get(url) {
 async function providerChallenge() {
   const challenge = `challenge-${Date.now()}`;
   const token = activeSecret("WHATSAPP_VERIFY_TOKEN")?.value ?? "not-yet-known";
-  return get(`${callbackUrl}?verify_token=${encodeURIComponent(token)}&challenge=${encodeURIComponent(challenge)}`).then((response) => ({ ...response, challenge }));
+  const callback = new URL(callbackUrl);
+  callback.searchParams.set("verify_token", token);
+  callback.searchParams.set("challenge", challenge);
+  return get(callback).then((response) => ({ ...response, challenge }));
 }
 
 try {
@@ -79,8 +83,10 @@ try {
     try { expected = componentCanResolve("WHATSAPP_VERIFY_TOKEN"); }
     catch { res.statusCode = 503; res.end("secret unavailable"); return; }
     if (url.searchParams.get("verify_token") !== expected) { res.statusCode = 403; res.end("denied"); return; }
+    const challenge = url.searchParams.get("challenge") || "";
+    if (!safeChallenge.test(challenge)) { res.statusCode = 400; res.end("invalid challenge"); return; }
     res.statusCode = 200;
-    res.end(url.searchParams.get("challenge") || "");
+    res.end(challenge);
   });
   await new Promise((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
   callbackUrl = `https://localhost:${server.address().port}/webhooks/whatsapp`;
