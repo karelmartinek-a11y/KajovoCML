@@ -84,7 +84,7 @@ export class BrowserSession {
       "--remote-debugging-port=0", `--user-data-dir=${this.profileDir}`,
       "--disable-background-networking", "--disable-component-update", "--disable-default-apps",
       "--no-first-run", "--no-default-browser-check", "about:blank"
-    ], { stdio: ["ignore", "pipe", "pipe"] });
+    ], { stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32" });
     let cdpOutput = "";
     let outputPort;
     const capture = (chunk) => {
@@ -449,10 +449,21 @@ export class BrowserSession {
     const ws = this.ws; this.ws = null;
     try { ws?.close(); } catch { /* browser session may already be closed */ }
     const child = this.process;
-    if (child && child.exitCode === null && child.signalCode === null) {
-      child.kill("SIGTERM");
-      await Promise.race([new Promise((resolve) => child.once("exit", resolve)), sleep(2000)]);
-      if (child.exitCode === null && child.signalCode === null) { child.kill("SIGKILL"); await Promise.race([new Promise((resolve) => child.once("exit", resolve)), sleep(2000)]); }
+    if (child?.pid) {
+      // A headless Chrome parent can leave renderer/GPU helpers running after a
+      // direct child.kill(). Put each session in its own process group and end
+      // that group so the next generation session has a clean CDP environment.
+      const killSession = (signal) => {
+        try {
+          if (process.platform !== "win32" && child.pid) process.kill(-child.pid, signal);
+          else child.kill(signal);
+        } catch { /* the browser group may have exited between the state check and kill */ }
+      };
+      killSession("SIGTERM");
+      if (child.exitCode === null && child.signalCode === null) {
+        await Promise.race([new Promise((resolve) => child.once("exit", resolve)), sleep(2000)]);
+        if (child.exitCode === null && child.signalCode === null) { killSession("SIGKILL"); await Promise.race([new Promise((resolve) => child.once("exit", resolve)), sleep(2000)]); }
+      }
     }
     this.process = null;
     // Chromium may briefly keep profile helper processes alive after the main
