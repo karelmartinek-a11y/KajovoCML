@@ -255,10 +255,24 @@ jobs:
           set -euo pipefail
           echo "::add-mask::$PASS"
           test -n "$PASS"
+          deploy_started_at="$(date --iso-8601=seconds)"
+          deploy_log="$(mktemp)"
+          trap 'rm -f "$deploy_log"' EXIT
+          set +e
           sudo --preserve-env=PASS,KCML_FACTORY_RESET_CONFIRM /usr/local/sbin/kcml-deploy-wrapper \
             "${{ runner.temp }}/kcml-release/kcml-release.tar.zst" \
             "${{ github.repository }}" \
             "${{ github.sha }}" \
             "${{ github.run_id }}" \
             "${{ github.run_attempt }}" \
-            "${{ github.event_name }}"
+            "${{ github.event_name }}" >"$deploy_log" 2>&1
+          deploy_status=$?
+          set -e
+          if [ "$deploy_status" -ne 0 ]; then
+            echo "::group::Safe KCML deploy diagnostics"
+            grep -E 'release-(step|failed|check|installed)|rollback-(ok|failed)' "$deploy_log" || true
+            sudo journalctl --since "$deploy_started_at" --no-pager \
+              | grep -E 'release-(step|failed|check|installed)|rollback-(ok|failed)' || true
+            echo "::endgroup::"
+            exit "$deploy_status"
+          fi
