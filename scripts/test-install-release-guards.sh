@@ -39,6 +39,7 @@ grep -Fq 'test -x /usr/sbin/chroot' "$preflight_script"
 grep -Fq 'test -x /usr/bin/env' "$preflight_script"
 grep -Fq 'runuser -u kcml-runtime -- /usr/bin/setpriv --no-new-privs /usr/bin/unshare --user --map-root-user --mount --net --ipc --uts --pid --fork --kill-child=SIGKILL /bin/true' "$preflight_script"
 grep -Fq 'GENERATION_WORKER_ENABLED=true KCML_RELEASE_SOURCE="$source_dir" bash "$source_dir/deploy/scripts/preflight.sh"' "$install_script"
+grep -Fq "where deregistered_at is null and (code <> ('KCML' || lpad(kcml_number::text,4,'0'))" "$install_script"
 
 if rg -n 'kcml-onboarding-worker|GHCR_TOKEN|GITHUB_TOKEN|stage_registry_auth|repository-component-deploy' \
   "$install_script" "$preflight_script" "$generation_unit" "$component_unit" "$helper" deploy/scripts/split-service-config.sh >/dev/null; then
