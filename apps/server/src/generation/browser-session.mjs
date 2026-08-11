@@ -85,8 +85,12 @@ export class BrowserSession {
       "--disable-background-networking", "--disable-component-update", "--disable-default-apps",
       "--no-first-run", "--no-default-browser-check", "about:blank"
     ], { stdio: ["ignore", "pipe", "pipe"] });
-    const cdpOutput = [];
-    const capture = (chunk) => { if (cdpOutput.length < 100) cdpOutput.push(String(chunk)); };
+    let cdpOutput = "";
+    let outputPort;
+    const capture = (chunk) => {
+      cdpOutput = `${cdpOutput}${String(chunk)}`.slice(-16_384);
+      outputPort ??= cdpOutput.match(/DevTools listening on ws:\/\/127\.0\.0\.1:(\d{1,5})\//)?.[1];
+    };
     this.process.stdout.on("data", capture);
     this.process.stderr.on("data", capture);
     this.process.on("exit", (code) => { if (this.ws) this.#failAll(new Error(`browser_process_exited_${code}`)); });
@@ -100,10 +104,14 @@ export class BrowserSession {
       if (this.process.exitCode !== null) break;
       await sleep(50);
     }
-    this.port = Number(lines?.[0]);
+    // Chrome normally writes the dynamically selected port to its profile, but
+    // the GitHub-hosted Linux image can expose CDP first and omit that file.
+    // Its own stderr still reports the loopback-only endpoint; the HTTP probe
+    // below remains the authority before a session is connected.
+    this.port = Number(lines?.[0] ?? outputPort);
     if (!Number.isInteger(this.port) || this.port < 1 || this.port > 65535) {
       await this.close();
-      throw new Error(`browser_cdp_not_ready:${cdpOutput.join("").slice(-1500)}`);
+      throw new Error(`browser_cdp_not_ready:${cdpOutput.slice(-1500)}`);
     }
     let cdpReady = false;
     for (let attempt = 0; attempt < 300; attempt += 1) {
@@ -116,7 +124,7 @@ export class BrowserSession {
     }
     if (!cdpReady) {
       await this.close();
-      throw new Error(`browser_cdp_not_ready:${cdpOutput.join("").slice(-1500)}`);
+      throw new Error(`browser_cdp_not_ready:${cdpOutput.slice(-1500)}`);
     }
     const created = await fetch(`http://127.0.0.1:${this.port}/json/new?about:blank`, { method: "PUT", signal: AbortSignal.timeout(5000) });
     if (!created.ok) throw new Error(`browser_target_create_${created.status}`);
