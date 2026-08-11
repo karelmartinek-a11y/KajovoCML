@@ -5,6 +5,8 @@ umask 022
 destination="${1:?release destination required}"
 build_id="${BUILD_ID:-local-$(date -u +%Y%m%d%H%M%S)}"
 source_commit="${SOURCE_COMMIT:-$(git rev-parse HEAD 2>/dev/null || printf 'local')}"
+release_repository="${RELEASE_REPOSITORY:-local}"
+release_workflow="${RELEASE_WORKFLOW:-local}"
 catalog_version="$(node --input-type=module -e "import('./apps/server/dist/domain/release.js').then(({KCML_RELEASE}) => process.stdout.write(KCML_RELEASE.catalogVersion))")"
 workspace_restore_required=false
 
@@ -56,8 +58,10 @@ find "$destination" -type f -name '._*' -delete
 jq -n \
   --arg buildId "$build_id" \
   --arg sourceCommit "$source_commit" \
+  --arg repository "$release_repository" \
+  --arg workflow "$release_workflow" \
   --arg createdAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-  '{schemaVersion:2,buildId:$buildId,sourceCommit:$sourceCommit,createdAt:$createdAt,nodeVersion:env.NODE_VERSION,pnpmVersion:env.PNPM_VERSION,generationModel:"internal-local"}' \
+  '{schemaVersion:2,buildId:$buildId,sourceCommit:$sourceCommit,repository:$repository,workflow:$workflow,createdAt:$createdAt,nodeVersion:env.NODE_VERSION,pnpmVersion:env.PNPM_VERSION,generationModel:"internal-local"}' \
   > "$destination/release-manifest.json"
 
 find "$destination" -type d -exec chmod 0755 {} +

@@ -49,7 +49,7 @@ forbid_text() {
 }
 
 test -x node_modules/.bin/vitest
-BUILD_ID="test-build-release" SOURCE_COMMIT="test-source" bash scripts/build-release.sh "$tmpdir/release"
+BUILD_ID="test-build-release" SOURCE_COMMIT="test-source" RELEASE_REPOSITORY="test-owner/test-repository" RELEASE_WORKFLOW="test-owner/test-repository/.github/workflows/ci-deploy.yml@refs/heads/main" bash scripts/build-release.sh "$tmpdir/release"
 test -x node_modules/.bin/vitest
 release="$(node --input-type=module -e "import('./apps/server/dist/domain/release.js').then(({KCML_RELEASE}) => process.stdout.write(KCML_RELEASE.catalogVersion))")"
 
@@ -57,6 +57,7 @@ require_file "$tmpdir/release/docs/SSOT_CURRENT.md"
 require_file "$tmpdir/release/docs/component-manifest-${release}.schema.json"
 require_file "$tmpdir/release/docs/service-manifest-external-api-v1.0.example.json"
 require_file "$tmpdir/release/docs/external-api-1.0.json"
+jq -e '.sourceCommit == "test-source" and .repository == "test-owner/test-repository" and .workflow == "test-owner/test-repository/.github/workflows/ci-deploy.yml@refs/heads/main"' "$tmpdir/release/release-manifest.json" >/dev/null
 require_file "$tmpdir/release/apps/server/dist/cli/generation-worker.js"
 require_file "$tmpdir/release/apps/server/dist/cli/component-control-worker.js"
 require_file "$tmpdir/release/apps/server/dist/cli/component-e2e-worker.js"
