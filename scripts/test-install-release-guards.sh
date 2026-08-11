@@ -47,6 +47,11 @@ if rg -n 'kcml-onboarding-worker|GHCR_TOKEN|GITHUB_TOKEN|stage_registry_auth|rep
   exit 1
 fi
 
+if rg -n 'cleanup_registry_auth' "$install_script" >/dev/null; then
+  echo "retired registry-auth cleanup hook remains in the release installer" >&2
+  exit 1
+fi
+
 if grep -Eq 'client_secret_basic|integration_token_bearer' "$install_script"; then
   echo "secret API deployment checks must be access-token-only" >&2
   exit 1

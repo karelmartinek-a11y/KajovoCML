@@ -453,5 +453,4 @@ step verify-stable-runtime-health
 require_stable_runtime_health "$admin_host"
 
 trap - ERR
-cleanup_registry_auth
 echo "release-installed:$release_id"
