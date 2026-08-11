@@ -1,14 +1,24 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { access } from "node:fs/promises";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { GeneratedHandlerSandbox } from "../apps/server/src/generation/handler-sandbox.mjs";
+const selfPath = fileURLToPath(import.meta.url);
 
 if (process.platform !== "linux") {
   console.log(`UNSUPPORTED generated handler capability sandbox requires Linux namespaces/chroot; current platform is ${process.platform}`);
   process.exit(0);
+}
+
+if (typeof process.getuid === "function" && process.getuid() !== 0 && process.env.KCML_SANDBOX_TEST_ELEVATED !== "1") {
+  const elevated = spawnSync("/usr/bin/sudo", ["-n", "env", `PATH=${process.env.PATH || "/usr/bin:/usr/sbin:/bin:/sbin"}`, "KCML_SANDBOX_TEST_ELEVATED=1", process.execPath, selfPath], { stdio: "inherit" });
+  if (elevated.status === 0) process.exit(0);
+  if (elevated.status !== null) process.exit(elevated.status);
+  throw elevated.error ?? new Error("generated_handler_sandbox_sudo_failed");
 }
 
 for (const binary of ["/usr/bin/unshare", "/usr/bin/mount", "/usr/sbin/chroot"]) {

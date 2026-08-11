@@ -1,16 +1,26 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { BrowserSession } from "../apps/server/src/generation/browser-session.mjs";
 import { GeneratedHandlerSandbox } from "../apps/server/src/generation/handler-sandbox.mjs";
 import { reconcileGenerationPlanSecrets, generationSecretGrantElementKeys, normalizeGenerationSecretName } from "../apps/server/src/generation/generation-secret-plan.mjs";
 import { captureProviderBrowserSecret, captureProviderJsonSecrets } from "../apps/server/src/generation/provider-secret-capability.mjs";
+const selfPath = fileURLToPath(import.meta.url);
 
 if (process.platform !== "linux") {
   console.log(`UNSUPPORTED generation secret autonomy fixture requires Linux sandbox/browser runtime; current platform is ${process.platform}`);
   process.exit(0);
+}
+
+if (typeof process.getuid === "function" && process.getuid() !== 0 && process.env.KCML_SANDBOX_TEST_ELEVATED !== "1") {
+  const elevated = spawnSync("/usr/bin/sudo", ["-n", "env", `PATH=${process.env.PATH || "/usr/bin:/usr/sbin:/bin:/sbin"}`, "KCML_SANDBOX_TEST_ELEVATED=1", process.execPath, selfPath], { stdio: "inherit" });
+  if (elevated.status === 0) process.exit(0);
+  if (elevated.status !== null) process.exit(elevated.status);
+  throw elevated.error ?? new Error("generation_secret_autonomy_sudo_failed");
 }
 
 const chromium = process.env.CHROMIUM_BINARY || "/usr/bin/chromium";

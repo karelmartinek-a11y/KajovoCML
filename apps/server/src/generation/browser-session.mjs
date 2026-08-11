@@ -84,17 +84,40 @@ export class BrowserSession {
       "--remote-debugging-port=0", `--user-data-dir=${this.profileDir}`,
       "--disable-background-networking", "--disable-component-update", "--disable-default-apps",
       "--no-first-run", "--no-default-browser-check", "about:blank"
-    ], { stdio: ["ignore", "ignore", "pipe"] });
-    const stderr = [];
-    this.process.stderr.on("data", (chunk) => { if (stderr.length < 50) stderr.push(String(chunk)); });
+    ], { stdio: ["ignore", "pipe", "pipe"] });
+    const cdpOutput = [];
+    const capture = (chunk) => { if (cdpOutput.length < 100) cdpOutput.push(String(chunk)); };
+    this.process.stdout.on("data", capture);
+    this.process.stderr.on("data", capture);
     this.process.on("exit", (code) => { if (this.ws) this.#failAll(new Error(`browser_process_exited_${code}`)); });
     const activePort = path.join(this.profileDir, "DevToolsActivePort");
     let lines = null;
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      try { lines = (await readFile(activePort, "utf8")).trim().split(/\r?\n/); break; } catch { await sleep(50); }
+    for (let attempt = 0; attempt < 300; attempt += 1) {
+      try {
+        lines = (await readFile(activePort, "utf8")).trim().split(/\r?\n/);
+        if (lines[0]) break;
+      } catch { /* continue polling until Chromium writes its dynamically assigned CDP port */ }
+      if (this.process.exitCode !== null) break;
+      await sleep(50);
     }
-    if (!lines?.[0]) throw new Error(`browser_cdp_not_ready:${stderr.join("").slice(-1000)}`);
-    this.port = Number(lines[0]);
+    this.port = Number(lines?.[0]);
+    if (!Number.isInteger(this.port) || this.port < 1 || this.port > 65535) {
+      await this.close();
+      throw new Error(`browser_cdp_not_ready:${cdpOutput.join("").slice(-1500)}`);
+    }
+    let cdpReady = false;
+    for (let attempt = 0; attempt < 300; attempt += 1) {
+      try {
+        const response = await fetch(`http://127.0.0.1:${this.port}/json/version`, { signal: AbortSignal.timeout(500) });
+        if (response.ok) { cdpReady = true; break; }
+      } catch { /* DevToolsActivePort precedes the CDP HTTP listener on some CI starts */ }
+      if (this.process.exitCode !== null) break;
+      await sleep(50);
+    }
+    if (!cdpReady) {
+      await this.close();
+      throw new Error(`browser_cdp_not_ready:${cdpOutput.join("").slice(-1500)}`);
+    }
     const created = await fetch(`http://127.0.0.1:${this.port}/json/new?about:blank`, { method: "PUT", signal: AbortSignal.timeout(5000) });
     if (!created.ok) throw new Error(`browser_target_create_${created.status}`);
     const target = await created.json();
@@ -163,6 +186,48 @@ export class BrowserSession {
     const result = await this.send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue, userGesture: true });
     if (result.exceptionDetails) throw new Error(`browser_evaluate_failed:${result.exceptionDetails.text ?? "exception"}`);
     return result.result?.value;
+  }
+
+  async #withDocumentHandle(callback) {
+    const documentHandle = await this.send("Runtime.evaluate", {
+      expression: "document",
+      returnByValue: false,
+      userGesture: true
+    });
+    const objectId = documentHandle?.result?.objectId;
+    if (!objectId) throw new Error("browser_document_unavailable");
+    try {
+      return await callback(objectId);
+    } finally {
+      await this.send("Runtime.releaseObject", { objectId }).catch(() => undefined);
+    }
+  }
+
+  async #querySelectorHandle(selector) {
+    return this.#withDocumentHandle(async (documentObjectId) => {
+      const result = await this.send("Runtime.callFunctionOn", {
+        objectId: documentObjectId,
+        functionDeclaration: "function(selector){ return this.querySelector(String(selector)); }",
+        arguments: [{ value: String(selector) }],
+        returnByValue: false,
+        userGesture: true
+      });
+      const objectId = result?.result?.subtype === "null" ? null : result?.result?.objectId;
+      return objectId ? { objectId } : null;
+    });
+  }
+
+  async #selectorExists(selector) {
+    return this.#withDocumentHandle(async (documentObjectId) => {
+      const result = await this.send("Runtime.callFunctionOn", {
+        objectId: documentObjectId,
+        functionDeclaration: "function(selector){ return Boolean(this.querySelector(String(selector))); }",
+        arguments: [{ value: String(selector) }],
+        returnByValue: true,
+        userGesture: true
+      });
+      return Boolean(result?.result?.value);
+    });
   }
 
   async open(value) {
@@ -303,9 +368,23 @@ export class BrowserSession {
         return result.result?.value;
       } finally { await this.send("Runtime.releaseObject", { objectId }).catch(() => undefined); }
     }
-    const result = await this.evaluate(`(() => { const el=document.querySelector(${JSON.stringify(String(locator))}); if(!el) return {ok:false}; return (${functionDeclaration}).apply(el,${JSON.stringify(args)}); })()`);
-    if (!result?.ok) throw new Error(`browser_element_not_found:${locator}`);
-    return result;
+    const resolved = await this.#querySelectorHandle(locator);
+    const objectId = resolved?.objectId;
+    if (!objectId) throw new Error(`browser_element_not_found:${locator}`);
+    try {
+      const result = await this.send("Runtime.callFunctionOn", {
+        objectId,
+        functionDeclaration,
+        arguments: args.map((value) => ({ value })),
+        returnByValue: true,
+        userGesture: true
+      });
+      if (result.exceptionDetails) throw new Error("browser_element_action_failed");
+      if (!result.result?.value?.ok) throw new Error(`browser_element_not_found:${locator}`);
+      return result.result.value;
+    } finally {
+      await this.send("Runtime.releaseObject", { objectId }).catch(() => undefined);
+    }
   }
 
   async click(locator) {
@@ -347,7 +426,8 @@ export class BrowserSession {
     while (Date.now() < deadline) {
       try {
         await this.#ensureActiveTarget();
-        const state = await this.evaluate(`(() => ({url:location.href,readyState:document.readyState,text:(document.body?.innerText||'').slice(0,100000),selector:${selector ? `Boolean(document.querySelector(${JSON.stringify(selector)}))` : "true"}}))()`);
+        const state = await this.evaluate("(() => ({url:location.href,readyState:document.readyState,text:(document.body?.innerText||'').slice(0,100000)}))()");
+        state.selector = selector ? await this.#selectorExists(selector) : true;
         let locatorOk = true;
         if (locator) { try { locatorOk = Boolean((await this.#withElement(locator, `function(){return {ok:Boolean(this.isConnected)}}`))?.ok); } catch { locatorOk = false; } }
         if (locatorOk && (!selector || state.selector) && (!text || state.text.includes(text)) && (!urlIncludes || state.url.includes(urlIncludes)) && (!readyState || state.readyState === readyState)) return state;
