@@ -208,7 +208,7 @@ bash "$source_dir/deploy/scripts/ensure-canonical-tls.sh" \
 
 step preflight
 export KCML_COMPONENT_HOST_SUFFIX="$component_hostname_suffix"
-KCML_RELEASE_SOURCE="$source_dir" bash "$source_dir/deploy/scripts/preflight.sh"
+GENERATION_WORKER_ENABLED=true KCML_RELEASE_SOURCE="$source_dir" bash "$source_dir/deploy/scripts/preflight.sh"
 step backup
 bash "$source_dir/deploy/scripts/backup.sh"
 
