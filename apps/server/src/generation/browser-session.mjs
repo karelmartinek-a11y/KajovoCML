@@ -75,57 +75,59 @@ export class BrowserSession {
     if (fallback) await this.#connectTarget(fallback);
   }
 
+  async #startCdp() {
+    let lastOutput = "";
+    for (let launchAttempt = 0; launchAttempt < 3; launchAttempt += 1) {
+      await rm(this.profileDir, { recursive: true, force: true });
+      await mkdir(this.profileDir, { recursive: true, mode: 0o700 });
+      this.process = spawn(this.chromiumBinary, [
+        "--headless=new", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", "--site-per-process",
+        "--remote-debugging-port=0", `--user-data-dir=${this.profileDir}`,
+        "--disable-background-networking", "--disable-component-update", "--disable-default-apps",
+        "--no-first-run", "--no-default-browser-check", "about:blank"
+      ], { stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32" });
+      let cdpOutput = "";
+      let outputPort;
+      const capture = (chunk) => {
+        cdpOutput = `${cdpOutput}${String(chunk)}`.slice(-16_384);
+        outputPort ??= cdpOutput.match(/DevTools listening on ws:\/\/127\.0\.0\.1:(\d{1,5})\//)?.[1];
+      };
+      this.process.stdout.on("data", capture);
+      this.process.stderr.on("data", capture);
+      this.process.on("exit", (code) => { if (this.ws) this.#failAll(new Error(`browser_process_exited_${code}`)); });
+      const activePort = path.join(this.profileDir, "DevToolsActivePort");
+      let lines = null;
+      for (let attempt = 0; attempt < 300; attempt += 1) {
+        try {
+          lines = (await readFile(activePort, "utf8")).trim().split(/\r?\n/);
+          if (lines[0]) break;
+        } catch { /* continue polling until Chromium writes its dynamically assigned CDP port */ }
+        if (this.process.exitCode !== null) break;
+        await sleep(50);
+      }
+      // Chrome normally writes the dynamically selected port to its profile, but
+      // the GitHub-hosted Linux image can expose CDP first and omit that file.
+      // Its own stderr still reports the loopback-only endpoint; the HTTP probe
+      // below remains the authority before a session is connected.
+      this.port = Number(lines?.[0] ?? outputPort);
+      const cdpReady = Number.isInteger(this.port) && this.port > 0 && this.port < 65536;
+      for (let attempt = 0; cdpReady && attempt < 300; attempt += 1) {
+        try {
+          const response = await fetch(`http://127.0.0.1:${this.port}/json/version`, { signal: AbortSignal.timeout(500) });
+          if (response.ok) return;
+        } catch { /* DevToolsActivePort precedes the CDP HTTP listener on some CI starts */ }
+        if (this.process.exitCode !== null) break;
+        await sleep(50);
+      }
+      lastOutput = cdpOutput;
+      await this.close();
+    }
+    throw new Error(`browser_cdp_not_ready:${lastOutput.slice(-1500)}`);
+  }
+
   async start() {
     if (this.ws) return;
-    await mkdir(this.profileDir, { recursive: true, mode: 0o700 });
-    await rm(path.join(this.profileDir, "DevToolsActivePort"), { force: true });
-    this.process = spawn(this.chromiumBinary, [
-      "--headless=new", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", "--site-per-process",
-      "--remote-debugging-port=0", `--user-data-dir=${this.profileDir}`,
-      "--disable-background-networking", "--disable-component-update", "--disable-default-apps",
-      "--no-first-run", "--no-default-browser-check", "about:blank"
-    ], { stdio: ["ignore", "pipe", "pipe"], detached: process.platform !== "win32" });
-    let cdpOutput = "";
-    let outputPort;
-    const capture = (chunk) => {
-      cdpOutput = `${cdpOutput}${String(chunk)}`.slice(-16_384);
-      outputPort ??= cdpOutput.match(/DevTools listening on ws:\/\/127\.0\.0\.1:(\d{1,5})\//)?.[1];
-    };
-    this.process.stdout.on("data", capture);
-    this.process.stderr.on("data", capture);
-    this.process.on("exit", (code) => { if (this.ws) this.#failAll(new Error(`browser_process_exited_${code}`)); });
-    const activePort = path.join(this.profileDir, "DevToolsActivePort");
-    let lines = null;
-    for (let attempt = 0; attempt < 300; attempt += 1) {
-      try {
-        lines = (await readFile(activePort, "utf8")).trim().split(/\r?\n/);
-        if (lines[0]) break;
-      } catch { /* continue polling until Chromium writes its dynamically assigned CDP port */ }
-      if (this.process.exitCode !== null) break;
-      await sleep(50);
-    }
-    // Chrome normally writes the dynamically selected port to its profile, but
-    // the GitHub-hosted Linux image can expose CDP first and omit that file.
-    // Its own stderr still reports the loopback-only endpoint; the HTTP probe
-    // below remains the authority before a session is connected.
-    this.port = Number(lines?.[0] ?? outputPort);
-    if (!Number.isInteger(this.port) || this.port < 1 || this.port > 65535) {
-      await this.close();
-      throw new Error(`browser_cdp_not_ready:${cdpOutput.slice(-1500)}`);
-    }
-    let cdpReady = false;
-    for (let attempt = 0; attempt < 300; attempt += 1) {
-      try {
-        const response = await fetch(`http://127.0.0.1:${this.port}/json/version`, { signal: AbortSignal.timeout(500) });
-        if (response.ok) { cdpReady = true; break; }
-      } catch { /* DevToolsActivePort precedes the CDP HTTP listener on some CI starts */ }
-      if (this.process.exitCode !== null) break;
-      await sleep(50);
-    }
-    if (!cdpReady) {
-      await this.close();
-      throw new Error(`browser_cdp_not_ready:${cdpOutput.slice(-1500)}`);
-    }
+    await this.#startCdp();
     const created = await fetch(`http://127.0.0.1:${this.port}/json/new?about:blank`, { method: "PUT", signal: AbortSignal.timeout(5000) });
     if (!created.ok) throw new Error(`browser_target_create_${created.status}`);
     const target = await created.json();
