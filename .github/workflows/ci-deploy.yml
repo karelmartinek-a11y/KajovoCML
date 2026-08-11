@@ -259,7 +259,9 @@ jobs:
           deploy_log="$(mktemp)"
           trap 'rm -f "$deploy_log"' EXIT
           set +e
-          printf '%s\n' "$PASS" | sudo -S -p '' --preserve-env=PASS,KCML_FACTORY_RESET_CONFIRM /usr/local/sbin/kcml-deploy-wrapper \
+          # PASS is an application credential consumed by the wrapper, never a sudo password.
+          # The production runner must grant its service account narrowly scoped NOPASSWD access.
+          sudo -n --preserve-env=PASS,KCML_FACTORY_RESET_CONFIRM /usr/local/sbin/kcml-deploy-wrapper \
             "${{ runner.temp }}/kcml-release/kcml-release.tar.zst" \
             "${{ github.repository }}" \
             "${{ github.sha }}" \
@@ -271,7 +273,7 @@ jobs:
           if [ "$deploy_status" -ne 0 ]; then
             echo "::group::Safe KCML deploy diagnostics"
             grep -E 'release-(step|failed|check|installed)|rollback-(ok|failed)' "$deploy_log" || true
-            printf '%s\n' "$PASS" | sudo -S -p '' journalctl --since "$deploy_started_at" --no-pager \
+            sudo -n journalctl --since "$deploy_started_at" --no-pager \
               | grep -E 'release-(step|failed|check|installed)|rollback-(ok|failed)' || true
             echo "::endgroup::"
             exit "$deploy_status"
