@@ -165,6 +165,8 @@ Pro skutečné runtime použití je povinný **existující KajovoCML Secret Man
 
 - AI po získání údaje vytvoří nebo použije odpovídající stabilní secret;
 - pokud požadovaný stabilní secret již existuje v použitelném stavu `ACTIVE`, generation pipeline jej znovu nevyžaduje od OWNERa a pouze zajistí potřebné existující CML granty;
+- dotazník je deterministicky minimální: OWNER dostává pouze neodvoditelnou účetní identitu, credential nebo business rozhodnutí s uvedeným důvodem; hostname, server, port, protokol, TLS, endpoint, timeout a region si platforma ověří sama z CML/providera;
+- každá neúspěšná nebo zablokovaná generace může dostat nový navázaný OWNER běh s plain-text instrukcí. Původní job/evidence zůstávají neměnné, komponenta/principal/hostname zůstávají stejné a nikdy nevznikne paralelní control plane;
 - secret nebo token nově vydaný externím providerem během integrace umí integrační AI přímo uložit/rotovat v existujícím Secret Manageru a grantovat výsledným prvkům bez povinného ručního copy/paste;
 - trvalá hodnota se ukládá mechanismem existujícího Secret Manageru;
 - přístup výsledného prvku je dán existujícím grantem;
@@ -258,7 +260,7 @@ Hlasový chat je **pozdější vstupní rozhraní**, nikoli součást této prvn
 
 Forenzní audit aktuálního repozitáře potvrzuje, že se má stavět na existujících implementovaných mechanismech, nikoli je nahrazovat novou platformou:
 
-- PostgreSQL migrační baseline `001` a navazující aktivní migrace včetně internal-generation/repair/integration změn až `011`;
+- PostgreSQL migrační baseline `001` a navazující aktivní migrace včetně internal-generation/repair/integration/follow-up změn až `013`;
 - generic `component` / `principal` model a oprávnění;
 - component control queue a worker;
 - heartbeat challenge, state query, monitoring scheduler/watchdog;

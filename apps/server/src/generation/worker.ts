@@ -71,6 +71,24 @@ function sha256(bytes: Buffer): string {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 }
 
+type GenerationFailureDiagnostic = { code: string; fingerprint: string; errors: Array<{ path: string; keyword: string; message: string }> };
+
+function failureDiagnostic(error: unknown): GenerationFailureDiagnostic | null {
+  if (!(error instanceof Error)) return null;
+  const raw = (error as Error & { errors?: unknown }).errors;
+  if (!Array.isArray(raw)) return null;
+  const errors = raw.slice(0, 20).map((item) => {
+    const value = recordValue(item) ?? {};
+    return {
+      path: typeof value.instancePath === "string" ? value.instancePath : "",
+      keyword: typeof value.keyword === "string" ? value.keyword : "validation",
+      message: typeof value.message === "string" ? value.message.slice(0, 300) : "invalid"
+    };
+  });
+  const code = error.message || "invalid_candidate";
+  return { code, errors, fingerprint: `sha256:${createHash("sha256").update(JSON.stringify({ code, errors })).digest("hex")}` };
+}
+
 async function runLocalHandlerCheck(handlerPath: string): Promise<void> {
   const { spawn } = await import("node:child_process");
   await new Promise<void>((resolve, reject) => {
@@ -484,8 +502,11 @@ async function implementJob(db: Db, config: AppConfig, job: GenerationJobView, s
     const output = byKey.get(component.elementKey);
     if (!output) throw new Error(`generation_element_output_missing:${component.elementKey}`);
     const normalized = await normalizeGeneratedManifest(workspace, component, output.handlerPath, output.manifestPath, job.id, config,
-      job.jobKind === "REPAIR" ? await nextRepairRevision(db, component.componentId) : undefined);
+      ["REPAIR", "RETRY"].includes(job.jobKind) ? await nextRepairRevision(db, component.componentId) : undefined);
     await runLocalHandlerCheck(normalized.handlerPath);
+    // This is the authoritative preflight: an invalid candidate never reaches
+    // revision registration, release assembly, deployment, or activation.
+    validateComponentManifest(normalized.manifest);
     const registered = await registerGeneratedRevision(db, config, component, normalized.manifest, correlationId);
     const identity = identities.get(component.elementKey)!;
     artifacts.push({ component, runtimeToken: identity.token, revisionId: registered.revisionId, manifest: registered.manifest, handlerPath: normalized.handlerPath, manifestPath: normalized.manifestPath });
@@ -559,7 +580,7 @@ async function finalizeActivation(db: Db, config: AppConfig, job: GenerationJobV
 }
 
 async function restoreRepairBaseState(db: Db, job: GenerationJobView): Promise<void> {
-  if (job.jobKind !== "REPAIR" || !job.repairComponentId) return;
+  if (!(["REPAIR", "RETRY"] as string[]).includes(job.jobKind) || !job.repairComponentId) return;
   const result = await db.query("select repair_evidence from generation_job where id=$1", [job.id]);
   const base = result.rows[0]?.repair_evidence?._kcmlBaseComponentState;
   if (!base || typeof base !== "object") return;
@@ -588,10 +609,27 @@ async function handleCancellation(db: Db, config: AppConfig, job: GenerationJobV
 }
 
 async function handleTechnicalFailure(db: Db, config: AppConfig, job: GenerationJobView, error: unknown): Promise<void> {
-  const message = error instanceof Error ? error.message : "generation_failed";
+  const diagnostic = failureDiagnostic(error);
+  const message = diagnostic
+    ? `${diagnostic.code}: ${diagnostic.errors.map((item) => `${item.path || "/"} ${item.keyword} ${item.message}`).join("; ")}`.slice(0, 4000)
+    : error instanceof Error ? error.message : "generation_failed";
   const attempts = job.remediationAttempts + 1;
   const components = await db.query("select component_id from generation_component where job_id=$1", [job.id]);
   const componentIds = components.rows.map((row) => String(row.component_id));
+
+  if (diagnostic) {
+    const prior = await db.query(
+      `select 1 from generation_job_event where job_id=$1 and event_type='generation.remediation_scheduled'
+        and details->>'errorFingerprint'=$2 limit 1`, [job.id, diagnostic.fingerprint]
+    );
+    if (prior.rowCount) {
+      for (const componentId of componentIds) await cleanupJobCandidateRelease(db, config, job, componentId);
+      await restoreRepairBaseState(db, job);
+      await setGenerationState(db, job.id, "BLOCKED", { blocker: message, remediationAttempts: attempts });
+      await appendGenerationEvent(db, job.id, "BLOCKED", "generation.repeated_validation_blocked", "Stejná validační chyba se opakovala; job byl bezpečně zastaven místo dalších slepých pokusů. Spusťte navazující běh s instrukcí pro opravu.", { error: message, errorFingerprint: diagnostic.fingerprint, validationErrors: diagnostic.errors });
+      return;
+    }
+  }
 
   try {
     await recoverGenerationTechnicalFailure({
@@ -601,6 +639,7 @@ async function handleTechnicalFailure(db: Db, config: AppConfig, job: Generation
       maxAttempts: MAX_REMEDIATION_ATTEMPTS,
       componentIds,
       errorMessage: message,
+      eventDetails: diagnostic ? { errorFingerprint: diagnostic.fingerprint, validationErrors: diagnostic.errors } : {},
       setState: (state, params) => setGenerationState(db, job.id, state as GenerationJobView["state"], params),
       appendEvent: (phase, eventType, eventMessage, details = {}) => appendGenerationEvent(db, job.id, phase, eventType, eventMessage, details),
       failClosedComponent: async (componentId) => {
