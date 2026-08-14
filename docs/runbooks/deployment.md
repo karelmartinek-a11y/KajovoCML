@@ -2,7 +2,7 @@
 
 Platform releases may be delivered by the operator's chosen release mechanism, but **generated component creation/deployment itself has no GitHub, CI, GHCR or OCI dependency**.
 
-Install the release with `deploy/scripts/install-release.sh`. It installs the web/server services, `kcml-generation-worker.service`, canonical component control/E2E workers, monitor/egress services, `kcml-generated-component@.service` and the bounded generated-runtime helper. Deployment preflight also verifies the util-linux namespace primitives required by the generated-handler capability boundary. Apply all numbered migrations through `012_readiness_gate_evidence_idempotency.sql`.
+Install the release with `deploy/scripts/install-release.sh`. It installs the web/server services, `kcml-generation-worker.service`, canonical component control/E2E workers, monitor/egress services, `kcml-generated-component@.service` and the bounded generated-runtime helper. Deployment preflight also verifies the util-linux namespace primitives required by the generated-handler capability boundary. Apply all numbered migrations through `013_generation_follow_up_runs.sql`.
 
 When the operator uses the repository's platform release workflow, its self-hosted runner service account must have narrowly scoped non-interactive (`NOPASSWD`) access to `/usr/local/sbin/kcml-deploy-wrapper` and the marker-only journal query used for failure diagnostics. `PASS` is an application credential passed to the wrapper; it must never be configured or supplied as a sudo password. Without this runner-level authorization the workflow fails before the wrapper starts, so no migration, release activation, rollback or health/readiness assertion occurs.
 

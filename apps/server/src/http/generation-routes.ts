@@ -7,6 +7,7 @@ import {
   cancelGenerationJob,
   confirmGenerationPlan,
   createGenerationJob,
+  createGenerationFollowUpJob,
   ensurePlatformOpenAiSecret,
   generationOpenAiReady,
   getGenerationJob,
@@ -19,6 +20,7 @@ import { hostOf, sendError } from "./errors.js";
 const createSchema = z.object({ prompt: z.string().trim().min(3).max(50_000) }).strict();
 const apiKeySchema = z.object({ value: z.string().trim().min(20).max(20_000) }).strict();
 const inputSchema = z.object({ values: z.record(z.string(), z.unknown()) }).strict();
+const followUpSchema = z.object({ instruction: z.string().trim().min(3).max(50_000) }).strict();
 const idParams = z.object({ id: z.string().uuid() }).strict();
 
 async function ownerSession(db: Db, config: AppServerConfig, request: FastifyRequest, reply: FastifyReply, correlationId: string, mutation = false) {
@@ -81,6 +83,14 @@ export function registerGenerationRoutes(app: FastifyInstance, db: Db, config: A
     const correlationId = randomUUID(); const session = await ownerSession(db, config, request, reply, correlationId, true); if (!session) return;
     try { const { id } = idParams.parse(request.params); await ownedJob(db, id, session.accountId); const body = inputSchema.parse(request.body); return { job: await submitGenerationInputs(db, config, id, session.accountId, body.values, correlationId), correlationId }; }
     catch (error) { return routeError(reply, error, correlationId); }
+  });
+
+  app.post("/api/generation/jobs/:id/runs", async (request, reply) => {
+    const correlationId = randomUUID(); const session = await ownerSession(db, config, request, reply, correlationId, true); if (!session) return;
+    try {
+      const { id } = idParams.parse(request.params); const body = followUpSchema.parse(request.body);
+      return reply.code(202).send({ job: await createGenerationFollowUpJob(db, id, session.accountId, body.instruction, correlationId), correlationId });
+    } catch (error) { return routeError(reply, error, correlationId); }
   });
 
   app.post("/api/generation/jobs/:id/confirm", async (request, reply) => {

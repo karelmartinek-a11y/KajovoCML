@@ -54,6 +54,11 @@ export type GenerationPlan = {
     kind: GenerationInputKind;
     required: boolean;
     secret: boolean;
+    /** Explicit proof that this value cannot be derived from the platform or provider documentation. */
+    ownerRequired?: boolean;
+    /** Human-readable, non-secret reason shown to the OWNER. */
+    ownerReason?: string;
+    derivationSource?: "OWNER" | "PLATFORM_RESEARCH" | "PROVIDER_INTEGRATION";
     stableSecretName?: string;
     grantToElementKeys?: string[];
   }>;
@@ -61,7 +66,10 @@ export type GenerationPlan = {
 
 export type GenerationJobView = {
   id: string;
-  jobKind: "CREATE" | "REPAIR";
+  jobKind: "CREATE" | "REPAIR" | "RETRY";
+  parentJobId: string | null;
+  runSequence: number;
+  operatorPrompt: string | null;
   repairComponentId: string | null;
   ownerAdminId: string;
   originalPrompt: string;
@@ -93,6 +101,29 @@ function stringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
 }
 
+const DERIVABLE_INPUT = /\b(host(name)?|server|port|protocol|tls|ssl|timeout|region|endpoint|base\s*url|imap|smtp)\b/i;
+
+/**
+ * The planner is advisory; this server-side gate is authoritative.  It keeps
+ * provider/platform facts out of the OWNER questionnaire and requires a
+ * concrete reason for every value we do ask for.
+ */
+export function ownerRequiredInputs(inputs: GenerationPlan["missingInputs"]): GenerationPlan["missingInputs"] {
+  const seen = new Set<string>();
+  return inputs.filter((input) => {
+    const key = input.key.trim();
+    const reason = input.ownerReason?.trim() ?? "";
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    if (!input.required || input.ownerRequired === false || input.derivationSource === "PLATFORM_RESEARCH" || input.derivationSource === "PROVIDER_INTEGRATION") return false;
+    if (DERIVABLE_INPUT.test(`${input.key} ${input.label} ${input.description}`)) return false;
+    // Legacy plans did not carry the proof fields. They remain usable only for
+    // credentials/account identity/business rules, never infrastructure data.
+    if (input.ownerRequired === true && !reason) return false;
+    return true;
+  }).map((input) => ({ ...input, key: input.key.trim(), ownerReason: input.ownerReason?.trim() || undefined }));
+}
+
 function state(value: unknown): GenerationState {
   const text = String(value);
   if (!GENERATION_STATES.includes(text as GenerationState)) throw new Error(`invalid_generation_state:${text}`);
@@ -117,7 +148,9 @@ export async function getGenerationJob(db: Db, jobId: string): Promise<Generatio
   );
   const row = job.rows[0];
   return {
-    id: String(row.id), jobKind: String(row.job_kind ?? "CREATE") as "CREATE" | "REPAIR", repairComponentId: row.repair_component_id ? String(row.repair_component_id) : null,
+    id: String(row.id), jobKind: String(row.job_kind ?? "CREATE") as "CREATE" | "REPAIR" | "RETRY",
+    parentJobId: row.parent_job_id ? String(row.parent_job_id) : null, runSequence: Number(row.run_sequence ?? 1),
+    operatorPrompt: row.operator_prompt ? String(row.operator_prompt) : null, repairComponentId: row.repair_component_id ? String(row.repair_component_id) : null,
     ownerAdminId: String(row.owner_admin_id), originalPrompt: String(row.original_prompt), state: state(row.state),
     plan: row.plan as GenerationPlan | null,
     inputs: inputs.rows.map((input) => ({
@@ -150,6 +183,66 @@ export async function createGenerationJob(db: Db, ownerAdminId: string, prompt: 
   await appendGenerationEvent(db, jobId, "CREATED", "generation.created", "Zadání bylo přijato a čeká na analýzu.");
   await appendAudit(db, { eventType: "generation_job.created", actorType: "admin", actorId: ownerAdminId, objectType: "generation_job", objectId: jobId, after: { promptLength: normalized.length }, correlationId });
   return getGenerationJob(db, jobId);
+}
+
+const FOLLOW_UP_SOURCE_STATES: GenerationState[] = ["FAILED", "BLOCKED", "CANCELLED"];
+
+/** Create a new, linked run; the source job and its evidence remain immutable. */
+export async function createGenerationFollowUpJob(
+  db: Db, sourceJobId: string, ownerAdminId: string, instruction: string, correlationId: string
+): Promise<GenerationJobView> {
+  const normalized = instruction.trim();
+  if (normalized.length < 3 || normalized.length > 50_000) throw Object.assign(new Error("invalid_generation_follow_up_instruction"), { statusCode: 400 });
+  const id = await tx(db, async (client) => {
+    const source = await client.query("select * from generation_job where id=$1 and owner_admin_id=$2 for update", [sourceJobId, ownerAdminId]);
+    if (!source.rowCount) throw Object.assign(new Error("not_found"), { statusCode: 404 });
+    const row = source.rows[0];
+    if (!FOLLOW_UP_SOURCE_STATES.includes(state(row.state))) throw Object.assign(new Error("generation_follow_up_not_available"), { statusCode: 409 });
+    const components = await client.query(
+      `select gc.component_id,gc.element_key,gc.element_kind,c.active_revision_id,c.lifecycle_state,c.activation_state,c.operational_state,c.monitoring_state,c.enabled,c.ingress_enabled,c.pulse_enabled,c.egress_enabled,
+              release.id active_release_id
+         from generation_component gc join component c on c.id=gc.component_id
+         left join lateral (select id from local_component_release where component_id=c.id and state='ACTIVE' order by activated_at desc limit 1) release on true
+        where gc.job_id=$1 order by gc.created_at`, [sourceJobId]
+    );
+    const active = components.rows.find((component) => component.active_revision_id && component.active_release_id);
+    const duplicate = await client.query(
+      `select id from generation_job where parent_job_id=$1 and state not in ('COMPLETED','FAILED','BLOCKED','CANCELLED') limit 1`, [sourceJobId]
+    );
+    if (duplicate.rowCount) throw Object.assign(new Error("generation_follow_up_already_running"), { statusCode: 409 });
+    const sequence = await client.query("select coalesce(max(run_sequence),0)::int + 1 next from generation_job where parent_job_id=$1 or id=$1", [sourceJobId]);
+    const kind = active ? "REPAIR" : components.rowCount ? "RETRY" : "CREATE";
+    const nextState = row.plan ? "IMPLEMENTING" : "CREATED";
+    const prompt = `${String(row.original_prompt)}\n\nOWNER follow-up instruction for run ${Number(sequence.rows[0].next)}: ${normalized}`;
+    const repairEvidence = active ? {
+      ...(recordValue(row.repair_evidence) ?? {}),
+      _kcmlBaseComponentState: {
+        activeRevisionId: String(active.active_revision_id), lifecycleState: String(active.lifecycle_state), activationState: String(active.activation_state),
+        operationalState: String(active.operational_state), monitoringState: String(active.monitoring_state), enabled: Boolean(active.enabled),
+        ingressEnabled: Boolean(active.ingress_enabled), pulseEnabled: Boolean(active.pulse_enabled), egressEnabled: Boolean(active.egress_enabled)
+      }
+    } : row.repair_evidence;
+    const inserted = await client.query(
+      `insert into generation_job(owner_admin_id,original_prompt,state,plan,job_kind,repair_component_id,repair_evidence,repair_base_release_id,parent_job_id,run_sequence,operator_prompt)
+       values ($1,$2,$3,$4::jsonb,$5,$6,$7::jsonb,$8,$9,$10,$11) returning id`,
+      [ownerAdminId, prompt, nextState, row.plan ? JSON.stringify(row.plan) : null, kind, active ? active.component_id : null,
+        repairEvidence ? JSON.stringify(repairEvidence) : null, active ? active.active_release_id : null,
+        sourceJobId, Number(sequence.rows[0].next), normalized]
+    );
+    const jobId = String(inserted.rows[0].id);
+    for (const component of components.rows) {
+      await client.query("insert into generation_component(job_id,component_id,element_key,element_kind) values ($1,$2,$3,$4)", [jobId, component.component_id, component.element_key, component.element_kind]);
+    }
+    await client.query(
+      `insert into generation_job_input(job_id,input_key,label,description,input_kind,required,secret,stable_secret_name,grant_element_keys,supplied_at,value_json)
+       select $2,input_key,label,description,input_kind,required,secret,stable_secret_name,grant_element_keys,supplied_at,value_json
+         from generation_job_input where job_id=$1`, [sourceJobId, jobId]
+    );
+    await appendAudit(client, { eventType: "generation_job.follow_up_created", actorType: "admin", actorId: ownerAdminId, objectType: "generation_job", objectId: jobId, after: { sourceJobId, runSequence: Number(sequence.rows[0].next), jobKind: kind, instructionLength: normalized.length }, correlationId });
+    return jobId;
+  });
+  await appendGenerationEvent(db, id, "CREATED", "generation.follow_up_created", "Byl vytvořen navazující běh se zachovanou CML identitou a auditní vazbou na původní job.", { sourceJobId, instructionLength: normalized.length });
+  return getGenerationJob(db, id);
 }
 
 function repairEvidenceFingerprint(evidence: Record<string, unknown>): Record<string, unknown> {
@@ -257,6 +350,7 @@ export async function setGenerationNeedsInput(
   blocker: string,
   resumeState: "IMPLEMENTING" | "INTEGRATING" = "IMPLEMENTING"
 ): Promise<void> {
+  inputs = ownerRequiredInputs(inputs);
   const jobRow = await db.query("select owner_admin_id,plan from generation_job where id=$1", [jobId]);
   if (!jobRow.rowCount) throw Object.assign(new Error("not_found"), { statusCode: 404 });
   const ownerAdminId = String(jobRow.rows[0].owner_admin_id);
@@ -324,7 +418,7 @@ export async function setGenerationPlan(db: Db, jobId: string, planInput: Genera
     if (!dependency.sourceTool?.trim()) throw new Error(`generation_dependency_source_tool_required:${dependency.from}:${dependency.to}`);
   }
   const active = await db.query("select stable_name from secret_record where status='ACTIVE' and deleted_at is null");
-  const reconciled = reconcileGenerationPlanSecrets(planInput, { jobId, activeSecretNames: active.rows.map((row) => String(row.stable_name)) });
+  const reconciled = reconcileGenerationPlanSecrets({ ...planInput, missingInputs: ownerRequiredInputs(planInput.missingInputs) }, { jobId, activeSecretNames: active.rows.map((row) => String(row.stable_name)) });
   const plan = reconciled.plan;
   await tx(db, async (client) => {
     const planned = await client.query("update generation_job set plan=$2::jsonb,updated_at=now(),lock_version=lock_version+1 where id=$1 and state<>'CANCELLED' returning id", [jobId, JSON.stringify(plan)]);

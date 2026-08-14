@@ -32,6 +32,11 @@ for (const required of ["materializeGenerationDependencies", "verifyGenerationDe
 const generationDomain = await text("apps/server/src/domain/generation.ts");
 requireText(generationDomain, "enqueueGeneratedRepairJob", "generated repair");
 for (const required of ["grantGenerationSecretToElements", "resumeGenerationAfterSatisfiedInputs", "upsertGenerationSecret"]) requireText(generationDomain, required, "INTEGRATING secret grant-before-resume wiring");
+for (const required of ["createGenerationFollowUpJob", "ownerRequiredInputs", "generation.follow_up_created"]) requireText(generationDomain, required, "linked follow-up and minimal-questionnaire controls");
+const generationRoutes = await text("apps/server/src/http/generation-routes.ts");
+requireText(generationRoutes, "/api/generation/jobs/:id/runs", "linked follow-up route");
+const generationPrompt = await text("apps/server/src/generation/openai-responses.ts");
+for (const required of ["validate_candidate_artifacts", "runtime.egressGrants obsahuje POUZE", "outboundPolicies objektu"]) requireText(generationPrompt, required, "manifest preflight contract");
 const browser = await text("apps/server/src/generation/browser-session.mjs");
 for (const required of ["Runtime.evaluate", "Page.navigate", "Input.dispatchKeyEvent", "__kcmlLocatorRegistry", "switchPage"]) requireText(browser, required, "interactive generation browser");
 const runtimeHost = await text("apps/server/src/generation/runtime-host.mjs");
@@ -50,6 +55,8 @@ for (const table of ["generation_job", "generation_component", "component_runtim
     throw new Error(`generation migration: missing ${qualified}`);
   }
 }
+const followUpMigration = await text("apps/server/src/migrations/013_generation_follow_up_runs.sql");
+for (const required of ["parent_job_id", "run_sequence", "'RETRY'", "generation_job_active_component_follow_up_idx"]) requireText(followUpMigration, required, "generation follow-up migration");
 const ui = await text("apps/admin-ui/src/app-layout.tsx");
 requireText(ui, 'navigationButton("generation", "Generování"', "OWNER navigation");
 for (const file of ["deploy/systemd/kcml-generation-worker.service", "deploy/systemd/kcml-generated-component@.service", "deploy/scripts/kcml-generated-runtime-helper", "apps/server/src/http/generation-routes.ts"]) await access(file);
