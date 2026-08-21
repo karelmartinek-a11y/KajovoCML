@@ -79,6 +79,18 @@ Navigation is HTTPS-only, allowlist/operation-scope constrained, and blocks
 private/link-local targets. Credentials are resolved only through Secret
 Manager bindings. Sensitive preview/evidence is never emitted to SSE.
 
+## Deployment DNS boundary
+
+The production DNS provider is WEDOS WAPI at `https://api.wedos.com/wapi/json`.
+Its client authenticates with the documented Europe/Prague SHA-1 hour contract,
+uses a unique `clTRID` for every request, and never logs the WAPI password or
+authorization string. WAPI credentials are active Secret Manager records and
+must be explicitly granted only to the canonical platform worker before the
+deployment-side ACME hook may resolve them. TXT cleanup is permitted only for
+an exact row whose name, type, value and `kcml-acme:<correlation>` ownership
+marker match the persisted operation; no broad `_acme-challenge` deletion is
+allowed.
+
 ## Concurrency, recovery, and safety
 
 Job turns and automation runs use PostgreSQL row locks plus expiring leases.
