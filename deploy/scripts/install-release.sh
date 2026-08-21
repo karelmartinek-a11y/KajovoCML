@@ -173,6 +173,20 @@ require_stable_runtime_health() {
 
 render_nginx_config "$source_dir/deploy/nginx/kcml.conf" /etc/nginx/sites-available/kcml.conf
 ln -sfn /etc/nginx/sites-available/kcml.conf /etc/nginx/sites-enabled/kcml.conf
+
+# DNS-01 issuance is an external dependency and can take up to fifteen minutes.
+# Do it before installing service units, splitting credentials, or touching the
+# active runtime.  A DNS failure must leave the previous KCML service topology
+# intact; only the reversible nginx ACME-challenge exposure has happened here.
+step expose-canonical-tls-challenge
+nginx -t
+systemctl reload nginx
+step ensure-canonical-tls
+tls_cert_path="${WILDCARD_TLS_CERT_PATH:-/etc/kcml/tls/fullchain.pem}"
+tls_key_path="${WILDCARD_TLS_KEY_PATH:-${tls_cert_path%/*}/privkey.pem}"
+bash "$source_dir/deploy/scripts/ensure-canonical-tls.sh" \
+  "$PUBLIC_BASE_DOMAIN" "$component_hostname_suffix" "$tls_cert_path" "$tls_key_path"
+
 install -m 0755 "$source_dir/deploy/scripts/kcml-generated-runtime-helper" /usr/local/sbin/kcml-generated-runtime-helper
 cat >/etc/sudoers.d/kcml-generated-runtime <<'EOF'
 Defaults:kcml !requiretty
@@ -197,15 +211,6 @@ chmod 0644 /etc/systemd/system/kcml-monitor.service.d/runtime-user.conf
 
 step split-config-initial
 DATABASE_APP_URL="${DATABASE_APP_URL:-$DATABASE_URL}" bash "$source_dir/deploy/scripts/split-service-config.sh" "$release_id"
-step expose-canonical-tls-challenge
-nginx -t
-systemctl reload nginx
-step ensure-canonical-tls
-tls_cert_path="${WILDCARD_TLS_CERT_PATH:-/etc/kcml/tls/fullchain.pem}"
-tls_key_path="${WILDCARD_TLS_KEY_PATH:-${tls_cert_path%/*}/privkey.pem}"
-bash "$source_dir/deploy/scripts/ensure-canonical-tls.sh" \
-  "$PUBLIC_BASE_DOMAIN" "$component_hostname_suffix" "$tls_cert_path" "$tls_key_path"
-
 step preflight
 export KCML_COMPONENT_HOST_SUFFIX="$component_hostname_suffix"
 GENERATION_WORKER_ENABLED=true KCML_RELEASE_SOURCE="$source_dir" bash "$source_dir/deploy/scripts/preflight.sh"

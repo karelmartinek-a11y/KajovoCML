@@ -30,6 +30,16 @@ grep -Fq "where version='016_generation_discussion_browser_runtime_completion.sq
 grep -Fq 'wait_for_sql_equals "schema_migration_count" "16" "select count(*) from schema_migration"' "$install_script"
 grep -Fq 'curl -fsS "https://${canonical_component_hostname}/.well-known/oauth-protected-resource/mcp"' "$install_script"
 grep -Fq 'deploy/scripts/ensure-canonical-tls.sh' "$install_script"
+tls_line="$(grep -n 'step ensure-canonical-tls' "$install_script" | head -1 | cut -d: -f1)"
+unit_line="$(grep -n 'for unit in kcml.service' "$install_script" | head -1 | cut -d: -f1)"
+split_config_line="$(grep -n 'step split-config-initial' "$install_script" | head -1 | cut -d: -f1)"
+test -n "$tls_line"
+test -n "$unit_line"
+test -n "$split_config_line"
+if [ "$tls_line" -ge "$unit_line" ] || [ "$tls_line" -ge "$split_config_line" ]; then
+  echo "canonical TLS must complete before any systemd or credential/runtime mutation" >&2
+  exit 1
+fi
 grep -Fq 'GENERATION_WORKER_ENABLED' deploy/scripts/split-service-config.sh
 grep -Fq 'GENERATION_WORKER_INTERVAL_MS' deploy/scripts/split-service-config.sh
 grep -Fq 'COMPONENT_WORKER_INTERVAL_MS' deploy/scripts/split-service-config.sh
