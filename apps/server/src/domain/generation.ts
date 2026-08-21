@@ -90,6 +90,7 @@ export type GenerationJobView = {
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;
+  eventCursor: number;
 };
 
 export { generationSecretGrantElementKeys, normalizeGenerationSecretName };
@@ -147,7 +148,7 @@ export async function getGenerationJob(db: Db, jobId: string): Promise<Generatio
     `select gc.component_id,gc.element_key,gc.element_kind,c.code,c.hostname,c.display_name
        from generation_component gc join component c on c.id=gc.component_id where gc.job_id=$1 order by gc.created_at`, [jobId]
   );
-  const row = job.rows[0];
+  const row = job.rows[0]; const eventCursor = await db.query("select coalesce(max(sequence),0)::bigint cursor from generation_event where job_id=$1", [jobId]);
   return {
     id: String(row.id), jobKind: String(row.job_kind ?? "CREATE") as "CREATE" | "REPAIR" | "RETRY",
     parentJobId: row.parent_job_id ? String(row.parent_job_id) : null, runSequence: Number(row.run_sequence ?? 1),
@@ -167,7 +168,7 @@ export async function getGenerationJob(db: Db, jobId: string): Promise<Generatio
     workspacePath: row.workspace_path ? String(row.workspace_path) : null,
     blockerSummary: row.blocker_summary ? String(row.blocker_summary) : null,
     remediationAttempts: Number(row.remediation_attempts), createdAt: new Date(row.created_at).toISOString(), updatedAt: new Date(row.updated_at).toISOString(),
-    completedAt: row.completed_at ? new Date(row.completed_at).toISOString() : null
+    completedAt: row.completed_at ? new Date(row.completed_at).toISOString() : null, eventCursor: Number(eventCursor.rows[0]?.cursor ?? 0)
   };
 }
 
@@ -176,16 +177,31 @@ export async function listGenerationJobs(db: Db, ownerAdminId?: string): Promise
   return Promise.all(result.rows.map((row) => getGenerationJob(db, String(row.id))));
 }
 
-export async function createGenerationJob(db: Db, ownerAdminId: string, prompt: string, correlationId: string): Promise<GenerationJobView> {
+export async function createGenerationJob(db: Db, ownerAdminId: string, prompt: string, correlationId: string, clientRequestId?: string): Promise<{ job: GenerationJobView; idempotent: boolean }> {
   const normalized = prompt.trim();
   if (normalized.length < 3 || normalized.length > 50_000) throw Object.assign(new Error("invalid_generation_prompt"), { statusCode: 400 });
-  const inserted = await db.query("insert into generation_job(owner_admin_id,original_prompt,state) values ($1,$2,'DISCUSSING') returning id", [ownerAdminId, normalized]);
-  const jobId = String(inserted.rows[0].id);
-  await createDiscussionMessage(db, jobId, "OWNER", normalized, null, `initial:${jobId}`);
-  await appendDiscussionEvent(db, jobId, "generation.state.changed", { state: "DISCUSSING" });
-  await appendGenerationEvent(db, jobId, "DISCUSSING", "generation.created", "Zadání bylo přijato do persistentní diskuse.");
-  await appendAudit(db, { eventType: "generation_job.created", actorType: "admin", actorId: ownerAdminId, objectType: "generation_job", objectId: jobId, after: { promptLength: normalized.length }, correlationId });
-  return getGenerationJob(db, jobId);
+  const result = await tx(db, async (client) => {
+    if (clientRequestId) {
+      const replay = await client.query("select id,original_prompt from generation_job where owner_admin_id=$1 and client_request_id=$2 for update", [ownerAdminId, clientRequestId]);
+      if (replay.rowCount) {
+        if (String(replay.rows[0].original_prompt) !== normalized) throw Object.assign(new Error("generation_job_idempotency_conflict"), { statusCode: 409 });
+        return { id: String(replay.rows[0].id), idempotent: true };
+      }
+    }
+    const inserted = await client.query("insert into generation_job(owner_admin_id,original_prompt,state,client_request_id) values ($1,$2,'DISCUSSING',$3) returning id", [ownerAdminId, normalized, clientRequestId ?? null]);
+    const jobId = String(inserted.rows[0].id);
+    const message = await createDiscussionMessage(client, jobId, "OWNER", normalized, null, `initial:${jobId}`);
+    const turn = await client.query("insert into generation_discussion_turn(job_id,input_message_id,status) values ($1,$2,'QUEUED') returning id", [jobId, message.id]);
+    await client.query("update generation_job_message set turn_id=$2 where id=$1", [message.id, turn.rows[0].id]);
+    await appendDiscussionEvent(client, jobId, "discussion.turn.queued", { turnId: String(turn.rows[0].id), messageId: message.id, initial: true });
+    await appendDiscussionEvent(client, jobId, "generation.state.changed", { state: "DISCUSSING" });
+    return { id: jobId, idempotent: false };
+  });
+  if (!result.idempotent) {
+    await appendGenerationEvent(db, result.id, "DISCUSSING", "generation.created", "Zadání bylo přijato do persistentní diskuse.");
+    await appendAudit(db, { eventType: "generation_job.created", actorType: "admin", actorId: ownerAdminId, objectType: "generation_job", objectId: result.id, after: { promptLength: normalized.length }, correlationId });
+  }
+  return { job: await getGenerationJob(db, result.id), idempotent: result.idempotent };
 }
 
 const FOLLOW_UP_SOURCE_STATES: GenerationState[] = ["FAILED", "BLOCKED", "CANCELLED"];
@@ -438,10 +454,10 @@ export async function setGenerationPlan(db: Db, jobId: string, planInput: Genera
       );
     }
     const required = await client.query("select count(*)::int n from generation_job_input where job_id=$1 and required and supplied_at is null", [jobId]);
-    const moved = await client.query("update generation_job set state=$2,updated_at=now() where id=$1 and state<>'CANCELLED' returning id", [jobId, Number(required.rows[0].n) ? "NEEDS_INPUT" : "PLAN_READY"]);
+    const moved = await client.query("update generation_job set state=$2,blocker_code=case when $3 then 'OWNER_INPUT_REQUIRED' else null end,blocker_origin_state=case when $3 then 'ANALYZING' else null end,resume_state=case when $3 then 'ANALYZING' else null end,updated_at=now() where id=$1 and state<>'CANCELLED' returning id", [jobId, Number(required.rows[0].n) ? "BLOCKED" : "IMPLEMENTING", Number(required.rows[0].n) > 0]);
     if (!moved.rowCount) throw new GenerationCancelledError();
   });
-  await appendGenerationEvent(db, jobId, "ANALYZING", "generation.plan_ready", "Návrh řešení je připraven.", {
+  await appendGenerationEvent(db, jobId, "ANALYZING", "generation.plan_ready", "Technický plán je připraven; pipeline pokračuje bez druhého OWNER schválení.", {
     elements: plan.elements.map((element) => element.key),
     missingInputCount: reconciled.unsatisfiedRequiredInputs.length,
     reusedSecrets: Array.from(reconciled.activeSecretNames).filter((name) => generationSecretGrantElementKeys(plan, name).length > 0)
@@ -594,7 +610,7 @@ export async function submitGenerationInputs(db: Db, config: GenerationRouteConf
   const missing = await db.query("select count(*)::int n from generation_job_input where job_id=$1 and required and supplied_at is null", [jobId]);
   if (!Number(missing.rows[0].n)) {
     const resume = await db.query("select resume_state from generation_job where id=$1", [jobId]);
-    const resumeState = String(resume.rows[0]?.resume_state ?? "PLAN_READY") as GenerationState;
+    const resumeState = String(resume.rows[0]?.resume_state ?? "ANALYZING") as GenerationState;
     await resumeGenerationAfterSatisfiedInputs({
       resumeState,
       ensureIntegrationGrants: () => grantSatisfiedGenerationSecretsBeforeResume(db, ownerAdminId, jobId, correlationId),

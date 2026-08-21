@@ -7,9 +7,12 @@ only to the SSOT and repository security rules.
 ## Generation lifecycle
 
 `DISCUSSING -> ANALYZING -> IMPLEMENTING -> INTEGRATING -> VALIDATING -> CML_CONFORMANCE -> ACTIVATING -> COMPLETED`.
-Terminal states are `FAILED`, `BLOCKED`, and `CANCELLED`. Ordinary OWNER input
-keeps a job in `DISCUSSING`; it is not represented as `NEEDS_INPUT` before
-approval. Approval freezes one immutable specification revision and digest.
+Terminal states are `FAILED`, `BLOCKED`, and `CANCELLED`. `CREATED`,
+`NEEDS_INPUT` and `PLAN_READY` are retired generation-product states: an
+unresolved fact is represented in `GenerationSpecification.openQuestions`,
+and the only product approval freezes one immutable specification revision and
+digest. A discussion turn is `QUEUED -> RUNNING -> COMPLETED|FAILED|INTERRUPTED`
+with `INTERRUPT_REQUESTED` as its transient steer state.
 
 ## Persistent contracts
 
@@ -22,16 +25,26 @@ approval. Approval freezes one immutable specification revision and digest.
 - `browser_automation_run` and `browser_automation_run_step`: leased,
   idempotent, checkpointed execution with terminal immutability.
 
+Migrations `014_generation_discussion.sql`, `015_browser_automation_runtime.sql`
+and forward-only `016_generation_discussion_browser_runtime_completion.sql` are
+one ordered contract. Migration 016 adds same-job composite foreign keys,
+historical digest reuse, request idempotency, interruption/lease metadata,
+operation scopes, irreversible confirmations and teaching records without
+rewriting an already-applied migration.
+
 Canonical serialization is UTF-8 JSON with recursively sorted object keys,
 compact separators, and no undefined values. Digests are SHA-256 over those
-bytes. Approved revisions are immutable and planner input must match both id
-and digest.
+bytes. `GenerationSpecification` is strict: objective, result summary,
+behavioral requirements, inputs/outputs, external systems, business rules,
+explicit OWNER decisions, constraints, acceptance criteria, verified facts,
+open questions and typed `BrowserAutomationRequirement[]`. Approved revisions
+are immutable and planner/implementation input must match both id and digest.
 
 ## API and realtime
 
 Generation resources use `/api/generation/jobs/:id`. The discussion API is:
 
-- `POST /api/generation/jobs` — creates `DISCUSSING` job and initial OWNER message.
+- `POST /api/generation/jobs` — creates/replays a `DISCUSSING` job by OWNER-scoped `clientRequestId` and queues its initial turn.
 - `GET /api/generation/jobs/:id/messages` — ordered persistent history.
 - `POST /api/generation/jobs/:id/messages` — appends OWNER message and starts a turn.
 - `GET /api/generation/jobs/:id/events` — SSE with `Last-Event-ID` replay.
@@ -39,10 +52,15 @@ Generation resources use `/api/generation/jobs/:id`. The discussion API is:
 - `POST /api/generation/jobs/:id/approve-spec` — exact revision/digest freeze.
 - `POST /api/generation/jobs/:id/cancel` — authoritative cancellation.
 
-SSE envelopes are `{eventId, type, jobId, occurredAt, payload}`. Event types
-include `generation.snapshot`, `message.created`, `turn.started`,
-`turn.delta`, `turn.completed`, `spec.revision.created`, `generation.state.changed`,
-`generation.resync.required`, and `generation.heartbeat`.
+SSE envelopes are `{eventId, type, jobId, emittedAt, payload}`. Persistent ids
+are monotonic; heartbeat and resync notices do not reuse them. Canonical names
+are `generation.state.changed`,
+`discussion.turn.queued|started|interrupt_requested|interrupted|completed|failed`,
+`discussion.message.created|delta|completed|interrupted|failed`,
+`discussion.tool.started|progress|completed|failed`, `spec.revision.created`,
+`spec.approved`, `generation.blocked|cancelled|failed|completed` and
+`generation.resync.required`. Reconnect takes a snapshot then replays
+`Last-Event-ID`; an unavailable range demands resync.
 
 ## Browser boundary
 
@@ -60,7 +78,9 @@ Manager bindings. Sensitive preview/evidence is never emitted to SSE.
 ## Concurrency, recovery, and safety
 
 Job turns and automation runs use PostgreSQL row locks plus expiring leases.
-Message and run idempotency keys are unique per owner/job. Terminal updates use
+Messages are inserted before their turn foreign key is created; duplicate keys
+return identical content or fail with a conflict, never mutate existing content.
+Job and run idempotency keys are owner/caller scoped. Terminal updates use
 guarded `WHERE state NOT IN (...)` predicates. Cancellation is authoritative;
 late worker updates cannot overwrite `CANCELLED`. Uncertain non-idempotent
 steps reconcile postconditions or enter `MANUAL_REVIEW`; they are never blindly
@@ -74,3 +94,14 @@ specific automation definition and active revision. No new role, login gate,
 security approval, deployment approval, or credential-transfer workflow is
 introduced.
 
+## Runtime interfaces
+
+The generation worker, never an HTTP request, owns OpenAI Responses streaming.
+It persists assistant deltas and safe provider response ids, checks interruption
+while reading, and durably fails malformed structured output. Browser preview,
+teaching, operation scope and irreversible confirmation are job-scoped records;
+they do not create another approval gate. The manifest DSL has no arbitrary
+source: only declarative locators, navigation, form interaction, waits,
+assertions, extraction, bounded branch/repeat, upload/download handles and
+typed output. Activation follows deterministic automation preflight; repair
+restores the preceding release or flags an uncertain external side effect.

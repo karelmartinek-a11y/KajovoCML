@@ -48,6 +48,7 @@ const handlerSandbox = await text("apps/server/src/generation/handler-sandbox.mj
 for (const required of ["/usr/bin/unshare", '"--mount", "--net"', '"--pid", "--fork"', "/usr/sbin/chroot", "mount -o remount,bind,ro"]) requireText(handlerSandbox, required, "generated handler OS capability boundary");
 for (const file of ["apps/server/src/generation/handler-sandbox.mjs", "apps/server/src/generation/handler-sandbox-worker.mjs", "apps/server/src/generation/generation-cancellation.mjs", "apps/server/src/generation/generation-release-cleanup.mjs", "apps/server/src/generation/generation-failure-recovery.mjs", "apps/server/src/generation/generation-secret-grant-control.mjs", "apps/server/src/onboarding/generated-repair-enqueue.mjs", "scripts/test-generated-handler-capabilities.mjs", "scripts/test-generation-cancellation.mjs", "scripts/test-generation-technical-failure-cleanup.mjs", "scripts/test-generation-integrating-secret-grant.mjs", "scripts/test-repair-enqueue-control.mjs"]) await access(file);
 await access("scripts/test-generation-browser.mjs");
+await access("scripts/test-generation-automation-runtime-no-ai.mjs");
 await access("scripts/test-generated-platform-live.mjs");
 try { await access("deploy/scripts/kcml-deploy-wrapper.sh"); throw new Error("production install: retired GitHub/GHCR deploy wrapper still exists"); } catch (error) { if (error?.code !== "ENOENT") throw error; }
 const migration = await text("apps/server/src/migrations/009_internal_generation.sql");

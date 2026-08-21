@@ -26,7 +26,8 @@ grep -Fq "where version='011_generation_integration_egress_secrets.sql'" "$insta
 grep -Fq "where version='012_readiness_gate_evidence_idempotency.sql'" "$install_script"
 grep -Fq "where version='014_generation_discussion.sql'" "$install_script"
 grep -Fq "where version='015_browser_automation_runtime.sql'" "$install_script"
-grep -Fq 'wait_for_sql_equals "schema_migration_count" "15" "select count(*) from schema_migration"' "$install_script"
+grep -Fq "where version='016_generation_discussion_browser_runtime_completion.sql'" "$install_script"
+grep -Fq 'wait_for_sql_equals "schema_migration_count" "16" "select count(*) from schema_migration"' "$install_script"
 grep -Fq 'curl -fsS "https://${canonical_component_hostname}/.well-known/oauth-protected-resource/mcp"' "$install_script"
 grep -Fq 'deploy/scripts/ensure-canonical-tls.sh' "$install_script"
 grep -Fq 'GENERATION_WORKER_ENABLED' deploy/scripts/split-service-config.sh

@@ -5,21 +5,19 @@ import type { AppServerConfig } from "../config.js";
 import type { Db } from "../db.js";
 import {
   cancelGenerationJob,
-  confirmGenerationPlan,
   createGenerationJob,
   createGenerationFollowUpJob,
   ensurePlatformOpenAiSecret,
   generationOpenAiReady,
   getGenerationJob,
   listGenerationJobs,
-  submitGenerationInputs,
-  resolveGenerationSecret
+  submitGenerationInputs
 } from "../domain/generation.js";
-import { approveSpec, getCurrentSpec, getDiscussionMessages, runDiscussionTurn } from "../domain/generation-discussion.js";
+import { approveSpec, getCurrentSpec, runDiscussionTurn } from "../domain/generation-discussion.js";
 import { requireCsrf, sessionAccount } from "./admin-routes.js";
 import { hostOf, sendError } from "./errors.js";
 
-const createSchema = z.object({ prompt: z.string().trim().min(3).max(50_000) }).strict();
+const createSchema = z.object({ prompt: z.string().trim().min(3).max(50_000), clientRequestId: z.string().trim().min(1).max(200).optional() }).strict();
 const apiKeySchema = z.object({ value: z.string().trim().min(20).max(20_000) }).strict();
 const inputSchema = z.object({ values: z.record(z.string(), z.unknown()) }).strict();
 const followUpSchema = z.object({ instruction: z.string().trim().min(3).max(50_000) }).strict();
@@ -73,13 +71,19 @@ export function registerGenerationRoutes(app: FastifyInstance, db: Db, config: A
     const correlationId = randomUUID(); const session = await ownerSession(db, config, request, reply, correlationId, true); if (!session) return;
     try {
       if (!await generationOpenAiReady(db)) return sendError(reply, 409, "openai_key_required", "Nejdříve uložte OpenAI API key do Secret Manageru.", correlationId);
-      const body = createSchema.parse(request.body); const job = await createGenerationJob(db, session.accountId, body.prompt, correlationId); return reply.code(202).send({ job, correlationId });
+      const body = createSchema.parse(request.body); const created = await createGenerationJob(db, session.accountId, body.prompt, correlationId, body.clientRequestId); return reply.code(created.idempotent ? 200 : 201).send({ job: created.job, idempotent: created.idempotent, correlationId });
     } catch (error) { return routeError(reply, error, correlationId); }
   });
 
   app.get("/api/generation/jobs/:id/messages", async (request, reply) => {
     const correlationId = randomUUID(); const session = await ownerSession(db, config, request, reply, correlationId); if (!session) return;
-    try { const { id } = idParams.parse(request.params); await ownedJob(db, id, session.accountId); return reply.header("cache-control", "no-store").send({ messages: await getDiscussionMessages(db, id), correlationId }); }
+    try {
+      const { id } = idParams.parse(request.params); await ownedJob(db, id, session.accountId);
+      const query = z.object({ before: z.coerce.number().int().positive().optional(), limit: z.coerce.number().int().min(1).max(200).default(50) }).parse(request.query);
+      const result = await db.query("select id,sequence,role,status,content,turn_id,created_at from generation_job_message where job_id=$1 and ($2::bigint is null or sequence<$2) order by sequence desc limit $3", [id, query.before ?? null, query.limit]);
+      const messages = result.rows.reverse().map((row) => ({ id: String(row.id), sequence: Number(row.sequence), role: String(row.role), status: String(row.status), content: String(row.content), turnId: row.turn_id ? String(row.turn_id) : null, createdAt: new Date(row.created_at).toISOString() }));
+      return reply.header("cache-control", "no-store").send({ messages, nextBefore: result.rowCount === query.limit ? Number(result.rows[0].sequence) : null, correlationId });
+    }
     catch (error) { return routeError(reply, error, correlationId); }
   });
 
@@ -87,9 +91,8 @@ export function registerGenerationRoutes(app: FastifyInstance, db: Db, config: A
     const correlationId = randomUUID(); const session = await ownerSession(db, config, request, reply, correlationId, true); if (!session) return;
     try {
       const { id } = idParams.parse(request.params); const body = messageSchema.parse(request.body); await ownedJob(db, id, session.accountId);
-      const apiKey = await resolveGenerationSecret(db, config, "OPENAI_API_KEY", correlationId);
-      const result = await runDiscussionTurn(db, config, id, session.accountId, body.content, apiKey, body.idempotencyKey);
-      return reply.code(202).send({ ...result, correlationId });
+      const result = await runDiscussionTurn(db, id, session.accountId, body.content, body.idempotencyKey);
+      return reply.code(result.idempotent ? 200 : 202).send({ ...result, correlationId });
     } catch (error) { return routeError(reply, error, correlationId); }
   });
 
@@ -110,14 +113,15 @@ export function registerGenerationRoutes(app: FastifyInstance, db: Db, config: A
     const { id } = idParams.parse(request.params); await ownedJob(db, id, session.accountId);
     const after = Number(request.headers["last-event-id"] ?? 0) || 0;
     reply.hijack();
-    reply.raw.statusCode = 200; reply.raw.setHeader("content-type", "text/event-stream"); reply.raw.setHeader("cache-control", "no-cache, no-store"); reply.raw.setHeader("connection", "keep-alive");
-    const write = (eventId: number, type: string, payload: unknown) => { reply.raw.write(`id: ${eventId}\nevent: ${type}\ndata: ${JSON.stringify({ eventId, type, jobId: id, occurredAt: new Date().toISOString(), payload })}\n\n`); };
+    reply.raw.statusCode = 200; reply.raw.setHeader("content-type", "text/event-stream"); reply.raw.setHeader("cache-control", "no-cache, no-store"); reply.raw.setHeader("x-accel-buffering", "no"); reply.raw.setHeader("connection", "keep-alive");
+    const write = (eventId: number | null, type: string, payload: unknown, occurredAt = new Date().toISOString()) => { reply.raw.write(`${eventId === null ? "" : `id: ${eventId}\n`}event: ${type}\ndata: ${JSON.stringify({ eventId, type, jobId: id, emittedAt: occurredAt, payload })}\n\n`); };
     let cursor = after; let closed = false;
     request.raw.on("close", () => { closed = true; });
     for (let i = 0; i < 120 && !closed; i += 1) {
-      const events = await db.query("select sequence,type,payload from generation_event where job_id=$1 and sequence>$2 order by sequence limit 100", [id, cursor]);
-      for (const event of events.rows) { cursor = Number(event.sequence); write(cursor, String(event.type), event.payload); }
-      if (!events.rowCount) write(cursor, "generation.heartbeat", { correlationId });
+      const events = await db.query("select sequence,type,payload,occurred_at from generation_event where job_id=$1 and sequence>$2 order by sequence limit 101", [id, cursor]);
+      if (events.rowCount && Number(events.rows[0].sequence) > cursor + 1) write(null, "generation.resync.required", { after: cursor });
+      for (const event of events.rows.slice(0, 100)) { cursor = Number(event.sequence); write(cursor, String(event.type), event.payload, new Date(event.occurred_at).toISOString()); }
+      if (!events.rowCount) write(null, "generation.heartbeat", { correlationId });
       await new Promise((resolve) => setTimeout(resolve, 1000));
     }
     if (!closed) reply.raw.end();
@@ -141,12 +145,6 @@ export function registerGenerationRoutes(app: FastifyInstance, db: Db, config: A
       const { id } = idParams.parse(request.params); const body = followUpSchema.parse(request.body);
       return reply.code(202).send({ job: await createGenerationFollowUpJob(db, id, session.accountId, body.instruction, correlationId), correlationId });
     } catch (error) { return routeError(reply, error, correlationId); }
-  });
-
-  app.post("/api/generation/jobs/:id/confirm", async (request, reply) => {
-    const correlationId = randomUUID(); const session = await ownerSession(db, config, request, reply, correlationId, true); if (!session) return;
-    try { const { id } = idParams.parse(request.params); return { job: await confirmGenerationPlan(db, id, session.accountId, correlationId), correlationId }; }
-    catch (error) { return routeError(reply, error, correlationId); }
   });
 
   app.post("/api/generation/jobs/:id/cancel", async (request, reply) => {

@@ -40,6 +40,7 @@ import { prepareGenerationWorkspace } from "./workspace.js";
 import { runWithCancellationPolling } from "./generation-cancellation.mjs";
 import { deployCandidatesBeforeIntegration, runLiveCandidateIntegration } from "./integration-phase.mjs";
 import { recoverGenerationTechnicalFailure } from "./generation-failure-recovery.mjs";
+import { canonicalJson, digest, generationSpecificationSchema, processNextDiscussionTurn } from "../domain/generation-discussion.js";
 
 const ACTIVE_STATES = ["CREATED", "ANALYZING", "IMPLEMENTING", "INTEGRATING", "VALIDATING", "CML_CONFORMANCE", "ACTIVATING"] as const;
 const MAX_REMEDIATION_ATTEMPTS = 5;
@@ -260,9 +261,21 @@ async function analyzeJob(db: Db, config: AppConfig, job: GenerationJobView, sig
   const openAiCorrelationId = randomUUID();
   if (!await ensureGenerationPlatformSecretGrant(db, job.ownerAdminId, "OPENAI_API_KEY", openAiCorrelationId)) throw new Error("openai_key_required");
   const apiKey = await resolveGenerationSecret(db, config, "OPENAI_API_KEY", openAiCorrelationId);
-  const plan = await planGeneration(apiKey, config.GENERATION_OPENAI_MODEL, job.originalPrompt, signal);
+  const approved = await loadApprovedSpecification(db, job.id);
+  const plan = await planGeneration(apiKey, config.GENERATION_OPENAI_MODEL, approved.plannerInput, signal);
   await cancellationCheckpoint(db, job.id, signal);
   await setGenerationPlan(db, job.id, plan);
+}
+
+async function loadApprovedSpecification(db: Db, jobId: string): Promise<{ plannerInput: string }> {
+  const result = await db.query(`select job.approved_spec_digest,revision.spec,revision.canonical_json,revision.digest
+    from generation_job job join generation_spec_revision revision on revision.id=job.approved_spec_revision_id and revision.job_id=job.id
+    where job.id=$1`, [jobId]);
+  if (!result.rowCount) throw new Error("generation_approved_spec_missing");
+  const spec = generationSpecificationSchema.parse(result.rows[0].spec);
+  const canonical = canonicalJson(spec); const expected = digest(spec);
+  if (canonical !== String(result.rows[0].canonical_json) || expected !== String(result.rows[0].digest) || expected !== String(result.rows[0].approved_spec_digest)) throw new Error("generation_approved_spec_digest_mismatch");
+  return { plannerInput: canonical };
 }
 
 async function waitForWorkerRecord(
@@ -391,8 +404,10 @@ async function runIntegrationPhase(
       artifacts,
       checkpoint: () => cancellationCheckpoint(db, job.id, signal),
       verifyCandidateRuntime: (artifact) => waitForGeneratedRuntime(config, artifact.component, artifact.runtimeToken),
-      integrate: () => integrateGeneration(apiKey, config.GENERATION_OPENAI_MODEL, {
-        prompt: job.originalPrompt,
+      integrate: async () => {
+        const approved = await loadApprovedSpecification(db, job.id);
+        return integrateGeneration(apiKey, config.GENERATION_OPENAI_MODEL, {
+        prompt: approved.plannerInput,
         plan: job.plan!,
         integrationPlan: integrationPlan ?? undefined,
         reservations,
@@ -405,7 +420,8 @@ async function runIntegrationPhase(
         upsertSecret: async (input) => upsertGenerationSecret(db, config, job.ownerAdminId, job.id, correlationId, input),
         remediation: job.blockerSummary,
         signal
-      })
+        });
+      }
     });
     await cancellationCheckpoint(db, job.id, signal);
     if (result.needsInput?.length) {
@@ -483,7 +499,7 @@ async function implementJob(db: Db, config: AppConfig, job: GenerationJobView, s
 
   const apiKey = await resolveGenerationSecret(db, config, "OPENAI_API_KEY", correlationId);
   const result = await implementGeneration(apiKey, config.GENERATION_OPENAI_MODEL, {
-    prompt: job.originalPrompt, plan: job.plan, reservations, workspace,
+    prompt: (await loadApprovedSpecification(db, job.id)).plannerInput, plan: job.plan, reservations, workspace,
     sourceRoot: config.GENERATION_SOURCE_ROOT, chromiumBinary: config.CHROMIUM_BINARY,
     secretPresent: async (name) => ensureGenerationPlatformSecretGrant(db, job.ownerAdminId, name, correlationId),
     resolveSecret: async (name) => resolveGenerationSecret(db, config, name, correlationId),
@@ -659,6 +675,8 @@ async function handleTechnicalFailure(db: Db, config: AppConfig, job: Generation
 }
 
 export async function processNextGenerationJob(db: Db, config: AppConfig, workerId: string): Promise<boolean> {
+  const apiKey = await resolveGenerationSecret(db, config, "OPENAI_API_KEY", randomUUID()).catch(() => null);
+  if (apiKey && await processNextDiscussionTurn(db, config, workerId, apiKey)) return true;
   const claimed = await claimGenerationJob(db, workerId);
   if (!claimed) return false;
   try {
