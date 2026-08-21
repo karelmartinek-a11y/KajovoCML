@@ -111,7 +111,8 @@ export function registerGenerationRoutes(app: FastifyInstance, db: Db, config: A
   app.get("/api/generation/jobs/:id/events", async (request, reply) => {
     const correlationId = randomUUID(); const session = await ownerSession(db, config, request, reply, correlationId); if (!session) return;
     const { id } = idParams.parse(request.params); await ownedJob(db, id, session.accountId);
-    const after = Number(request.headers["last-event-id"] ?? 0) || 0;
+    const query = z.object({ after: z.coerce.number().int().min(0).optional() }).parse(request.query);
+    const after = Number(request.headers["last-event-id"] ?? query.after ?? 0) || 0;
     reply.hijack();
     reply.raw.statusCode = 200; reply.raw.setHeader("content-type", "text/event-stream"); reply.raw.setHeader("cache-control", "no-cache, no-store"); reply.raw.setHeader("x-accel-buffering", "no"); reply.raw.setHeader("connection", "keep-alive");
     const write = (eventId: number | null, type: string, payload: unknown, occurredAt = new Date().toISOString()) => { reply.raw.write(`${eventId === null ? "" : `id: ${eventId}\n`}event: ${type}\ndata: ${JSON.stringify({ eventId, type, jobId: id, emittedAt: occurredAt, payload })}\n\n`); };

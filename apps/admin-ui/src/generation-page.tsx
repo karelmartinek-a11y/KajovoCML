@@ -48,6 +48,7 @@ type GenerationJob = {
   createdAt: string;
   updatedAt: string;
   completedAt: string | null;
+  eventCursor: number;
 };
 type DiscussionMessage = { id: string; sequence: number; role: string; status: string; content: string; createdAt: string };
 type SpecRevision = { id: string; revision: number; digest: string; spec: { objective: string; resultSummary: string; behavioralRequirements: string[]; openQuestions: string[] }; renderedMarkdown?: string; createdAt: string };
@@ -104,7 +105,7 @@ export function GenerationPage() {
     };
     void loadWorkspace().catch(() => undefined);
     if (typeof EventSource === "undefined") return () => { disposed = true; };
-    const stream = new EventSource(`/api/generation/jobs/${selectedId}/events`);
+    const stream = new EventSource(`/api/generation/jobs/${selectedId}/events?after=${selected?.eventCursor ?? 0}`);
     setStreamStatus("connecting");
     stream.onopen = () => setStreamStatus("live");
     const refresh = () => { void loadWorkspace().catch(() => undefined); void load().catch(() => undefined); };
