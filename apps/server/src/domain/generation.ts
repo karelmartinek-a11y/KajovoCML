@@ -231,7 +231,10 @@ export async function createGenerationFollowUpJob(
     if (duplicate.rowCount) throw Object.assign(new Error("generation_follow_up_already_running"), { statusCode: 409 });
     const sequence = await client.query("select coalesce(max(run_sequence),0)::int + 1 next from generation_job where parent_job_id=$1 or id=$1", [sourceJobId]);
     const kind = active ? "REPAIR" : components.rowCount ? "RETRY" : "CREATE";
-    const nextState = row.plan ? "IMPLEMENTING" : "CREATED";
+    // A free-form OWNER follow-up is a semantic change until the OWNER and
+    // discussion worker produce and freeze a new specification.  It must not
+    // inherit a former plan or bypass the exact approved-spec authority.
+    const nextState = "DISCUSSING";
     const prompt = `${String(row.original_prompt)}\n\nOWNER follow-up instruction for run ${Number(sequence.rows[0].next)}: ${normalized}`;
     const repairEvidence = active ? {
       ...(recordValue(row.repair_evidence) ?? {}),
@@ -249,6 +252,11 @@ export async function createGenerationFollowUpJob(
         sourceJobId, Number(sequence.rows[0].next), normalized]
     );
     const jobId = String(inserted.rows[0].id);
+    const discussionMessage = await createDiscussionMessage(client, jobId, "OWNER", normalized, null, `follow-up:${jobId}`);
+    const discussionTurn = await client.query("insert into generation_discussion_turn(job_id,input_message_id,status) values ($1,$2,'QUEUED') returning id", [jobId, discussionMessage.id]);
+    await client.query("update generation_job_message set turn_id=$2 where id=$1", [discussionMessage.id, discussionTurn.rows[0].id]);
+    await appendDiscussionEvent(client, jobId, "discussion.turn.queued", { turnId: String(discussionTurn.rows[0].id), messageId: discussionMessage.id, followUp: true });
+    await appendDiscussionEvent(client, jobId, "generation.state.changed", { state: "DISCUSSING", followUp: true });
     for (const component of components.rows) {
       await client.query("insert into generation_component(job_id,component_id,element_key,element_kind) values ($1,$2,$3,$4)", [jobId, component.component_id, component.element_key, component.element_kind]);
     }
@@ -260,7 +268,7 @@ export async function createGenerationFollowUpJob(
     await appendAudit(client, { eventType: "generation_job.follow_up_created", actorType: "admin", actorId: ownerAdminId, objectType: "generation_job", objectId: jobId, after: { sourceJobId, runSequence: Number(sequence.rows[0].next), jobKind: kind, instructionLength: normalized.length }, correlationId });
     return jobId;
   });
-  await appendGenerationEvent(db, id, "CREATED", "generation.follow_up_created", "Byl vytvořen navazující běh se zachovanou CML identitou a auditní vazbou na původní job.", { sourceJobId, instructionLength: normalized.length });
+  await appendGenerationEvent(db, id, "DISCUSSING", "generation.follow_up_created", "Byl vytvořen navazující běh; změna zadání musí projít novou immutable specifikací.", { sourceJobId, instructionLength: normalized.length });
   return getGenerationJob(db, id);
 }
 
