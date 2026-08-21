@@ -4,6 +4,7 @@ import type { Db } from "../db.js";
 import { tx } from "../db.js";
 import { generatedInputSecretName, generationSecretGrantElementKeys, normalizeGenerationSecretName, reconcileGenerationPlanSecrets } from "../generation/generation-secret-plan.mjs";
 import { grantGenerationSecretBeforeResume, resumeGenerationAfterSatisfiedInputs } from "../generation/generation-secret-grant-control.mjs";
+import { appendDiscussionEvent, createDiscussionMessage } from "./generation-discussion.js";
 import { appendAudit } from "./audit.js";
 import {
   createSecret,
@@ -16,7 +17,7 @@ import {
 } from "./secret-manager.js";
 
 export const GENERATION_STATES = [
-  "CREATED", "ANALYZING", "NEEDS_INPUT", "PLAN_READY", "IMPLEMENTING", "INTEGRATING", "VALIDATING",
+  "DISCUSSING", "CREATED", "ANALYZING", "NEEDS_INPUT", "PLAN_READY", "IMPLEMENTING", "INTEGRATING", "VALIDATING",
   "CML_CONFORMANCE", "ACTIVATING", "COMPLETED", "FAILED", "BLOCKED", "CANCELLED"
 ] as const;
 export type GenerationState = typeof GENERATION_STATES[number];
@@ -178,9 +179,11 @@ export async function listGenerationJobs(db: Db, ownerAdminId?: string): Promise
 export async function createGenerationJob(db: Db, ownerAdminId: string, prompt: string, correlationId: string): Promise<GenerationJobView> {
   const normalized = prompt.trim();
   if (normalized.length < 3 || normalized.length > 50_000) throw Object.assign(new Error("invalid_generation_prompt"), { statusCode: 400 });
-  const inserted = await db.query("insert into generation_job(owner_admin_id,original_prompt) values ($1,$2) returning id", [ownerAdminId, normalized]);
+  const inserted = await db.query("insert into generation_job(owner_admin_id,original_prompt,state) values ($1,$2,'DISCUSSING') returning id", [ownerAdminId, normalized]);
   const jobId = String(inserted.rows[0].id);
-  await appendGenerationEvent(db, jobId, "CREATED", "generation.created", "Zadání bylo přijato a čeká na analýzu.");
+  await createDiscussionMessage(db, jobId, "OWNER", normalized, null, `initial:${jobId}`);
+  await appendDiscussionEvent(db, jobId, "generation.state.changed", { state: "DISCUSSING" });
+  await appendGenerationEvent(db, jobId, "DISCUSSING", "generation.created", "Zadání bylo přijato do persistentní diskuse.");
   await appendAudit(db, { eventType: "generation_job.created", actorType: "admin", actorId: ownerAdminId, objectType: "generation_job", objectId: jobId, after: { promptLength: normalized.length }, correlationId });
   return getGenerationJob(db, jobId);
 }

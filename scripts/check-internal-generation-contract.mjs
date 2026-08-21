@@ -38,7 +38,10 @@ requireText(generationRoutes, "/api/generation/jobs/:id/runs", "linked follow-up
 const generationPrompt = await text("apps/server/src/generation/openai-responses.ts");
 for (const required of ["validate_candidate_artifacts", "runtime.egressGrants obsahuje POUZE", "outboundPolicies objektu"]) requireText(generationPrompt, required, "manifest preflight contract");
 const browser = await text("apps/server/src/generation/browser-session.mjs");
-for (const required of ["Runtime.evaluate", "Page.navigate", "Input.dispatchKeyEvent", "__kcmlLocatorRegistry", "switchPage"]) requireText(browser, required, "interactive generation browser");
+requireText(browser, "playwright-session.mjs", "interactive generation browser adapter");
+const playwrightSession = await text("apps/server/src/generation/playwright-session.mjs");
+for (const required of ["chromium.launch", "browser.newContext", "safeUrl"]) requireText(playwrightSession, required, "Playwright browser platform");
+for (const forbidden of ["--no-sandbox", "Runtime.evaluate", "Page.navigate", "Input.dispatchKeyEvent"]) forbidText(playwrightSession, forbidden, "Playwright browser platform");
 const runtimeHost = await text("apps/server/src/generation/runtime-host.mjs");
 requireText(runtimeHost, "GeneratedHandlerSandbox", "generated handler capability boundary");
 const handlerSandbox = await text("apps/server/src/generation/handler-sandbox.mjs");

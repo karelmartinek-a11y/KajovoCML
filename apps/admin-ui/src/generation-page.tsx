@@ -49,6 +49,8 @@ type GenerationJob = {
   updatedAt: string;
   completedAt: string | null;
 };
+type DiscussionMessage = { id: string; sequence: number; role: string; status: string; content: string; createdAt: string };
+type SpecRevision = { id: string; revision: number; digest: string; spec: { objective: string; resultSummary: string; behavioralRequirements: string[]; openQuestions: string[] }; createdAt: string };
 
 const TERMINAL = new Set(["COMPLETED", "FAILED", "BLOCKED", "CANCELLED"]);
 
@@ -69,6 +71,10 @@ export function GenerationPage() {
   const [followUpInstruction, setFollowUpInstruction] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [messages, setMessages] = useState<DiscussionMessage[]>([]);
+  const [spec, setSpec] = useState<SpecRevision | null>(null);
+  const [messageDraft, setMessageDraft] = useState("");
+  const [streamStatus, setStreamStatus] = useState("offline");
 
   const load = useCallback(async () => {
     const [setupResponse, jobsResponse] = await Promise.all([
@@ -93,6 +99,26 @@ export function GenerationPage() {
 
   const selected = jobs.find((job) => job.id === selectedId) ?? null;
 
+  useEffect(() => {
+    if (!selectedId) return;
+    let disposed = false;
+    const loadWorkspace = async () => {
+      const [messageResponse, specResponse] = await Promise.all([
+        api<{ messages: DiscussionMessage[] }>(`/api/generation/jobs/${selectedId}/messages`),
+        api<{ spec: SpecRevision | null }>(`/api/generation/jobs/${selectedId}/spec`)
+      ]);
+      if (!disposed) { setMessages(messageResponse.messages); setSpec(specResponse.spec); }
+    };
+    void loadWorkspace().catch(() => undefined);
+    if (typeof EventSource === "undefined") return () => { disposed = true; };
+    const stream = new EventSource(`/api/generation/jobs/${selectedId}/events`);
+    setStreamStatus("connecting");
+    stream.onopen = () => setStreamStatus("live");
+    stream.onmessage = () => { void loadWorkspace().catch(() => undefined); void load().catch(() => undefined); };
+    stream.onerror = () => setStreamStatus("reconnecting");
+    return () => { disposed = true; stream.close(); setStreamStatus("offline"); };
+  }, [selectedId, load]);
+
   async function mutate(task: () => Promise<void>) {
     setBusy(true); setError("");
     try { await task(); await load(); }
@@ -114,6 +140,19 @@ export function GenerationPage() {
       const response = await api<{ job: GenerationJob }>("/api/generation/jobs", { method: "POST", headers: { "x-csrf-token": csrf() }, body: JSON.stringify({ prompt: value }) });
       setPrompt(""); setSelectedId(response.job.id);
     });
+  }
+
+  async function sendMessage() {
+    if (!selected || messageDraft.trim().length < 1) return;
+    await mutate(async () => {
+      await api(`/api/generation/jobs/${selected.id}/messages`, { method: "POST", headers: { "x-csrf-token": csrf() }, body: JSON.stringify({ content: messageDraft.trim(), idempotencyKey: crypto.randomUUID() }) });
+      setMessageDraft("");
+    });
+  }
+
+  async function approveSpec() {
+    if (!selected || !spec) return;
+    await mutate(async () => { await api(`/api/generation/jobs/${selected.id}/approve-spec`, { method: "POST", headers: { "x-csrf-token": csrf() }, body: JSON.stringify({ revisionId: spec.id, digest: spec.digest }) }); });
   }
 
   async function submitInputs() {
@@ -151,7 +190,7 @@ export function GenerationPage() {
       <div className="panel-head"><div><h2>Co mám vytvořit?</h2><p>Technickou architekturu, identity, runtime, testy a CML začlenění řeší interní generation pipeline.</p></div>{setup ? <span className={`badge ${setup.openAiReady ? "ok" : "warn"}`}>{setup.openAiReady ? `OpenAI · ${setup.model}` : "OpenAI API key chybí"}</span> : null}</div>
       {!setup?.openAiReady ? <div className="generation-key-row"><KeyRound size={18} /><input type="text" autoComplete="off" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="OpenAI API key" aria-label="OpenAI API key" /><button disabled={busy || apiKey.length < 20} onClick={() => { void saveApiKey(); }}>Uložit do Secret Manageru</button></div> : null}
       <textarea rows={5} value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="Např. vytvoř MCP schopnost, která…" aria-label="Zadání generování" />
-      <div className="generation-actions"><button disabled={busy || !setup?.openAiReady || prompt.trim().length < 3} onClick={() => { void createJob(); }}><Sparkles size={17} /> {busy ? "Pracuji…" : "Navrhnout řešení"}</button></div>
+      <div className="generation-actions"><button disabled={busy || !setup?.openAiReady || prompt.trim().length < 3} onClick={() => { void createJob(); }}><Sparkles size={17} /> {busy ? "Pracuji…" : "Začít persistentní diskusi"}</button></div>
     </section>
     <section className="generation-grid">
       <article className="panel generation-jobs"><div className="panel-head"><h2>Generation joby</h2><span className="panel-count">{jobs.length}</span></div>{jobs.length ? <div className="job-cards">{jobs.map((job) => <button key={job.id} className={job.id === selectedId ? "selected" : ""} onClick={() => setSelectedId(job.id)}><span className={`status-dot ${stateTone(job.state)}`} /><span><strong>{job.plan?.resultSummary ?? job.originalPrompt}</strong><small>{job.state} · {formatDate(job.updatedAt)}</small></span></button>)}</div> : <div className="empty-state"><Sparkles size={32} /><strong>Zatím žádné generování</strong></div>}</article>
@@ -159,6 +198,12 @@ export function GenerationPage() {
         {!selected ? <div className="empty-state"><Sparkles size={32} /><strong>Vyberte job</strong></div> : <>
           {selected.parentJobId ? <div className="notice"><RefreshCw size={17} /> Navazující běh #{selected.runSequence}; původní job zůstává neměnnou auditní evidencí.</div> : null}
           {selected.blockerSummary ? <div className="notice error"><AlertTriangle size={17} /> {selected.blockerSummary}</div> : null}
+          <section className="generation-workspace" aria-label="Persistentní diskuse">
+            <div className="panel-head"><div><h3>OWNER ↔ AI diskuse</h3><p>Historie je uložená serverově; stream: {streamStatus}.</p></div>{spec ? <span className="badge neutral">Spec v{spec.revision} · {spec.digest.slice(0, 18)}…</span> : null}</div>
+            <div className="generation-messages">{messages.map((message) => <article key={message.id} className={`generation-message ${message.role.toLowerCase()}`}><strong>{message.role}</strong><p>{message.content}</p><small>{formatDate(message.createdAt)}</small></article>)}</div>
+            {selected.state === "DISCUSSING" ? <div className="generation-composer"><textarea rows={3} value={messageDraft} onChange={(event) => setMessageDraft(event.target.value)} placeholder="Doplňte cíl, omezení nebo rozhodnutí…" aria-label="Zpráva do diskuse" /><button disabled={busy || !messageDraft.trim()} onClick={() => { void sendMessage(); }}><Sparkles size={16} /> Odeslat do diskuse</button></div> : null}
+            {spec ? <div className="generation-spec"><h4>Aktuální GenerationSpecification</h4><p>{spec.spec.objective}</p><small>{spec.spec.resultSummary}</small>{spec.spec.openQuestions.length ? <p><strong>Otevřené otázky:</strong> {spec.spec.openQuestions.join(" · ")}</p> : null}<button disabled={busy || selected.state !== "DISCUSSING" || spec.spec.openQuestions.length > 0} onClick={() => { void approveSpec(); }}><CheckCircle2 size={16} /> Schválit tuto revizi a realizovat</button></div> : null}
+          </section>
           {selected.plan ? <section className="generation-plan"><h3>Návrh</h3><p>{selected.plan.understoodIntent}</p><div className="generation-elements">{selected.plan.elements.map((element) => <article key={element.key}><strong>{element.displayName}</strong><span className="badge neutral">{element.kind}</span><p>{element.businessPurpose}</p><small>{element.responsibilities.join(" · ")}</small></article>)}</div>{selected.plan.dependencies.length ? <p><strong>Vazby:</strong> {selected.plan.dependencies.map((dependency) => `${dependency.from} → ${dependency.to}: ${dependency.purpose}`).join("; ")}</p> : null}</section> : <div className="generation-running"><LoaderCircle className="spin" size={20} /> KajovoCML připravuje technický návrh…</div>}
           {selected.state === "NEEDS_INPUT" ? <section className="generation-inputs"><h3>Potřebuji doplnit</h3><p>Požadovány jsou pouze informace, které KajovoCML nemůže zjistit samo. Pole jsou v tomto zabezpečeném prostoru zobrazená jako běžný text; citlivé hodnoty se po odeslání ukládají pouze do Secret Manageru.</p>{selected.inputs.filter((input) => !input.supplied).map((input) => <label key={input.key}>{input.label}<small>{input.description}</small><input type="text" value={inputs[input.key] ?? ""} onChange={(event) => setInputs((current) => ({ ...current, [input.key]: event.target.value }))} /></label>)}<button disabled={busy} onClick={() => { void submitInputs(); }}>Uložit vstupy</button></section> : null}
           {selected.state === "PLAN_READY" ? <div className="generation-actions"><button disabled={busy} onClick={() => { void confirmPlan(); }}><Play size={17} /> Potvrdit a vytvořit</button></div> : null}

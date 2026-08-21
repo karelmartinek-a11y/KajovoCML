@@ -6,7 +6,7 @@
 3. `ZIP_IN_OUT_IMPLEMENTATION_PROMPT.md` defines the internal-generation implementation scope.
 4. Historical delivery/audit documents are forensic context only and never override the SSOT.
 
-KajovoCML is `PRE_PRODUCTION_TESTING`. Breaking cleanup approved by the OWNER may replace obsolete test-only product flows.
+KajovoCML is `PRE_PRODUCTION_TESTING`. Generation discussion is persistent and starts in `DISCUSSING`; browser work is Playwright-owned and routine automation runs are deterministic/no-AI. Breaking cleanup approved by the OWNER may replace obsolete test-only product flows.
 
 ## Internal generation invariants
 - New capabilities are created only through the OWNER `Generování` flow and persistent generation jobs.
@@ -19,9 +19,10 @@ KajovoCML is `PRE_PRODUCTION_TESTING`. Breaking cleanup approved by the OWNER ma
 - Monitoring repair enqueue failures must use the existing operational alert + audit mechanism and must not be silently swallowed.
 - Trusted OWNER chat and trusted internal OWNER logs may contain plaintext credentials and this must never introduce an extra approval/redaction/transfer workflow. Persistent runtime secrets belong only in the existing Secret Manager; do not hardcode persistent secret values into source, manifests or release artifacts.
 - No mocks, placeholders, TODO-only implementations, demos or reduced-scope substitutes count as completion.
+- `IMPLEMENTATION_CONTRACT.md` freezes the generation discussion, SSE, browser automation and approval interfaces for this release.
 
 ## Verification
-Run the repository's canonical checks. At minimum preserve syntax/type/build/test coverage, generation contract checks, actual local generated-runtime checks, release packaging checks and UI tests. If the supported Node/pnpm toolchain or external registry is unavailable, record the exact blocker and still run every independent local check possible.
+Run the repository's canonical checks. At minimum preserve syntax/type/build/test coverage, generation contract checks, actual local generated-runtime checks, release packaging checks and UI tests. Generation-specific checks include `pnpm generation:contract:check`, `pnpm generation:browser:check`, `pnpm generation:browser-automation:check`, `pnpm generation:automation-sandbox-boundary:check`, `pnpm generation:automation-runtime-no-ai:check` and `pnpm generation:automation-recovery:check`. Playwright-managed Chromium is installed by CI/release; production Chromium must run sandboxed under the worker identity. If the supported Node/pnpm toolchain or external registry is unavailable, record the exact blocker and still run every independent local check possible.
 
 ## Documentation
 Any behavior change must update the active README/runbooks/current-state documents and relevant component catalog card/documentation. Historical artifacts may remain only when clearly labeled historical/superseded.

@@ -31,7 +31,7 @@ run_migrations
 
 psql "$KCML_UPGRADE_DATABASE_URL" --no-psqlrc --set ON_ERROR_STOP=1 --tuples-only --no-align <<SQL | grep -Fx 'baseline-clean-install-ok'
 select case when
-  (select count(*) from schema_migration) = 13
+  (select count(*) from schema_migration) = 15
   and exists (
     select 1
       from schema_migration
@@ -87,6 +87,8 @@ select case when
   and exists (select 1 from schema_migration where version='011_generation_integration_egress_secrets.sql' and sequence_number=11 and checksum_sha256 ~ '^[0-9a-f]{64}$')
   and exists (select 1 from schema_migration where version='012_readiness_gate_evidence_idempotency.sql' and sequence_number=12 and checksum_sha256 ~ '^[0-9a-f]{64}$')
   and exists (select 1 from schema_migration where version='013_generation_follow_up_runs.sql' and sequence_number=13 and checksum_sha256 ~ '^[0-9a-f]{64}$')
+  and exists (select 1 from schema_migration where version='014_generation_discussion.sql' and sequence_number=14 and checksum_sha256 ~ '^[0-9a-f]{64}$')
+  and exists (select 1 from schema_migration where version='015_browser_automation_runtime.sql' and sequence_number=15 and checksum_sha256 ~ '^[0-9a-f]{64}$')
   and (select count(*) from release_epoch) = 1
   and exists (
     select 1
@@ -153,7 +155,7 @@ run_migrations
 
 psql "$KCML_UPGRADE_DATABASE_URL" --no-psqlrc --set ON_ERROR_STOP=1 --tuples-only --no-align <<SQL | grep -Fx 'baseline-compaction-ok'
 select case when
-  (select count(*) from schema_migration) = 13
+  (select count(*) from schema_migration) = 15
   and exists (
     select 1
       from schema_migration
@@ -209,6 +211,8 @@ select case when
   and exists (select 1 from schema_migration where version='011_generation_integration_egress_secrets.sql' and sequence_number=11 and checksum_sha256 ~ '^[0-9a-f]{64}$')
   and exists (select 1 from schema_migration where version='012_readiness_gate_evidence_idempotency.sql' and sequence_number=12 and checksum_sha256 ~ '^[0-9a-f]{64}$')
   and exists (select 1 from schema_migration where version='013_generation_follow_up_runs.sql' and sequence_number=13 and checksum_sha256 ~ '^[0-9a-f]{64}$')
+  and exists (select 1 from schema_migration where version='014_generation_discussion.sql' and sequence_number=14 and checksum_sha256 ~ '^[0-9a-f]{64}$')
+  and exists (select 1 from schema_migration where version='015_browser_automation_runtime.sql' and sequence_number=15 and checksum_sha256 ~ '^[0-9a-f]{64}$')
   and (select count(*) from release_epoch) = 1
   and not exists (
     select 1
@@ -235,7 +239,7 @@ run_migrations
 
 psql "$KCML_UPGRADE_DATABASE_URL" --no-psqlrc --set ON_ERROR_STOP=1 --tuples-only --no-align <<SQL | grep -Fx 'baseline-retired-dashboard-ledger-ok'
 select case when
-  (select count(*) from schema_migration) = 13
+  (select count(*) from schema_migration) = 15
   and exists (
     select 1
       from schema_migration
@@ -263,6 +267,8 @@ select case when
   and exists (select 1 from schema_migration where version='011_generation_integration_egress_secrets.sql' and sequence_number=11 and checksum_sha256 ~ '^[0-9a-f]{64}$')
   and exists (select 1 from schema_migration where version='012_readiness_gate_evidence_idempotency.sql' and sequence_number=12 and checksum_sha256 ~ '^[0-9a-f]{64}$')
   and exists (select 1 from schema_migration where version='013_generation_follow_up_runs.sql' and sequence_number=13 and checksum_sha256 ~ '^[0-9a-f]{64}$')
+  and exists (select 1 from schema_migration where version='014_generation_discussion.sql' and sequence_number=14 and checksum_sha256 ~ '^[0-9a-f]{64}$')
+  and exists (select 1 from schema_migration where version='015_browser_automation_runtime.sql' and sequence_number=15 and checksum_sha256 ~ '^[0-9a-f]{64}$')
   and not exists (
     select 1
       from schema_migration

@@ -23,7 +23,7 @@ describe("OWNER generation UI", () => {
     render(<GenerationPage />);
     expect(await screen.findByRole("heading", { name: "Co mám vytvořit?" })).toBeTruthy();
     expect(screen.getByLabelText("Zadání generování")).toBeTruthy();
-    expect(screen.getByRole("button", { name: /Navrhnout řešení/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Začít persistentní diskusi/ })).toBeTruthy();
     expect(screen.queryByText(/integrační token/i)).toBeNull();
     expect(screen.queryByText(/programátor/i)).toBeNull();
   });

@@ -64,6 +64,8 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Install Playwright-managed Chromium
+        run: pnpm --filter @kcml/server exec playwright install --with-deps chromium
       - name: Deployment and alert-sink checks
         run: |
           bash -n deploy/scripts/*.sh scripts/*.sh
@@ -109,6 +111,14 @@ jobs:
         run: pnpm audit --prod --audit-level=high
       - name: Lint, typecheck, all tests and build
         run: pnpm run ci
+      - name: Generation and browser automation quality gates
+        run: |
+          pnpm generation:contract:check
+          pnpm generation:browser:check
+          pnpm generation:browser-automation:check
+          pnpm generation:automation-sandbox-boundary:check
+          pnpm generation:automation-runtime-no-ai:check
+          pnpm generation:automation-recovery:check
       - name: Release bundle checks
         env:
           BUILD_ID: ci-release-check
@@ -158,6 +168,8 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Install Playwright-managed Chromium
+        run: pnpm --filter @kcml/server exec playwright install --with-deps chromium
       - run: pnpm build
       - name: Assemble immutable release
         env:

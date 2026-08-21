@@ -12,8 +12,10 @@ import {
   generationOpenAiReady,
   getGenerationJob,
   listGenerationJobs,
-  submitGenerationInputs
+  submitGenerationInputs,
+  resolveGenerationSecret
 } from "../domain/generation.js";
+import { approveSpec, getCurrentSpec, getDiscussionMessages, runDiscussionTurn } from "../domain/generation-discussion.js";
 import { requireCsrf, sessionAccount } from "./admin-routes.js";
 import { hostOf, sendError } from "./errors.js";
 
@@ -21,6 +23,8 @@ const createSchema = z.object({ prompt: z.string().trim().min(3).max(50_000) }).
 const apiKeySchema = z.object({ value: z.string().trim().min(20).max(20_000) }).strict();
 const inputSchema = z.object({ values: z.record(z.string(), z.unknown()) }).strict();
 const followUpSchema = z.object({ instruction: z.string().trim().min(3).max(50_000) }).strict();
+const messageSchema = z.object({ content: z.string().trim().min(1).max(50_000), idempotencyKey: z.string().trim().min(1).max(200).optional() }).strict();
+const approvalSchema = z.object({ revisionId: z.string().uuid(), digest: z.string().regex(/^sha256:[0-9a-f]{64}$/) }).strict();
 const idParams = z.object({ id: z.string().uuid() }).strict();
 
 async function ownerSession(db: Db, config: AppServerConfig, request: FastifyRequest, reply: FastifyReply, correlationId: string, mutation = false) {
@@ -71,6 +75,52 @@ export function registerGenerationRoutes(app: FastifyInstance, db: Db, config: A
       if (!await generationOpenAiReady(db)) return sendError(reply, 409, "openai_key_required", "Nejdříve uložte OpenAI API key do Secret Manageru.", correlationId);
       const body = createSchema.parse(request.body); const job = await createGenerationJob(db, session.accountId, body.prompt, correlationId); return reply.code(202).send({ job, correlationId });
     } catch (error) { return routeError(reply, error, correlationId); }
+  });
+
+  app.get("/api/generation/jobs/:id/messages", async (request, reply) => {
+    const correlationId = randomUUID(); const session = await ownerSession(db, config, request, reply, correlationId); if (!session) return;
+    try { const { id } = idParams.parse(request.params); await ownedJob(db, id, session.accountId); return reply.header("cache-control", "no-store").send({ messages: await getDiscussionMessages(db, id), correlationId }); }
+    catch (error) { return routeError(reply, error, correlationId); }
+  });
+
+  app.post("/api/generation/jobs/:id/messages", async (request, reply) => {
+    const correlationId = randomUUID(); const session = await ownerSession(db, config, request, reply, correlationId, true); if (!session) return;
+    try {
+      const { id } = idParams.parse(request.params); const body = messageSchema.parse(request.body); await ownedJob(db, id, session.accountId);
+      const apiKey = await resolveGenerationSecret(db, config, "OPENAI_API_KEY", correlationId);
+      const result = await runDiscussionTurn(db, config, id, session.accountId, body.content, apiKey, body.idempotencyKey);
+      return reply.code(202).send({ ...result, correlationId });
+    } catch (error) { return routeError(reply, error, correlationId); }
+  });
+
+  app.get("/api/generation/jobs/:id/spec", async (request, reply) => {
+    const correlationId = randomUUID(); const session = await ownerSession(db, config, request, reply, correlationId); if (!session) return;
+    try { const { id } = idParams.parse(request.params); await ownedJob(db, id, session.accountId); return reply.header("cache-control", "no-store").send({ spec: await getCurrentSpec(db, id), correlationId }); }
+    catch (error) { return routeError(reply, error, correlationId); }
+  });
+
+  app.post("/api/generation/jobs/:id/approve-spec", async (request, reply) => {
+    const correlationId = randomUUID(); const session = await ownerSession(db, config, request, reply, correlationId, true); if (!session) return;
+    try { const { id } = idParams.parse(request.params); const body = approvalSchema.parse(request.body); return { approval: await approveSpec(db, id, session.accountId, body.revisionId, body.digest), correlationId }; }
+    catch (error) { return routeError(reply, error, correlationId); }
+  });
+
+  app.get("/api/generation/jobs/:id/events", async (request, reply) => {
+    const correlationId = randomUUID(); const session = await ownerSession(db, config, request, reply, correlationId); if (!session) return;
+    const { id } = idParams.parse(request.params); await ownedJob(db, id, session.accountId);
+    const after = Number(request.headers["last-event-id"] ?? 0) || 0;
+    reply.hijack();
+    reply.raw.statusCode = 200; reply.raw.setHeader("content-type", "text/event-stream"); reply.raw.setHeader("cache-control", "no-cache, no-store"); reply.raw.setHeader("connection", "keep-alive");
+    const write = (eventId: number, type: string, payload: unknown) => { reply.raw.write(`id: ${eventId}\nevent: ${type}\ndata: ${JSON.stringify({ eventId, type, jobId: id, occurredAt: new Date().toISOString(), payload })}\n\n`); };
+    let cursor = after; let closed = false;
+    request.raw.on("close", () => { closed = true; });
+    for (let i = 0; i < 120 && !closed; i += 1) {
+      const events = await db.query("select sequence,type,payload from generation_event where job_id=$1 and sequence>$2 order by sequence limit 100", [id, cursor]);
+      for (const event of events.rows) { cursor = Number(event.sequence); write(cursor, String(event.type), event.payload); }
+      if (!events.rowCount) write(cursor, "generation.heartbeat", { correlationId });
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+    if (!closed) reply.raw.end();
   });
 
   app.get("/api/generation/jobs/:id", async (request, reply) => {

@@ -3,7 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import type { GenerationPlan } from "../domain/generation.js";
-import { BrowserSession } from "./browser-session.mjs";
+import { PlaywrightBrowserSession as BrowserSession } from "./playwright-session.mjs";
 import { captureProviderBrowserSecret, captureProviderJsonSecrets } from "./provider-secret-capability.mjs";
 
 const RESPONSES_URL = "https://api.openai.com/v1/responses";

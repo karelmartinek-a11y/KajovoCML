@@ -1134,4 +1134,15 @@ input[type="checkbox"] { width: 17px; height: 17px; min-height: 17px; padding: 0
 .generation-events article { display: grid; grid-template-columns: auto 1fr auto; align-items: start; gap: 8px; border-bottom: 1px solid var(--border); padding: 8px 0; }
 .generation-events span { display: grid; gap: 2px; }
 .generation-events pre { max-width: 420px; overflow: auto; }
+.generation-workspace { display: grid; gap: 14px; border-top: 1px solid var(--border); padding-top: 16px; }
+.generation-messages { display: grid; gap: 10px; max-height: 420px; overflow: auto; padding: 4px; }
+.generation-message { max-width: min(760px, 92%); padding: 11px 13px; border: 1px solid var(--border); border-radius: 14px; display: grid; gap: 4px; overflow-wrap: anywhere; }
+.generation-message.owner { justify-self: end; background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.generation-message.assistant { justify-self: start; background: var(--surface-muted); }
+.generation-message p { margin: 0; white-space: pre-wrap; }
+.generation-message small { color: var(--muted); }
+.generation-composer { display: grid; gap: 8px; }
+.generation-composer textarea { width: 100%; resize: vertical; }
+.generation-spec { display: grid; gap: 8px; padding: 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-muted); overflow-wrap: anywhere; }
+.generation-spec p { margin: 0; }
 @media (max-width: 900px) { .generation-grid { grid-template-columns: 1fr; } .generation-key-row { grid-template-columns: 1fr; } }

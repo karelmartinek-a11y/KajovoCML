@@ -24,6 +24,8 @@ COPY --from=build --chown=kcml:kcml /app/apps/admin-ui/dist ./apps/admin-ui/dist
 COPY --from=build --chown=kcml:kcml /app/docs/onboarding-catalogs ./docs/onboarding-catalogs
 COPY --from=build --chown=kcml:kcml /app/docs/onboarding-manifest-v1.5.example.json ./docs/onboarding-manifest-v1.5.example.json
 COPY --from=build --chown=kcml:kcml /app/Connect_in_Catalog_KajovoCML_v1.7.docx ./Connect_in_Catalog_KajovoCML_v1.7.docx
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN /app/apps/server/node_modules/.bin/playwright install --with-deps chromium
 USER kcml
 EXPOSE 3000
 CMD ["node", "apps/server/dist/index.js"]
