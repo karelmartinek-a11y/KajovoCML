@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { loadConfig, type AppConfig } from "../config.js";
 import { createDb, type Db } from "../db.js";
-import { createGenerationJob } from "./generation.js";
+import { cancelGenerationJob, createGenerationJob } from "./generation.js";
 import { approveSpec, createSpecRevision, queueDiscussionTurn, type GenerationSpec } from "./generation-discussion.js";
 
 const enabled = process.env.KCML_TEST_DATABASE === "1";
@@ -68,5 +68,31 @@ describe.skipIf(!enabled)("generation discussion PostgreSQL contract", () => {
     await expect(approveSpec(db, created.job.id, ownerId, third.id, third.digest)).resolves.toMatchObject({ idempotent: false, revisionId: third.id });
     const frozen = await db.query("select approved_spec_revision_id,approved_spec_digest,state from generation_job where id=$1", [created.job.id]);
     expect(frozen.rows[0]).toMatchObject({ approved_spec_revision_id: third.id, approved_spec_digest: third.digest, state: "ANALYZING" });
+  });
+
+  it("keeps one queued successor while steering an upstream turn and supersedes older pending input", async () => {
+    const created = await createGenerationJob(db, ownerId, `discussion steer ${randomUUID()}`, randomUUID(), randomUUID());
+    jobIds.push(created.job.id);
+    const initial = await db.query("select id from generation_discussion_turn where job_id=$1 and status='QUEUED'", [created.job.id]);
+    await db.query("update generation_discussion_turn set status='RUNNING',lease_owner='worker-a',lease_until=now()+interval '1 minute' where id=$1", [initial.rows[0].id]);
+    await queueDiscussionTurn(db, created.job.id, ownerId, "První steer", `steer-1-${randomUUID()}`);
+    await queueDiscussionTurn(db, created.job.id, ownerId, "Nejnovější steer", `steer-2-${randomUUID()}`);
+    const turns = await db.query("select status,count(*)::int count from generation_discussion_turn where job_id=$1 group by status", [created.job.id]);
+    expect(Object.fromEntries(turns.rows.map((row) => [String(row.status), Number(row.count)]))).toMatchObject({ INTERRUPT_REQUESTED: 1, QUEUED: 1, INTERRUPTED: 1 });
+  });
+
+  it("cancels queued discussion work and interrupts an OWNER-visible streaming assistant", async () => {
+    const created = await createGenerationJob(db, ownerId, `discussion cancel ${randomUUID()}`, randomUUID(), randomUUID());
+    jobIds.push(created.job.id);
+    const turn = await db.query("select id,input_message_id from generation_discussion_turn where job_id=$1 and status='QUEUED'", [created.job.id]);
+    await db.query("update generation_discussion_turn set status='RUNNING',lease_owner='worker-a',lease_until=now()+interval '1 minute' where id=$1", [turn.rows[0].id]);
+    await db.query("insert into generation_job_message(job_id,role,content,turn_id,status) values ($1,'ASSISTANT','partial output',$2,'STREAMING')", [created.job.id, turn.rows[0].id]);
+    await cancelGenerationJob(db, created.job.id, ownerId, randomUUID());
+    const state = await db.query("select state from generation_job where id=$1", [created.job.id]);
+    const terminal = await db.query("select status from generation_discussion_turn where id=$1", [turn.rows[0].id]);
+    const message = await db.query("select status from generation_job_message where job_id=$1 and role='ASSISTANT'", [created.job.id]);
+    expect(state.rows[0].state).toBe("CANCELLED");
+    expect(terminal.rows[0].status).toBe("INTERRUPT_REQUESTED");
+    expect(message.rows[0].status).toBe("INTERRUPTED");
   });
 });

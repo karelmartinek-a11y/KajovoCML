@@ -26,11 +26,15 @@ with `INTERRUPT_REQUESTED` as its transient steer state.
   idempotent, checkpointed execution with terminal immutability.
 
 Migrations `014_generation_discussion.sql`, `015_browser_automation_runtime.sql`
-and forward-only `016_generation_discussion_browser_runtime_completion.sql` are
-one ordered contract. Migration 016 adds same-job composite foreign keys,
+and forward-only `016_generation_discussion_browser_runtime_completion.sql`
+and `017_discussion_turn_exclusivity_and_cancellation.sql` are one ordered
+contract. Migration 016 adds same-job composite foreign keys,
 historical digest reuse, request idempotency, interruption/lease metadata,
 operation scopes, irreversible confirmations and teaching records without
-rewriting an already-applied migration.
+rewriting an already-applied migration. Migration 017 permits one queued
+successor during a steer while database-enforcing a single upstream-active
+turn; cancellation interrupts streaming assistant output and prevents a late
+provider completion from changing the terminal job state.
 
 Canonical serialization is UTF-8 JSON with recursively sorted object keys,
 compact separators, and no undefined values. Digests are SHA-256 over those

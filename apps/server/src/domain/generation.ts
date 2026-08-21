@@ -634,7 +634,13 @@ export async function confirmGenerationPlan(db: Db, jobId: string, ownerAdminId:
 }
 
 export async function cancelGenerationJob(db: Db, jobId: string, ownerAdminId: string, correlationId: string): Promise<void> {
-  const result = await db.query("update generation_job set state='CANCELLED',cancelled_at=now(),updated_at=now(),lease_owner=null,lease_until=null where id=$1 and owner_admin_id=$2 and state not in ('COMPLETED','CANCELLED') returning id", [jobId, ownerAdminId]);
+  const result = await tx(db, async (client) => {
+    const cancelled = await client.query("update generation_job set state='CANCELLED',cancelled_at=now(),updated_at=now(),lease_owner=null,lease_until=null where id=$1 and owner_admin_id=$2 and state not in ('COMPLETED','CANCELLED') returning id", [jobId, ownerAdminId]);
+    if (!cancelled.rowCount) throw Object.assign(new Error("generation_job_not_cancellable"), { statusCode: 409 });
+    await client.query("update generation_discussion_turn set status=case when status='QUEUED' then 'CANCELLED' else 'INTERRUPT_REQUESTED' end, interrupt_requested_at=case when status in ('RUNNING','INTERRUPT_REQUESTED') then coalesce(interrupt_requested_at,now()) else interrupt_requested_at end, completed_at=case when status='QUEUED' then now() else completed_at end, lease_owner=case when status='QUEUED' then null else lease_owner end, lease_until=case when status='QUEUED' then null else lease_until end where job_id=$1 and status in ('QUEUED','RUNNING','INTERRUPT_REQUESTED')", [jobId]);
+    await client.query("update generation_job_message set status='INTERRUPTED',interrupted_at=now(),content=content where job_id=$1 and role='ASSISTANT' and status='STREAMING'", [jobId]);
+    return cancelled;
+  });
   if (!result.rowCount) throw Object.assign(new Error("generation_job_not_cancellable"), { statusCode: 409 });
   await appendGenerationEvent(db, jobId, "CANCELLED", "generation.cancelled", "Generování bylo zrušeno vlastníkem.");
   await appendAudit(db, { eventType: "generation_job.cancelled", actorType: "admin", actorId: ownerAdminId, objectType: "generation_job", objectId: jobId, correlationId });

@@ -129,13 +129,12 @@ export async function queueDiscussionTurn(db: Db, jobId: string, ownerId: string
       }
     }
     const message = await createDiscussionMessage(client, jobId, "OWNER", content, null, idempotencyKey);
-    const running = await client.query("select id,status from generation_discussion_turn where job_id=$1 and status in ('QUEUED','RUNNING') for update", [jobId]);
-    if (running.rowCount) {
-      const active = running.rows[0];
+    const activeTurns = await client.query("select id,status from generation_discussion_turn where job_id=$1 and status in ('QUEUED','RUNNING','INTERRUPT_REQUESTED') order by created_at for update", [jobId]);
+    for (const active of activeTurns.rows) {
       if (String(active.status) === "QUEUED") {
-        await client.query("update generation_discussion_turn set status='INTERRUPTED',interrupted_at=now(),completed_at=now() where id=$1", [active.id]);
+        await client.query("update generation_discussion_turn set status='INTERRUPTED',interrupted_at=now(),completed_at=now(),lease_owner=null,lease_until=null where id=$1", [active.id]);
         await appendDiscussionEvent(client, jobId, "discussion.turn.interrupted", { turnId: String(active.id), byMessageId: message.id, beforeStart: true });
-      } else {
+      } else if (String(active.status) === "RUNNING") {
         await client.query("update generation_discussion_turn set status='INTERRUPT_REQUESTED',interrupt_requested_at=now() where id=$1", [active.id]);
         await appendDiscussionEvent(client, jobId, "discussion.turn.interrupt_requested", { turnId: String(active.id), byMessageId: message.id });
       }
@@ -161,7 +160,15 @@ function parseSseFrames(buffer: string): { frames: Record<string, unknown>[]; re
 
 export async function processNextDiscussionTurn(db: Db, config: AppServerConfig, workerId: string, apiKey: string): Promise<boolean> {
   const claimed = await tx(db, async (client) => {
-    const result = await client.query("select turn.id,turn.job_id,turn.input_message_id from generation_discussion_turn turn join generation_job job on job.id=turn.job_id where turn.status='QUEUED' and job.state='DISCUSSING' and (turn.lease_until is null or turn.lease_until<now()) order by turn.created_at for update skip locked limit 1");
+    const result = await client.query(`select turn.id,turn.job_id,turn.input_message_id
+      from generation_discussion_turn turn join generation_job job on job.id=turn.job_id
+     where turn.status='QUEUED' and job.state='DISCUSSING' and (turn.lease_until is null or turn.lease_until<now())
+       and not exists (
+         select 1 from generation_discussion_turn active
+          where active.job_id=turn.job_id and active.id<>turn.id
+            and active.status in ('RUNNING','INTERRUPT_REQUESTED')
+       )
+     order by turn.created_at for update skip locked limit 1`);
     if (!result.rowCount) return null;
     const row = result.rows[0];
     await client.query("update generation_discussion_turn set status='RUNNING',lease_owner=$2,lease_until=now()+interval '180 seconds',started_at=now(),heartbeat_at=now() where id=$1", [row.id, workerId]);
@@ -190,18 +197,21 @@ export async function processNextDiscussionTurn(db: Db, config: AppServerConfig,
     if (!response.ok || !response.body) throw new Error(`openai_responses_${response.status}`);
     const reader = response.body.getReader(); const decoder = new TextDecoder(); let pending = ""; let providerResponseId: string | null = null;
     while (true) {
-      const interrupted = await db.query("select status from generation_discussion_turn where id=$1", [claimed.turnId]);
-      if (String(interrupted.rows[0]?.status) === "INTERRUPT_REQUESTED") { interruptedBySteer = true; controller.abort(); throw Object.assign(new Error("discussion_interrupted"), { interrupted: true }); }
+      const interrupted = await db.query("select turn.status,job.state job_state from generation_discussion_turn turn join generation_job job on job.id=turn.job_id where turn.id=$1", [claimed.turnId]);
+      if (String(interrupted.rows[0]?.status) === "INTERRUPT_REQUESTED" || String(interrupted.rows[0]?.job_state) === "CANCELLED") { interruptedBySteer = true; controller.abort(); throw Object.assign(new Error("discussion_interrupted"), { interrupted: true }); }
       const next = await reader.read(); if (next.done) break;
       const parsed = parseSseFrames(pending + decoder.decode(next.value, { stream: true })); pending = parsed.rest;
       for (const frame of parsed.frames) {
         if (typeof frame.response === "object" && frame.response && typeof (frame.response as { id?: unknown }).id === "string") providerResponseId = String((frame.response as { id: string }).id);
         if (frame.type === "response.output_text.delta" && typeof frame.delta === "string") {
           accumulated += frame.delta;
+          await db.query("update generation_job_message set content=$2 where id=$1 and status='STREAMING'", [assistantId, accumulated]);
           await appendDiscussionEvent(db, claimed.jobId, "discussion.message.delta", { messageId: assistantId, delta: frame.delta });
         }
       }
     }
+    const terminal = await db.query("select job.state job_state,turn.status turn_status from generation_job job join generation_discussion_turn turn on turn.job_id=job.id where turn.id=$1", [claimed.turnId]);
+    if (String(terminal.rows[0]?.job_state) !== "DISCUSSING" || String(terminal.rows[0]?.turn_status) !== "RUNNING") throw Object.assign(new Error("discussion_interrupted"), { interrupted: true });
     const parsed = JSON.parse(accumulated) as { assistantMessage?: unknown; specification?: unknown };
     if (typeof parsed.assistantMessage !== "string") throw new Error("discussion_structured_response_missing_message");
     const revision = await createSpecRevision(db, claimed.jobId, parsed.specification, claimed.turnId);
