@@ -456,8 +456,9 @@ wait_for_sql_equals "generation_discussion_migration_row" "1" "select count(*) f
 wait_for_sql_equals "browser_automation_runtime_migration_row" "1" "select count(*) from schema_migration where version='015_browser_automation_runtime.sql'"
 wait_for_sql_equals "generation_discussion_browser_runtime_completion_migration_row" "1" "select count(*) from schema_migration where version='016_generation_discussion_browser_runtime_completion.sql'"
 wait_for_sql_equals "discussion_turn_exclusivity_and_cancellation_migration_row" "1" "select count(*) from schema_migration where version='017_discussion_turn_exclusivity_and_cancellation.sql'"
+wait_for_sql_equals "wedos_dns_operation_migration_row" "1" "select count(*) from schema_migration where version='018_wedos_dns_operation.sql'"
 wait_for_sql_equals "readiness_gate_evidence_idempotency_migration_row" "1" "select count(*) from schema_migration where version='012_readiness_gate_evidence_idempotency.sql'"
-wait_for_sql_equals "schema_migration_count" "17" "select count(*) from schema_migration"
+wait_for_sql_equals "schema_migration_count" "18" "select count(*) from schema_migration"
 
 step verify-stable-runtime-health
 require_stable_runtime_health "$admin_host"
