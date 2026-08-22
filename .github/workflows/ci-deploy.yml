@@ -302,9 +302,9 @@ jobs:
           set -e
           if [ "$deploy_status" -ne 0 ]; then
             echo "::group::Safe KCML deploy diagnostics"
-            grep -E 'release-(step|failed|check|installed)|rollback-(ok|failed)' "$deploy_log" || true
+            grep -E 'release-(step|failed|check|installed)|rollback-(ok|failed)|wedos-wapi:(FAIL|preflight)|wedos-(dns|acme)|secret_unavailable|platform_worker_identity' "$deploy_log" || true
             sudo -n journalctl --since "$deploy_started_at" --no-pager \
-              | grep -E 'release-(step|failed|check|installed)|rollback-(ok|failed)' || true
+              | grep -E 'release-(step|failed|check|installed)|rollback-(ok|failed)|wedos-wapi:(FAIL|preflight)|wedos-(dns|acme)|secret_unavailable|platform_worker_identity' || true
             echo "::endgroup::"
             exit "$deploy_status"
           fi
