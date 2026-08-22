@@ -16,6 +16,7 @@ import {
   markPropagated,
   observeAuthoritativeDns,
   recoverDnsOperation,
+  sha256Digest,
   runDnsOperation,
   safeAuthoritativeDnsDiagnostics,
   WedosDnsObservationError
@@ -61,6 +62,21 @@ function safeErrorMessage(error: unknown): string {
     return `wapi_error:${String(error.code)}:${command}:${safeResult || "no_result"}`;
   }
   return (error instanceof Error ? error.message : "unknown").replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 240);
+}
+
+async function writeRecoveryDiagnostics(client: WedosWapiClient, operation: Awaited<ReturnType<typeof getWedosDnsOperation>>): Promise<void> {
+  const rows = parseWdnsRows((await client.rowsList(operation.zone)).data);
+  const owned = rows.find((row) =>
+    row.name === operation.recordName &&
+    row.rdtype === "TXT" &&
+    row.authorComment === operation.authorComment &&
+    sha256Digest(row.rdata) === operation.valueDigest &&
+    (!operation.wedosRowId || row.id.toUpperCase() === operation.wedosRowId)
+  );
+  process.stderr.write(`wedos-dns:operation=${operation.id}\n`);
+  process.stderr.write(`wedos-dns:operation-state=${operation.state}\n`);
+  process.stderr.write(`wedos-dns:wapi-row-present=${owned ? "yes" : "no"}\n`);
+  process.stderr.write(`wedos-dns:wapi-row-id=${operation.wedosRowId ?? "unknown"}\n`);
 }
 
 async function main(): Promise<void> {
@@ -146,6 +162,11 @@ async function main(): Promise<void> {
         try {
           cleanup = await cleanupDnsOperationByOwnership(db, operation.id, client);
         } catch (error) {
+          const current = await getWedosDnsOperation(db, operation.id);
+          await writeRecoveryDiagnostics(client, current);
+          // Keep the original structured observation intact. The top-level
+          // handler prints only its safe, per-authority diagnostics.
+          if (error instanceof WedosDnsObservationError) throw error;
           throw new Error(`wedos_dns_preflight_recovery_failed:${operation.id}:${operation.recordName}:${safeErrorMessage(error)}`);
         }
         recovered.push({ id: cleanup.id, state: cleanup.state });

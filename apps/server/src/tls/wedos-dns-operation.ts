@@ -452,6 +452,10 @@ export async function waitForAuthoritativeTxt(zone: string, recordName: string, 
       await sleep(Math.min(AUTHORITATIVE_PROPAGATION_DELAY_MS, remaining));
     }
   }
+  // Preserve the last structured observation across the bounded retry loop.
+  // The deploy caller must be able to distinguish a provider replica lag from
+  // a transport failure without ever receiving the TXT value itself.
+  if (lastError instanceof WedosDnsObservationError) throw lastError;
   throw new Error(`wedos_dns_authoritative_propagation_timeout:${lastError instanceof Error ? lastError.message : "unknown"}`);
 }
 
