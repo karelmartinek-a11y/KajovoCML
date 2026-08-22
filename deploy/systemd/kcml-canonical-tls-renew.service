@@ -2,6 +2,7 @@
 Description=KCML unattended canonical wildcard TLS renewal
 Wants=network-online.target
 After=network-online.target nginx.service postgresql.service
+OnFailure=kcml-canonical-tls-renew-failure.service
 
 [Service]
 Type=oneshot
@@ -15,6 +16,7 @@ Environment=CONFIG_VAULT_MASTER_KEY_BASE64_FILE=%d/config_vault_master_key
 LoadCredential=database_url:/etc/kcml/credentials/migrator/database_url
 LoadCredential=config_vault_master_key:/etc/kcml/credentials/config_vault_master_key
 ExecStart=/opt/kcml/current/deploy/scripts/renew-canonical-tls.sh
+ExecStartPost=-/usr/bin/systemctl start kcml-canonical-tls-renew-recovered.service
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict

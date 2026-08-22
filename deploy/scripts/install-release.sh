@@ -245,7 +245,7 @@ kcml ALL=(root) NOPASSWD: /usr/local/sbin/kcml-generated-runtime-helper *
 EOF
 chmod 0440 /etc/sudoers.d/kcml-generated-runtime
 visudo -cf /etc/sudoers.d/kcml-generated-runtime
-for unit in kcml.service kcml-generation-worker.service kcml-generated-component@.service kcml-component-control-worker.service kcml-component-e2e-worker.service kcml-monitor.service kcml-egress-proxy.service kcml-alert-primary.service kcml-alert-backup.service kcml-secret-broker.service kcml-canonical-tls-renew.service kcml-canonical-tls-renew.timer; do
+for unit in kcml.service kcml-generation-worker.service kcml-generated-component@.service kcml-component-control-worker.service kcml-component-e2e-worker.service kcml-monitor.service kcml-egress-proxy.service kcml-alert-primary.service kcml-alert-backup.service kcml-secret-broker.service kcml-canonical-tls-renew.service kcml-canonical-tls-renew-failure.service kcml-canonical-tls-renew-recovered.service kcml-canonical-tls-renew.timer; do
   install -m 0644 "$source_dir/deploy/systemd/$unit" "/etc/systemd/system/$unit"
 done
 install -d -m 0755 /opt/kcml/alert-sink

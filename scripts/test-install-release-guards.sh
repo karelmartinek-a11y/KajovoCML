@@ -12,9 +12,11 @@ acme_cleanup_hook="deploy/scripts/acme-cleanup-hook.sh"
 acme_deploy_hook="deploy/scripts/acme-deploy-hook.sh"
 renewal_script="deploy/scripts/renew-canonical-tls.sh"
 renewal_service="deploy/systemd/kcml-canonical-tls-renew.service"
+renewal_failure_service="deploy/systemd/kcml-canonical-tls-renew-failure.service"
+renewal_recovered_service="deploy/systemd/kcml-canonical-tls-renew-recovered.service"
 renewal_timer="deploy/systemd/kcml-canonical-tls-renew.timer"
 
-for file in "$install_script" "$preflight_script" "$generation_unit" "$component_unit" "$helper" "$tls_script" "$acme_auth_hook" "$acme_cleanup_hook" "$acme_deploy_hook" "$renewal_script" "$renewal_service" "$renewal_timer"; do
+for file in "$install_script" "$preflight_script" "$generation_unit" "$component_unit" "$helper" "$tls_script" "$acme_auth_hook" "$acme_cleanup_hook" "$acme_deploy_hook" "$renewal_script" "$renewal_service" "$renewal_failure_service" "$renewal_recovered_service" "$renewal_timer"; do
   test -f "$file"
 done
 
@@ -52,6 +54,12 @@ grep -Fq 'certbot renew' "$renewal_script"
 grep -Fq 'restore_previous' "$renewal_script"
 grep -Fq 'nginx -t' "$renewal_script"
 grep -Fq 'curl --fail' "$renewal_script"
+grep -Fq 'OnFailure=kcml-canonical-tls-renew-failure.service' "$renewal_service"
+grep -Fq 'kcml-canonical-tls-renew-recovered.service' "$renewal_service"
+grep -Fq 'report-canonical-tls-renewal.js failed' "$renewal_failure_service"
+grep -Fq 'report-canonical-tls-renewal.js recovered' "$renewal_recovered_service"
+grep -Fq 'kcml-canonical-tls-renew-failure.service' "$install_script"
+grep -Fq 'kcml-canonical-tls-renew-recovered.service' "$install_script"
 grep -Fq 'step wedos-wapi-preflight' "$install_script"
 grep -Fq 'dist/cli/wedos-wapi.js" preflight' "$install_script"
 grep -Fq 'step wedos-wapi-recover-preflight' "$install_script"

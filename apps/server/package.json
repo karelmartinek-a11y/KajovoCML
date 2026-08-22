@@ -35,6 +35,8 @@
     "wedos-wapi:release": "node dist/cli/wedos-wapi.js",
     "openai-secret:preflight": "tsx src/cli/openai-secret-preflight.ts",
     "openai-secret:preflight:release": "node dist/cli/openai-secret-preflight.js",
+    "canonical-tls-renewal:alert": "tsx src/cli/report-canonical-tls-renewal.ts",
+    "canonical-tls-renewal:alert:release": "node dist/cli/report-canonical-tls-renewal.js",
     "start:generation-worker": "node dist/cli/generation-worker.js",
     "generation-worker": "tsx src/cli/generation-worker.ts"
   },
