@@ -2,8 +2,9 @@ import { createHash, randomUUID } from "node:crypto";
 
 export const WEDOS_WAPI_URL = "https://api.wedos.com/wapi/json";
 export type WapiCredentials = Readonly<{ login: string; password: string }>;
+export type WapiOutcome = "OK" | "PENDING" | "EMPTY" | "ACKNOWLEDGED";
 export type WapiResponse<T = Record<string, unknown>> = Readonly<{
-  code: number; result: string; clTRID: string; svTRID: string | null; command: string; data: T | null;
+  code: number; result: string; clTRID: string; svTRID: string | null; command: string; outcome: WapiOutcome; data: T | null;
 }>;
 
 type FetchLike = typeof fetch;
@@ -13,6 +14,12 @@ export class WedosWapiError extends Error {
   constructor(readonly code: number, message: string, readonly retryAfterMs: number | null = null) { super(message); }
 }
 
+export class WedosWapiCircuitOpenError extends Error {
+  constructor(readonly code: number, readonly retryAfterMs: number | null) { super("wedos_wapi_circuit_open"); }
+}
+
+// WEDOS WAPI authenticates requests with this protocol-defined SHA-1 value.
+// It is never stored as a password verifier. codeql[js/insufficient-password-hash]
 function sha1(value: string): string { return createHash("sha1").update(value, "utf8").digest("hex"); }
 
 /** WEDOS defines the hour in Europe/Prague, rather than UTC. */
@@ -34,17 +41,47 @@ export function acmeRelativeTxtName(certbotDomain: string, zone = "hcasc.cz"): s
 }
 
 function responseError(code: number, result: string): WedosWapiError {
-  if (code === 2006) return new WedosWapiError(code, "wedos_wapi_rate_limited", 60_000);
+  // These are orchestration signals, not undocumented WEDOS Retry-After values.
+  // A durable caller decides when a later retry is permitted.
+  if (code === 2006) return new WedosWapiError(code, "wedos_wapi_rate_limited");
   if (code === 2050) return new WedosWapiError(code, "wedos_wapi_authentication_failed");
   if (code === 2051) return new WedosWapiError(code, "wedos_wapi_source_ip_not_allowed");
-  if (code === 2052) return new WedosWapiError(code, "wedos_wapi_source_ip_temporarily_blocked", 15 * 60_000);
+  if (code === 2052) return new WedosWapiError(code, "wedos_wapi_source_ip_temporarily_blocked");
   return new WedosWapiError(code, `wedos_wapi_error_${code}:${result.slice(0, 160)}`);
 }
 
+const ASYNC_COMMANDS = new Set(["dns-domain-commit"]);
+const COMMAND_OUTCOMES: Record<string, Readonly<Record<number, WapiOutcome>>> = {
+  "poll-req": { 1000: "OK", 1003: "EMPTY" },
+  "poll-ack": { 1002: "ACKNOWLEDGED" }
+};
+
+function outcomeFor(command: string, code: number): WapiOutcome | null {
+  const specific = COMMAND_OUTCOMES[command]?.[code];
+  if (specific) return specific;
+  if (code === 1000) return "OK";
+  if (code === 1001 && ASYNC_COMMANDS.has(command)) return "PENDING";
+  return null;
+}
+
+function validateResponse(command: string, raw: RawResponse | undefined, clTRID: string): { code: number; result: string; svTRID: string | null; data: Record<string, unknown> | null; outcome: WapiOutcome } {
+  const code = Number(raw?.code);
+  if (!Number.isInteger(code) || typeof raw?.clTRID !== "string" || raw.clTRID !== clTRID) throw new Error("wedos_wapi_correlation_invalid");
+  if (typeof raw.command !== "string" || raw.command !== command) throw new Error("wedos_wapi_command_mismatch");
+  if (raw.svTRID !== undefined && (typeof raw.svTRID !== "string" || !raw.svTRID.trim())) throw new Error("wedos_wapi_svtrid_invalid");
+  if (raw.data !== undefined && raw.data !== null && (typeof raw.data !== "object" || Array.isArray(raw.data))) throw new Error("wedos_wapi_data_schema_invalid");
+  const result = typeof raw.result === "string" ? raw.result : "";
+  const outcome = outcomeFor(command, code);
+  if (!outcome) throw responseError(code, result);
+  return { code, result, svTRID: typeof raw.svTRID === "string" ? raw.svTRID : null, data: (raw.data ?? null) as Record<string, unknown> | null, outcome };
+}
+
 export class WedosWapiClient {
+  private circuit: { code: number; openedAt: number } | null = null;
   constructor(private readonly credentials: WapiCredentials, private readonly fetchImpl: FetchLike = fetch, private readonly now: () => Date = () => new Date()) {}
 
   async request<T = Record<string, unknown>>(command: string, data?: Record<string, unknown>, test = false): Promise<WapiResponse<T>> {
+    if (this.circuit) throw new WedosWapiCircuitOpenError(this.circuit.code, null);
     const clTRID = `kcml-${command}-${randomUUID()}`;
     const request = { user: this.credentials.login, auth: wedosAuth(this.credentials, this.now()), command, ...(data ? { data } : {}), clTRID, ...(test ? { test: "1" } : {}) };
     const response = await this.fetchImpl(WEDOS_WAPI_URL, {
@@ -54,20 +91,22 @@ export class WedosWapiClient {
     if (!response.ok) throw new WedosWapiError(response.status, `wedos_wapi_transport_${response.status}`, response.status === 429 ? 60_000 : null);
     const body = await response.json() as { response?: RawResponse };
     const raw = body.response;
-    const code = Number(raw?.code);
-    if (!Number.isInteger(code) || typeof raw?.clTRID !== "string" || raw.clTRID !== clTRID) throw new Error("wedos_wapi_correlation_invalid");
-    const result = typeof raw.result === "string" ? raw.result : "";
-    const parsed: WapiResponse<T> = { code, result, clTRID, svTRID: typeof raw.svTRID === "string" ? raw.svTRID : null, command: typeof raw.command === "string" ? raw.command : command, data: (raw.data ?? null) as T | null };
-    if (code !== 1000 && code !== 1001) throw responseError(code, result);
-    return parsed;
+    try {
+      const parsed = validateResponse(command, raw, clTRID);
+      return { ...parsed, clTRID, command, data: parsed.data as T | null };
+    } catch (error) {
+      if (error instanceof WedosWapiError && (error.code === 2006 || error.code === 2052)) this.circuit = { code: error.code, openedAt: this.now().getTime() };
+      throw error;
+    }
   }
 
   ping(): Promise<WapiResponse> { return this.request("ping"); }
   domainsList(): Promise<WapiResponse> { return this.request("dns-domains-list"); }
   domainInfo(domain: string): Promise<WapiResponse> { return this.request("dns-domain-info", { name: domain }); }
   rowsList(domain: string): Promise<WapiResponse> { return this.request("dns-rows-list", { domain }); }
-  rowDetail(domain: string, rowId: string): Promise<WapiResponse> { return this.request("dns-row-detail", { domain, row_id: rowId }); }
-  rowAdd(domain: string, name: string, rdata: string, authorComment: string, ttl = 60): Promise<WapiResponse> {
+  rowDetail(domain: string, rowId: string): Promise<WapiResponse> { return this.request("dns-row-detail", { name: domain, row_id: rowId }); }
+  rowAdd(domain: string, name: string, rdata: string, authorComment: string, ttl: number): Promise<WapiResponse> {
+    if (!Number.isInteger(ttl) || ttl <= 0) throw new Error("wedos_wapi_ttl_invalid");
     return this.request("dns-row-add", { domain, name, ttl, type: "TXT", rdata, author_comment: authorComment });
   }
   rowDelete(domain: string, rowId: string): Promise<WapiResponse> { return this.request("dns-row-delete", { domain, row_id: rowId }); }

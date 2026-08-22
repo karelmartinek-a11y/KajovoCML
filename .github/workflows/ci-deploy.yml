@@ -150,7 +150,13 @@ jobs:
       - name: Enforce clean CodeQL results
         run: |
           jq -r '.runs[].results[]? | [.ruleId, (.level // "warning"), .message.text, (.locations[0].physicalLocation.artifactLocation.uri // ""), ((.locations[0].physicalLocation.region.startLine // 0) | tostring)] | @tsv' /tmp/codeql-results/javascript.sarif
-          jq -e '[.runs[].results[]?] | length == 0' /tmp/codeql-results/javascript.sarif
+          # WEDOS documents SHA-1 as its request-authentication protocol.  This
+          # narrow exception is not password storage and applies to one known
+          # source location only; every other CodeQL result remains blocking.
+          jq -e '[.runs[].results[]? | select(
+            .ruleId != "js/insufficient-password-hash" or
+            (.locations[0].physicalLocation.artifactLocation.uri // "") != "apps/server/src/tls/wedos-wapi.ts"
+          )] | length == 0' /tmp/codeql-results/javascript.sarif
 
   release:
     if: github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || github.event_name == 'push')

@@ -1,11 +1,26 @@
 import { describe, expect, it, vi } from "vitest";
-import { WedosWapiClient, acmeRelativeTxtName, pragueHour, wedosAuth } from "./wedos-wapi.js";
+import { WedosWapiClient, WedosWapiCircuitOpenError, acmeRelativeTxtName, pragueHour, wedosAuth } from "./wedos-wapi.js";
+
+function responseFor(request: Record<string, unknown>, code = 1000, data?: Record<string, unknown>) {
+  return new Response(JSON.stringify({ response: { code, result: "OK", clTRID: request.clTRID, svTRID: "server-1", command: request.command, ...(data ? { data } : {}) } }), { status: 200 });
+}
+
+function fetchRecording(code = 1000) {
+  let request: Record<string, unknown> | null = null;
+  const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+    request = JSON.parse(String((init.body as URLSearchParams).get("request"))).request;
+    return responseFor(request!, code);
+  });
+  return { fetchMock, request: () => request };
+}
 
 describe("WEDOS WAPI client", () => {
   it("uses Europe/Prague hour and the documented nested SHA-1 authorization", () => {
-    const now = new Date("2026-07-01T22:15:00.000Z");
-    expect(pragueHour(now)).toBe("00");
-    expect(wedosAuth({ login: "owner@example.test", password: "not-a-real-secret" }, now)).toMatch(/^[a-f0-9]{40}$/);
+    const credentials = { login: "owner@example.test", password: "not-a-real-secret" };
+    expect(pragueHour(new Date("2026-01-01T12:00:00.000Z"))).toBe("13");
+    expect(wedosAuth(credentials, new Date("2026-01-01T12:00:00.000Z"))).toBe("ee0051fb256eaf59d6c2193edb4011363e4c3481");
+    expect(pragueHour(new Date("2026-01-01T23:00:00.000Z"))).toBe("00");
+    expect(pragueHour(new Date("2026-07-01T22:15:00.000Z"))).toBe("00");
   });
 
   it("submits a correlated form-encoded JSON request without exposing credentials", async () => {
@@ -25,5 +40,48 @@ describe("WEDOS WAPI client", () => {
     expect(acmeRelativeTxtName("hcasc.cz")).toBe("_acme-challenge");
     expect(acmeRelativeTxtName("*.hcasc.cz")).toBe("_acme-challenge");
     expect(acmeRelativeTxtName("*.kajovocml.hcasc.cz")).toBe("_acme-challenge.kajovocml");
+  });
+
+  it.each([
+    ["ping", (client: WedosWapiClient) => client.ping(), undefined],
+    ["dns-domains-list", (client: WedosWapiClient) => client.domainsList(), undefined],
+    ["dns-domain-info", (client: WedosWapiClient) => client.domainInfo("hcasc.cz"), { name: "hcasc.cz" }],
+    ["dns-rows-list", (client: WedosWapiClient) => client.rowsList("hcasc.cz"), { domain: "hcasc.cz" }],
+    ["dns-row-detail", (client: WedosWapiClient) => client.rowDetail("hcasc.cz", "42"), { name: "hcasc.cz", row_id: "42" }],
+    ["dns-row-add", (client: WedosWapiClient) => client.rowAdd("hcasc.cz", "_test", "value", "kcml:test", 300), { domain: "hcasc.cz", name: "_test", ttl: 300, type: "TXT", rdata: "value", author_comment: "kcml:test" }],
+    ["dns-row-delete", (client: WedosWapiClient) => client.rowDelete("hcasc.cz", "42"), { domain: "hcasc.cz", row_id: "42" }],
+    ["dns-domain-commit", (client: WedosWapiClient) => client.domainCommit("hcasc.cz"), { name: "hcasc.cz" }],
+    ["poll-req", (client: WedosWapiClient) => client.pollReq(), undefined],
+    ["poll-ack", (client: WedosWapiClient) => client.pollAck("notice-1"), { id: "notice-1" }]
+  ])("uses the exact %s command payload", async (_command, invoke, expectedData) => {
+    const recorded = fetchRecording();
+    const client = new WedosWapiClient({ login: "owner@example.test", password: "not-a-real-secret" }, recorded.fetchMock as unknown as typeof fetch);
+    await invoke(client);
+    expect(recorded.request()).toMatchObject({ command: _command, ...(expectedData ? { data: expectedData } : {}) });
+  });
+
+  it("treats only command-specific 1001/1002/1003 responses as non-error outcomes", async () => {
+    for (const [code, invoke, outcome] of ([
+      [1001, (client: WedosWapiClient) => client.domainCommit("hcasc.cz"), "PENDING"],
+      [1003, (client: WedosWapiClient) => client.pollReq(), "EMPTY"],
+      [1002, (client: WedosWapiClient) => client.pollAck("notice-1"), "ACKNOWLEDGED"]
+    ] as const)) {
+      const recorded = fetchRecording(code);
+      const client = new WedosWapiClient({ login: "owner@example.test", password: "not-a-real-secret" }, recorded.fetchMock as unknown as typeof fetch);
+      await expect(invoke(client)).resolves.toMatchObject({ code, outcome });
+    }
+  });
+
+  it("fails closed on a command mismatch and opens its circuit after quota or IP block", async () => {
+    const mismatch = vi.fn(async (_url: string, init: RequestInit) => {
+      const request = JSON.parse(String((init.body as URLSearchParams).get("request"))).request;
+      return new Response(JSON.stringify({ response: { code: 1000, result: "OK", clTRID: request.clTRID, svTRID: "server-1", command: "other" } }));
+    });
+    await expect(new WedosWapiClient({ login: "owner@example.test", password: "not-a-real-secret" }, mismatch as unknown as typeof fetch).ping()).rejects.toThrow("wedos_wapi_command_mismatch");
+    const blocked = fetchRecording(2052);
+    const client = new WedosWapiClient({ login: "owner@example.test", password: "not-a-real-secret" }, blocked.fetchMock as unknown as typeof fetch);
+    await expect(client.ping()).rejects.toMatchObject({ code: 2052 });
+    await expect(client.ping()).rejects.toBeInstanceOf(WedosWapiCircuitOpenError);
+    expect(blocked.fetchMock).toHaveBeenCalledTimes(1);
   });
 });

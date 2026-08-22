@@ -95,4 +95,30 @@ describe.skipIf(!enabled)("generation discussion PostgreSQL contract", () => {
     expect(terminal.rows[0].status).toBe("INTERRUPT_REQUESTED");
     expect(message.rows[0].status).toBe("INTERRUPTED");
   });
+
+  it("rejects approval while a newer OWNER turn is queued", async () => {
+    const created = await createGenerationJob(db, ownerId, `discussion queued approval ${randomUUID()}`, randomUUID(), randomUUID());
+    jobIds.push(created.job.id);
+    const firstTurn = await db.query("select id from generation_discussion_turn where job_id=$1 order by created_at limit 1", [created.job.id]);
+    const turnId = String(firstTurn.rows[0].id);
+    await db.query("update generation_discussion_turn set status='COMPLETED',completed_at=now() where id=$1", [turnId]);
+    const revision = await createSpecRevision(db, created.job.id, specification("approval exact current"), turnId);
+    await queueDiscussionTurn(db, created.job.id, ownerId, "Novější vstup musí projít turnem.", `queued-approval-${randomUUID()}`);
+    await expect(approveSpec(db, created.job.id, ownerId, revision.id, revision.digest)).rejects.toMatchObject({ message: "GENERATION_TURN_ACTIVE" });
+  });
+
+  it("allocates concurrent immutable revisions without duplicate or lost sequence", async () => {
+    const created = await createGenerationJob(db, ownerId, `discussion revision concurrency ${randomUUID()}`, randomUUID(), randomUUID());
+    jobIds.push(created.job.id);
+    const firstTurn = await db.query("select id from generation_discussion_turn where job_id=$1 order by created_at limit 1", [created.job.id]);
+    const turnId = String(firstTurn.rows[0].id);
+    await db.query("update generation_discussion_turn set status='COMPLETED',completed_at=now() where id=$1", [turnId]);
+    const [one, two] = await Promise.all([
+      createSpecRevision(db, created.job.id, specification("concurrent-one"), turnId),
+      createSpecRevision(db, created.job.id, specification("concurrent-two"), turnId)
+    ]);
+    expect([one.revision, two.revision].sort((a, b) => a - b)).toEqual([1, 2]);
+    const current = await db.query("select revision from generation_spec_revision where job_id=$1 order by revision", [created.job.id]);
+    expect(current.rows.map((row) => Number(row.revision))).toEqual([1, 2]);
+  });
 });

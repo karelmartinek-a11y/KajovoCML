@@ -95,9 +95,23 @@ export async function getCurrentSpec(db: SqlExecutor, jobId: string) {
   return { id: String(row.id), revision: Number(row.revision), spec: row.spec as GenerationSpec, canonicalJson: String(row.canonical_json), digest: String(row.digest), sourceTurnId: row.source_turn_id ? String(row.source_turn_id) : null, renderedMarkdown: String(row.rendered_markdown ?? ""), createdAt: new Date(row.created_at).toISOString() };
 }
 
-export async function createSpecRevision(db: SqlExecutor, jobId: string, input: unknown, turnId: string) {
+export type GenerationSpecRevision = Readonly<{
+  id: string; revision: number; spec: GenerationSpec; canonicalJson: string; digest: string;
+  sourceTurnId: string | null; renderedMarkdown: string; createdAt: string; created: boolean;
+}>;
+
+export async function createSpecRevision(db: SqlExecutor, jobId: string, input: unknown, turnId: string): Promise<GenerationSpecRevision> {
+  if (typeof (db as Db).connect === "function") return tx<GenerationSpecRevision>(db as Db, (client) => createSpecRevisionLocked(client, jobId, input, turnId));
+  return createSpecRevisionLocked(db, jobId, input, turnId);
+}
+
+/** The parent job row is the per-job monotonic revision allocator. */
+async function createSpecRevisionLocked(db: SqlExecutor, jobId: string, input: unknown, turnId: string): Promise<GenerationSpecRevision> {
   const spec = generationSpecificationSchema.parse(input);
   const canonical = canonicalJson(spec); const specDigest = digest(spec); const renderedMarkdown = renderSpecificationMarkdown(spec);
+  const job = await db.query("select id,state from generation_job where id=$1 for update", [jobId]);
+  if (!job.rowCount) throw Object.assign(new Error("not_found"), { statusCode: 404 });
+  if (String(job.rows[0].state) !== "DISCUSSING") throw Object.assign(new Error("generation_discussion_closed"), { statusCode: 409 });
   const current = await getCurrentSpec(db, jobId);
   if (current?.digest === specDigest) return { ...current, created: false };
   const result = await db.query(
@@ -241,8 +255,20 @@ export async function approveSpec(db: Db, jobId: string, ownerId: string, revisi
     const validated = generationSpecificationSchema.parse(spec.rows[0].spec);
     if (digest(validated) !== expectedDigest || String(spec.rows[0].digest) !== expectedDigest || canonicalJson(validated) !== String(spec.rows[0].canonical_json)) throw Object.assign(new Error("GENERATION_SPEC_DIGEST_INVALID"), { statusCode: 409 });
     if (validated.openQuestions.length) throw Object.assign(new Error("GENERATION_SPEC_OPEN_QUESTIONS"), { statusCode: 409 });
-    const activeTurn = await client.query("select 1 from generation_discussion_turn where job_id=$1 and status in ('RUNNING','INTERRUPT_REQUESTED') limit 1", [jobId]);
+    const activeTurn = await client.query("select 1 from generation_discussion_turn where job_id=$1 and status in ('QUEUED','RUNNING','INTERRUPT_REQUESTED') limit 1", [jobId]);
     if (activeTurn.rowCount) throw Object.assign(new Error("GENERATION_TURN_ACTIVE"), { statusCode: 409 });
+    const unrepresentedOwnerInput = await client.query(
+      `select 1
+         from generation_job_message message
+         left join generation_discussion_turn message_turn on message_turn.input_message_id=message.id
+         join generation_discussion_turn source_turn on source_turn.id=$2
+        where message.job_id=$1 and message.role='OWNER' and message.sequence > (
+          select source_message.sequence from generation_job_message source_message where source_message.id=source_turn.input_message_id
+        ) and coalesce(message_turn.status,'QUEUED') <> 'COMPLETED'
+        limit 1`,
+      [jobId, spec.rows[0].source_turn_id]
+    );
+    if (unrepresentedOwnerInput.rowCount) throw Object.assign(new Error("GENERATION_OWNER_INPUT_UNREPRESENTED"), { statusCode: 409 });
     if (String(row.rows[0].state) !== "DISCUSSING") throw Object.assign(new Error("generation_spec_not_approvable"), { statusCode: 409 });
     await client.query("update generation_job set approved_spec_revision_id=$2,approved_spec_job_id=$1,approved_spec_digest=$3,discussion_closed_at=now(),state='ANALYZING',updated_at=now() where id=$1 and state='DISCUSSING'", [jobId, revisionId, expectedDigest]);
     return { revisionId, digest: expectedDigest, idempotent: false };
