@@ -81,8 +81,8 @@ describe("WEDOS WAPI client", () => {
     const data = { domain: [{ name: "hcasc.cz", status: "ACTIVE", type: "PRIMARY" }] };
     expect(parseWdnsDomains(data)).toEqual([{ name: "hcasc.cz", status: "active", type: "primary" }]);
     expect(parseWdnsDomainInfo(data, "hcasc.cz")).toEqual({ name: "hcasc.cz", status: "active", type: "primary" });
-    expect(parseWdnsRows({ row: [{ ID: 42, name: "_acme-challenge", ttl: 300, rdtype: "TXT", rdata: "value", changed_date: "2026-08-22 10:00:00", author_comment: "kcml-acme:00000000-0000-0000-0000-000000000000" }] })).toEqual([
-      { id: "42", name: "_acme-challenge", ttl: 300, rdtype: "TXT", rdata: "value", changedDate: "2026-08-22 10:00:00", authorComment: "kcml-acme:00000000-0000-0000-0000-000000000000" }
+    expect(parseWdnsRows({ row: [{ ID: "ab12", name: "_acme-challenge", ttl: 300, rdtype: "TXT", rdata: "value", changed_date: "2026-08-22 10:00:00", author_comment: "kcml-acme:00000000-0000-0000-0000-000000000000" }] })).toEqual([
+      { id: "AB12", name: "_acme-challenge", ttl: 300, rdtype: "TXT", rdata: "value", changedDate: "2026-08-22 10:00:00", authorComment: "kcml-acme:00000000-0000-0000-0000-000000000000" }
     ]);
   });
 

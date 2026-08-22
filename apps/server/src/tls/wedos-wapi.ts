@@ -101,7 +101,7 @@ export function parseWdnsDomainInfo(data: unknown, expectedName: string): WdnsDo
 
 export function parseWdnsRows(data: unknown): WdnsRow[] {
   return wapiRowsDataSchema.parse(data).row.map((row) => ({
-    id: String(row.ID), name: row.name, ttl: Number(row.ttl), rdtype: row.rdtype.toUpperCase(), rdata: row.rdata,
+    id: String(row.ID).toUpperCase(), name: row.name, ttl: Number(row.ttl), rdtype: row.rdtype.toUpperCase(), rdata: row.rdata,
     changedDate: row.changed_date, authorComment: row.author_comment
   }));
 }
@@ -146,12 +146,12 @@ export class WedosWapiClient {
   domainsList(): Promise<WapiResponse> { return this.request("dns-domains-list"); }
   domainInfo(domain: string): Promise<WapiResponse> { return this.request("dns-domain-info", { name: domain }); }
   rowsList(domain: string): Promise<WapiResponse> { return this.request("dns-rows-list", { domain }); }
-  rowDetail(domain: string, rowId: string): Promise<WapiResponse> { return this.request("dns-row-detail", { name: domain, row_id: rowId }); }
+  rowDetail(domain: string, rowId: string): Promise<WapiResponse> { return this.request("dns-row-detail", { name: domain, row_id: rowId.toUpperCase() }); }
   rowAdd(domain: string, name: string, rdata: string, authorComment: string, ttl: number): Promise<WapiResponse> {
     if (!Number.isInteger(ttl) || ttl <= 0) throw new Error("wedos_wapi_ttl_invalid");
     return this.request("dns-row-add", { domain, name, ttl, type: "TXT", rdata, author_comment: authorComment });
   }
-  rowDelete(domain: string, rowId: string): Promise<WapiResponse> { return this.request("dns-row-delete", { domain, row_id: rowId }); }
+  rowDelete(domain: string, rowId: string): Promise<WapiResponse> { return this.request("dns-row-delete", { domain, row_id: rowId.toUpperCase() }); }
   domainCommit(domain: string): Promise<WapiResponse> { return this.request("dns-domain-commit", { name: domain }); }
   pollReq(): Promise<WapiResponse> { return this.request("poll-req"); }
   pollAck(id: string): Promise<WapiResponse> { return this.request("poll-ack", { id }); }

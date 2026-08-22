@@ -6,8 +6,12 @@ preflight_script="deploy/scripts/preflight.sh"
 generation_unit="deploy/systemd/kcml-generation-worker.service"
 component_unit="deploy/systemd/kcml-generated-component@.service"
 helper="deploy/scripts/kcml-generated-runtime-helper"
+tls_script="deploy/scripts/ensure-canonical-tls.sh"
+acme_auth_hook="deploy/scripts/acme-auth-hook.sh"
+acme_cleanup_hook="deploy/scripts/acme-cleanup-hook.sh"
+acme_deploy_hook="deploy/scripts/acme-deploy-hook.sh"
 
-for file in "$install_script" "$preflight_script" "$generation_unit" "$component_unit" "$helper"; do
+for file in "$install_script" "$preflight_script" "$generation_unit" "$component_unit" "$helper" "$tls_script" "$acme_auth_hook" "$acme_cleanup_hook" "$acme_deploy_hook"; do
   test -f "$file"
 done
 
@@ -32,14 +36,27 @@ grep -Fq "where version='018_wedos_dns_operation.sql'" "$install_script"
 grep -Fq 'wait_for_sql_equals "schema_migration_count" "18" "select count(*) from schema_migration"' "$install_script"
 grep -Fq 'curl -fsS "https://${canonical_component_hostname}/.well-known/oauth-protected-resource/mcp"' "$install_script"
 grep -Fq 'deploy/scripts/ensure-canonical-tls.sh' "$install_script"
+grep -Fq 'step wedos-wapi-preflight' "$install_script"
+grep -Fq 'dist/cli/wedos-wapi.js" preflight' "$install_script"
+grep -Fq 'acme-auth-hook.sh' "$tls_script"
+grep -Fq 'acme-cleanup-hook.sh' "$tls_script"
+grep -Fq 'acme-deploy-hook.sh' "$tls_script"
+if grep -E -n 'WAITING_DNS|kcml-dns-challenge\.json|manual-cleanup-hook /bin/true|--force-renewal' "$tls_script" "$acme_auth_hook" "$acme_cleanup_hook" "$acme_deploy_hook" >/dev/null; then
+  echo "legacy manual DNS challenge flow remains in canonical TLS automation" >&2
+  exit 1
+fi
 tls_line="$(grep -n 'step ensure-canonical-tls' "$install_script" | head -1 | cut -d: -f1)"
 unit_line="$(grep -n 'for unit in kcml.service' "$install_script" | head -1 | cut -d: -f1)"
 split_config_line="$(grep -n 'step split-config-initial' "$install_script" | head -1 | cut -d: -f1)"
+migrate_line="$(grep -n 'step migrate' "$install_script" | head -1 | cut -d: -f1)"
+wapi_line="$(grep -n 'step wedos-wapi-preflight' "$install_script" | head -1 | cut -d: -f1)"
 test -n "$tls_line"
 test -n "$unit_line"
 test -n "$split_config_line"
-if [ "$tls_line" -ge "$unit_line" ] || [ "$tls_line" -ge "$split_config_line" ]; then
-  echo "canonical TLS must complete before any systemd or credential/runtime mutation" >&2
+test -n "$migrate_line"
+test -n "$wapi_line"
+if [ "$split_config_line" -ge "$migrate_line" ] || [ "$migrate_line" -ge "$wapi_line" ] || [ "$wapi_line" -ge "$tls_line" ] || [ "$tls_line" -ge "$unit_line" ]; then
+  echo "migration and WAPI/TLS must complete before systemd topology activation" >&2
   exit 1
 fi
 grep -Fq 'GENERATION_WORKER_ENABLED' deploy/scripts/split-service-config.sh

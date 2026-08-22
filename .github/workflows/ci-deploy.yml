@@ -102,6 +102,7 @@ jobs:
             apps/server/src/domain/component-db.test.ts \
             apps/server/src/domain/external-api-db.test.ts \
             apps/server/src/domain/generation-discussion-db.test.ts \
+            apps/server/src/tls/wedos-dns-operation-db.test.ts \
             apps/server/src/domain/mcp-policy-db.test.ts \
             apps/server/src/domain/operational-config-db.test.ts \
             apps/server/src/domain/server-state-db.test.ts \

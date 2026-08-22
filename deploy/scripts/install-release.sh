@@ -174,10 +174,31 @@ require_stable_runtime_health() {
 render_nginx_config "$source_dir/deploy/nginx/kcml.conf" /etc/nginx/sites-available/kcml.conf
 ln -sfn /etc/nginx/sites-available/kcml.conf /etc/nginx/sites-enabled/kcml.conf
 
+step split-config-initial
+DATABASE_APP_URL="${DATABASE_APP_URL:-$DATABASE_URL}" bash "$source_dir/deploy/scripts/split-service-config.sh" "$release_id"
+step backup
+bash "$source_dir/deploy/scripts/backup.sh"
+
+step migrate
+KCML_PROCESS_ROLE=migrate \
+DATABASE_URL_FILE=/etc/kcml/credentials/migrator/database_url \
+CONFIG_VAULT_MASTER_KEY_BASE64_FILE=/etc/kcml/credentials/config_vault_master_key \
+NODE_ENV=production \
+BUILD_ID="$release_id" \
+  node "$source_dir/apps/server/dist/cli/migrate.js"
+
+step wedos-wapi-preflight
+KCML_PROCESS_ROLE=migrate \
+DATABASE_URL_FILE=/etc/kcml/credentials/migrator/database_url \
+CONFIG_VAULT_MASTER_KEY_BASE64_FILE=/etc/kcml/credentials/config_vault_master_key \
+NODE_ENV=production \
+BUILD_ID="$release_id" \
+  node "$source_dir/apps/server/dist/cli/wedos-wapi.js" preflight
+
 # DNS-01 issuance is an external dependency and can take up to fifteen minutes.
-# Do it before installing service units, splitting credentials, or touching the
-# active runtime.  A DNS failure must leave the previous KCML service topology
-# intact; only the reversible nginx ACME-challenge exposure has happened here.
+# It runs only after the forward migration and WAPI preflight, while the
+# previous systemd topology remains active. No new unit is enabled or restarted
+# until TLS, its SAN contract, and its WAPI cleanup path are ready.
 step expose-canonical-tls-challenge
 nginx -t
 systemctl reload nginx
@@ -209,20 +230,9 @@ sed "s/@KCML_UID@/${kcml_uid}/g" "$source_dir/deploy/systemd/kcml-monitor-runtim
   > /etc/systemd/system/kcml-monitor.service.d/runtime-user.conf
 chmod 0644 /etc/systemd/system/kcml-monitor.service.d/runtime-user.conf
 
-step split-config-initial
-DATABASE_APP_URL="${DATABASE_APP_URL:-$DATABASE_URL}" bash "$source_dir/deploy/scripts/split-service-config.sh" "$release_id"
 step preflight
 export KCML_COMPONENT_HOST_SUFFIX="$component_hostname_suffix"
 GENERATION_WORKER_ENABLED=true KCML_RELEASE_SOURCE="$source_dir" bash "$source_dir/deploy/scripts/preflight.sh"
-step backup
-bash "$source_dir/deploy/scripts/backup.sh"
-
-step migrate
-KCML_PROCESS_ROLE=migrate \
-DATABASE_URL_FILE=/etc/kcml/credentials/migrator/database_url \
-NODE_ENV=production \
-BUILD_ID="$release_id" \
-  node "$source_dir/apps/server/dist/cli/migrate.js"
 
 step configure-db-roles
 bash "$source_dir/deploy/scripts/configure-db-roles.sh"
