@@ -142,6 +142,9 @@ single shared Responses transport/function-call infrastructure. The only
 discussion function is the server-side `propose_generation_specification` tool;
 its arguments are never rendered as chat text. The worker persists assistant
 deltas and safe provider response ids, checks interruption while reading, and
+rejects a raw JSON/envelope prefix rather than extracting legacy fields such as
+`assistantMessage` into OWNER-visible text. It never parses model text into a
+specification; only the validated function-tool arguments may create a revision.
 redacts accidental JSON envelopes before they reach the OWNER. Browser preview,
 teaching, operation scope and irreversible confirmation are job-scoped records;
 they do not create another approval gate. The manifest DSL has no arbitrary

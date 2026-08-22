@@ -208,6 +208,36 @@ export async function queueDiscussionTurn(db: Db, jobId: string, ownerId: string
 export const runDiscussionTurn = queueDiscussionTurn;
 
 type PendingFunctionCall = { callId: string; itemId?: string; name: string; arguments: string };
+export type DiscussionTextStreamState = Readonly<{ content: string; pendingPrefix: string; rejectedStructuredOutput: boolean }>;
+
+const invalidOwnerText = "Odpověď modelu nebyla v požadovaném textovém formátu. Pokračujte prosím upřesněním požadavku.";
+
+export function createDiscussionTextStream(): DiscussionTextStreamState {
+  return { content: "", pendingPrefix: "", rejectedStructuredOutput: false };
+}
+
+/**
+ * Keep normal Responses text genuinely streamed, while holding only the small
+ * ambiguous prefix needed to reject a legacy raw-JSON envelope before it can
+ * reach the OWNER.  GenerationSpecification is accepted only via the server
+ * function tool below; this function deliberately never parses model JSON.
+ */
+export function appendDiscussionTextDelta(state: DiscussionTextStreamState, delta: string): Readonly<{ state: DiscussionTextStreamState; visibleDelta: string }> {
+  if (state.rejectedStructuredOutput || !delta) return { state, visibleDelta: "" };
+  const pendingPrefix = `${state.pendingPrefix}${delta}`;
+  const trimmed = pendingPrefix.trimStart();
+  const lower = trimmed.toLowerCase();
+  const ambiguousFence = "```json".startsWith(lower);
+  const structured = trimmed.startsWith("{") || trimmed.startsWith("[") || lower.startsWith("```json");
+  if (structured) return { state: { content: state.content, pendingPrefix: "", rejectedStructuredOutput: true }, visibleDelta: "" };
+  if (!trimmed || ambiguousFence) return { state: { ...state, pendingPrefix }, visibleDelta: "" };
+  return { state: { content: `${state.content}${pendingPrefix}`, pendingPrefix: "", rejectedStructuredOutput: false }, visibleDelta: pendingPrefix };
+}
+
+export function finishDiscussionTextStream(state: DiscussionTextStreamState): Readonly<{ content: string; visibleDelta: string }> {
+  if (state.rejectedStructuredOutput) return { content: invalidOwnerText, visibleDelta: "" };
+  return { content: `${state.content}${state.pendingPrefix}`, visibleDelta: state.pendingPrefix };
+}
 
 function recordValue(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
@@ -253,7 +283,7 @@ export async function processNextDiscussionTurn(db: Db, config: AppServerConfig,
     return { turnId: String(row.id), jobId: String(row.job_id), inputMessageId: String(row.input_message_id) };
   });
   if (!claimed) return false;
-  let assistantId: string | null = null; let accumulated = ""; let modelOutput = ""; let structuredCandidate = false; let interruptedBySteer = false;
+  let assistantId: string | null = null; let textStream = createDiscussionTextStream(); let accumulated = ""; let interruptedBySteer = false;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 180_000);
   const heartbeat = setInterval(() => {
@@ -290,13 +320,12 @@ export async function processNextDiscussionTurn(db: Db, config: AppServerConfig,
         if (String(interrupted.rows[0]?.status) === "INTERRUPT_REQUESTED" || String(interrupted.rows[0]?.job_state) === "CANCELLED") { interruptedBySteer = true; controller.abort(); throw Object.assign(new Error("discussion_interrupted"), { interrupted: true }); }
         providerResponseId = eventResponseId(frame) ?? providerResponseId;
         if (frame.type === "response.output_text.delta" && typeof frame.delta === "string") {
-          modelOutput += frame.delta;
-          const prefix = modelOutput.trimStart();
-          if (!structuredCandidate && (prefix.startsWith("{") || prefix.startsWith("[") || prefix.startsWith("```json"))) structuredCandidate = true;
-          if (!structuredCandidate) {
-            accumulated += frame.delta;
+          const nextText = appendDiscussionTextDelta(textStream, frame.delta);
+          textStream = nextText.state;
+          if (nextText.visibleDelta) {
+            accumulated = textStream.content;
             await db.query("update generation_job_message set content=$2 where id=$1 and status='STREAMING'", [assistantId, accumulated]);
-            await appendDiscussionEvent(db, claimed.jobId, "discussion.message.delta", { messageId: assistantId, delta: frame.delta });
+            await appendDiscussionEvent(db, claimed.jobId, "discussion.message.delta", { messageId: assistantId, delta: nextText.visibleDelta });
           }
         } else if (frame.type === "response.output_item.added" || frame.type === "response.output_item.done") {
           const item = recordValue(frame.item);
@@ -337,17 +366,9 @@ export async function processNextDiscussionTurn(db: Db, config: AppServerConfig,
     if (!completedResponse) throw new Error("discussion_model_turn_limit");
     const terminal = await db.query("select job.state job_state,turn.status turn_status from generation_job job join generation_discussion_turn turn on turn.job_id=job.id where turn.id=$1", [claimed.turnId]);
     if (String(terminal.rows[0]?.job_state) !== "DISCUSSING" || String(terminal.rows[0]?.turn_status) !== "RUNNING") throw Object.assign(new Error("discussion_interrupted"), { interrupted: true });
-    if (structuredCandidate) {
-      const candidate = modelOutput.trim().replace(/^```json\s*/i, "").replace(/\s*```$/, "");
-      try {
-        const parsed = JSON.parse(candidate) as { assistantMessage?: unknown };
-        accumulated = typeof parsed.assistantMessage === "string" && parsed.assistantMessage.trim()
-          ? parsed.assistantMessage.trim()
-          : "Odpověď modelu nebyla v zobrazitelném formátu. Pokračujte prosím upřesněním požadavku.";
-      } catch {
-        accumulated = "Odpověď modelu nebyla v zobrazitelném formátu. Pokračujte prosím upřesněním požadavku.";
-      }
-    }
+    const finishedText = finishDiscussionTextStream(textStream);
+    accumulated = finishedText.content;
+    if (finishedText.visibleDelta) await appendDiscussionEvent(db, claimed.jobId, "discussion.message.delta", { messageId: assistantId, delta: finishedText.visibleDelta });
     await db.query("update generation_job_message set content=$2,status='COMPLETED',provider_response_id=$3,completed_at=now() where id=$1 and status='STREAMING'", [assistantId, accumulated, providerResponseId]);
     await db.query("update generation_discussion_turn set status='COMPLETED',provider_response_id=$2,completed_at=now(),lease_owner=null,lease_until=null where id=$1", [claimed.turnId, providerResponseId]);
     await appendDiscussionEvent(db, claimed.jobId, "discussion.message.completed", { messageId: assistantId, content: accumulated });
