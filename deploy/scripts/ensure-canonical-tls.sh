@@ -7,6 +7,7 @@ component_suffix="${2:?component hostname suffix required}"
 certificate_path="${3:?certificate path required}"
 private_key_path="${4:?private key path required}"
 source_dir="${5:?verified release source required}"
+config_vault_master_key_file="${CONFIG_VAULT_MASTER_KEY_BASE64_FILE:-/etc/kcml/credentials/config_vault_master_key}"
 runtime_dir="/run/kcml"
 pid_file="$runtime_dir/canonical-certbot.pid"
 certbot_pid=""
@@ -45,6 +46,7 @@ fi
 command -v certbot >/dev/null
 command -v pkill >/dev/null
 command -v setsid >/dev/null
+test -r "$config_vault_master_key_file"
 install -d -m 0700 "$runtime_dir"
 terminate_pid() {
   local pid="$1"
@@ -98,6 +100,8 @@ setsid env \
   KCML_TLS_CERT_PATH="$certificate_path" \
   KCML_TLS_KEY_PATH="$private_key_path" \
   KCML_RELEASE_SOURCE="$source_dir" \
+  CONFIG_VAULT_MASTER_KEY_BASE64_FILE="$config_vault_master_key_file" \
+  KCML_PROCESS_ROLE=migrate \
   certbot certonly \
   --non-interactive \
   --agree-tos \
