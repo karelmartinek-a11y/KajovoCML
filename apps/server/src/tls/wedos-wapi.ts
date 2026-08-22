@@ -74,7 +74,9 @@ const wapiDomainSchema = z.object({
 // both observed wire shapes explicit and normalize them to one domain list.
 const wapiDomainsDataSchema = z.object({ domain: z.union([z.array(wapiDomainSchema).min(1), wapiDomainSchema]) }).passthrough();
 const wapiRowSchema = z.object({
-  ID: z.union([z.string().trim().min(1), z.number().int().nonnegative()]), name: z.string().trim().min(1),
+  ID: z.union([z.string().trim().min(1), z.number().int().nonnegative()]),
+  // WEDOS represents an apex record with an empty relative name.
+  name: z.string(),
   ttl: z.union([z.string().regex(/^\d+$/), z.number().int().positive()]), rdtype: z.string().trim().min(1),
   rdata: z.string(), changed_date: z.string().trim().min(1), author_comment: z.string()
 }).passthrough();

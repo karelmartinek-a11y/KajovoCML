@@ -93,6 +93,12 @@ describe("WEDOS WAPI client", () => {
     expect(() => parseWdnsDomains({ domain: "hcasc.cz" })).toThrow();
   });
 
+  it("accepts the WEDOS empty relative name for an apex DNS row", () => {
+    expect(parseWdnsRows({ row: [{ ID: "root1", name: "", ttl: 300, rdtype: "A", rdata: "192.0.2.1", changed_date: "2026-08-22 10:00:00", author_comment: "" }] })).toEqual([
+      { id: "ROOT1", name: "", ttl: 300, rdtype: "A", rdata: "192.0.2.1", changedDate: "2026-08-22 10:00:00", authorComment: "" }
+    ]);
+  });
+
   it.each([
     [{ domain: [{ name: "other.cz", status: "ACTIVE", type: "PRIMARY" }] }],
     [{ domain: [{ name: "hcasc.cz", status: "DISABLED", type: "PRIMARY" }] }],
