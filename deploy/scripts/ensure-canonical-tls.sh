@@ -130,5 +130,14 @@ certbot_pid=""
 rm -f "$pid_file"
 test "$certbot_exit" = 0
 
+# certbot intentionally does not invoke --deploy-hook when the named lineage
+# is already valid and it therefore reuses it. The KCML runtime path can still
+# be absent (for example after migrating from a pre-canonical install), so
+# atomically materialise the canonical pair on that successful reuse path.
+RENEWED_LINEAGE="/etc/letsencrypt/live/kcml-wildcards" \
+KCML_TLS_CERT_PATH="$certificate_path" \
+KCML_TLS_KEY_PATH="$private_key_path" \
+  "$deploy_hook"
+
 certificate_covers_runtime
 echo "canonical-tls:ISSUED"

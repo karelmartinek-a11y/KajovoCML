@@ -75,6 +75,7 @@ grep -Fq 'KCML_PROCESS_ROLE=migrate' "$tls_script"
 grep -Fq 'acme-auth-hook.sh' "$tls_script"
 grep -Fq 'acme-cleanup-hook.sh' "$tls_script"
 grep -Fq 'acme-deploy-hook.sh' "$tls_script"
+grep -Fq 'RENEWED_LINEAGE="/etc/letsencrypt/live/kcml-wildcards"' "$tls_script"
 if grep -E -n 'WAITING_DNS|kcml-dns-challenge\.json|manual-cleanup-hook /bin/true|--force-renewal' "$tls_script" "$acme_auth_hook" "$acme_cleanup_hook" "$acme_deploy_hook" >/dev/null; then
   echo "legacy manual DNS challenge flow remains in canonical TLS automation" >&2
   exit 1
