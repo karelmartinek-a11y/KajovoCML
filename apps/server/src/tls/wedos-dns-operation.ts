@@ -38,11 +38,14 @@ export function sha256Digest(value: string): string {
 }
 
 export function operationAuthorComment(purpose: WedosDnsPurpose, correlationId: string = randomUUID()): string {
-  return `kcml-${purpose === "ACME" ? "acme" : "wapi-test"}:${correlationId}`;
+  // WEDOS accepts a restricted author_comment alphabet. Keep the ownership
+  // marker human-readable and correlation-specific without punctuation that
+  // WEDOS rejects (notably ':').
+  return `kcml-${purpose === "ACME" ? "acme" : "wapi-test"}-${correlationId}`;
 }
 
 function parseAuthorComment(value: string, purpose: WedosDnsPurpose): boolean {
-  return new RegExp(`^kcml-${purpose === "ACME" ? "acme" : "wapi-test"}:[0-9a-f-]{36}$`).test(value);
+  return new RegExp(`^kcml-${purpose === "ACME" ? "acme" : "wapi-test"}-[0-9a-f-]{36}$`).test(value);
 }
 
 function normalizeZone(value: string): string {

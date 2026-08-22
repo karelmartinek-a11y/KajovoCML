@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { operationAuthorComment } from "./wedos-dns-operation.js";
 import { WedosWapiClient, WedosWapiCircuitOpenError, acmeRelativeTxtName, parseWdnsDomainInfo, parseWdnsDomains, parseWdnsRows, pragueHour, wedosAuth } from "./wedos-wapi.js";
 
 function responseFor(request: Record<string, unknown>, code = 1000, data?: Record<string, unknown>) {
@@ -42,6 +43,13 @@ describe("WEDOS WAPI client", () => {
     expect(acmeRelativeTxtName("*.kajovocml.hcasc.cz")).toBe("_acme-challenge.kajovocml");
   });
 
+  it("uses WEDOS-safe exact ownership markers for DNS operations", () => {
+    const correlationId = "00000000-0000-0000-0000-000000000000";
+    expect(operationAuthorComment("ACME", correlationId)).toBe(`kcml-acme-${correlationId}`);
+    expect(operationAuthorComment("PREFLIGHT_TEST", correlationId)).toBe(`kcml-wapi-test-${correlationId}`);
+    expect(operationAuthorComment("ACME", correlationId)).toMatch(/^[a-z0-9-]+$/);
+  });
+
   it.each([
     ["ping", (client: WedosWapiClient) => client.ping(), undefined],
     ["dns-domains-list", (client: WedosWapiClient) => client.domainsList(), undefined],
@@ -81,8 +89,8 @@ describe("WEDOS WAPI client", () => {
     const data = { domain: [{ name: "hcasc.cz", status: "ACTIVE", type: "PRIMARY" }] };
     expect(parseWdnsDomains(data)).toEqual([{ name: "hcasc.cz", status: "active", type: "primary" }]);
     expect(parseWdnsDomainInfo(data, "hcasc.cz")).toEqual({ name: "hcasc.cz", status: "active", type: "primary" });
-    expect(parseWdnsRows({ row: [{ ID: "ab12", name: "_acme-challenge", ttl: 300, rdtype: "TXT", rdata: "value", changed_date: "2026-08-22 10:00:00", author_comment: "kcml-acme:00000000-0000-0000-0000-000000000000" }] })).toEqual([
-      { id: "AB12", name: "_acme-challenge", ttl: 300, rdtype: "TXT", rdata: "value", changedDate: "2026-08-22 10:00:00", authorComment: "kcml-acme:00000000-0000-0000-0000-000000000000" }
+    expect(parseWdnsRows({ row: [{ ID: "ab12", name: "_acme-challenge", ttl: 300, rdtype: "TXT", rdata: "value", changed_date: "2026-08-22 10:00:00", author_comment: "kcml-acme-00000000-0000-0000-0000-000000000000" }] })).toEqual([
+      { id: "AB12", name: "_acme-challenge", ttl: 300, rdtype: "TXT", rdata: "value", changedDate: "2026-08-22 10:00:00", authorComment: "kcml-acme-00000000-0000-0000-0000-000000000000" }
     ]);
   });
 
