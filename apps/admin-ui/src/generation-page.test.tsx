@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import React from "react";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 let setupResponse = { openAiReady: true, model: "gpt-5", openAi: { reason: "READY", secretExists: true } };
@@ -48,10 +48,12 @@ describe("OWNER generation UI", () => {
   it("subscribes to the canonical named discussion SSE taxonomy", async () => {
     render(<GenerationPage />);
     await screen.findByText("OWNER ↔ AI diskuse");
-    const names = (EventSourceStub.latest?.addEventListener.mock.calls ?? []).map((call: unknown[]) => String(call[0]));
-    expect(names).toContain("discussion.message.delta");
-    expect(names).toContain("spec.revision.created");
-    expect(names).toContain("generation.resync.required");
+    await waitFor(() => {
+      const names = (EventSourceStub.latest?.addEventListener.mock.calls ?? []).map((call: unknown[]) => String(call[0]));
+      expect(names).toContain("discussion.message.delta");
+      expect(names).toContain("spec.revision.created");
+      expect(names).toContain("generation.resync.required");
+    });
     expect(EventSourceStub.latest?.url).toContain("after=7");
   });
 
