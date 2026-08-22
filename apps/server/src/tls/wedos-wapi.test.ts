@@ -74,7 +74,7 @@ describe("WEDOS WAPI client", () => {
   it("rejects undocumented pending commit responses rather than treating them as success", async () => {
     const recorded = fetchRecording(1001);
     const client = new WedosWapiClient({ login: "owner@example.test", password: "not-a-real-secret" }, recorded.fetchMock as unknown as typeof fetch);
-    await expect(client.domainCommit("hcasc.cz")).rejects.toMatchObject({ code: 1001 });
+    await expect(client.domainCommit("hcasc.cz")).rejects.toMatchObject({ code: 1001, command: "dns-domain-commit" });
   });
 
   it("parses documented WDNS domain and uppercase row schemas strictly", () => {

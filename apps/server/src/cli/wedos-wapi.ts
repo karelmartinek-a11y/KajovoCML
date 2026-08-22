@@ -34,7 +34,10 @@ function safeErrorMessage(error: unknown): string {
     const message = typeof issue?.message === "string" ? issue.message : "validation_failed";
     return `validation_error:${path}:${message}`.replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 240);
   }
-  if (error && typeof error === "object" && "code" in error && typeof error.code === "number") return `wapi_error:${String(error.code)}`;
+  if (error && typeof error === "object" && "code" in error && typeof error.code === "number") {
+    const command = "command" in error && typeof error.command === "string" ? error.command : "unknown";
+    return `wapi_error:${String(error.code)}:${command}`;
+  }
   return (error instanceof Error ? error.message : "unknown").replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 240);
 }
 
