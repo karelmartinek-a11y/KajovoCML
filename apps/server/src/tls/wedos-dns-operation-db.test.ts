@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { loadConfig, type AppConfig } from "../config.js";
 import { createDb, type Db } from "../db.js";
-import { addTxtRow, cleanupDnsOperation, commitDnsOperation, createWedosDnsOperation, markPropagated } from "./wedos-dns-operation.js";
+import { addTxtRow, cleanupDnsOperation, cleanupDnsOperationByOwnership, commitDnsOperation, createWedosDnsOperation, markPropagated } from "./wedos-dns-operation.js";
 
 const enabled = process.env.KCML_TEST_DATABASE === "1";
 
@@ -91,5 +91,17 @@ describe.skipIf(!enabled)("WEDOS DNS operation ledger PostgreSQL contract", () =
     await expect(addTxtRow(db, created.id, "wrong-value", api)).rejects.toThrow("wedos_dns_value_digest_mismatch");
     const row = await db.query("select state,last_safe_error_code from wedos_dns_operation where id=$1", [created.id]);
     expect(row.rows[0]).toMatchObject({ state: "CREATED", last_safe_error_code: "wedos_dns_value_digest_mismatch" });
+  });
+
+  it("recovers an interrupted row-added operation from exact WEDOS ownership", async () => {
+    const api = new FakeWedosApi();
+    const value = `kcml-recovery-${randomUUID()}`;
+    const created = await createWedosDnsOperation(db, { purpose: "PREFLIGHT_TEST", zone: "hcasc.cz", recordName: "_kcml-wapi-recovery", value });
+    operationIds.push(created.id);
+    await addTxtRow(db, created.id, value, api);
+    const recovered = await cleanupDnsOperationByOwnership(db, created.id, api, async () => undefined);
+    expect(recovered).toMatchObject({ id: created.id, state: "CLEANUP_PROPAGATED" });
+    expect(api.deleteCalls).toEqual(["OWNED-1"]);
+    expect(api.rows).toEqual([expect.objectContaining({ ID: "FOREIGN-1" })]);
   });
 });

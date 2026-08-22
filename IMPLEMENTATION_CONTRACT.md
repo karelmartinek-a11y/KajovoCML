@@ -91,6 +91,16 @@ an exact row whose name, type, value and WEDOS-safe `kcmlacme<correlation-hex>` 
 marker match the persisted operation; no broad `_acme-challenge` deletion is
 allowed.
 
+Every ACME invocation has its own correlation ID, digest-only ledger record and
+WEDOS-safe author marker. The canonical lifecycle is `CREATED` → `ROW_ADDED` →
+`COMMITTED` → `PROPAGATED` → `CLEANUP_REQUESTED` → `DELETED` →
+`CLEANUP_PROPAGATED`. The deployment runner executes `recover-preflight` before
+a new safe roundtrip. Recovery obtains the TXT value only from a row that
+matches the stored digest, exact name, type, author marker and persisted
+uppercase row ID; the value is never logged or persisted as plaintext.
+Authoritative propagation and cleanup retry for a bounded five-minute window.
+An unresolved result fails the release and leaves the prior release active.
+
 ## Concurrency, recovery, and safety
 
 Job turns and automation runs use PostgreSQL row locks plus expiring leases.

@@ -232,8 +232,10 @@ function isRetryableAuthoritativeNetworkError(code: string): boolean {
   return ["ECONNREFUSED", "ETIMEDOUT", "ETIME", "EAI_AGAIN", "ENETUNREACH", "EHOSTUNREACH"].includes(code);
 }
 
-const AUTHORITATIVE_PROPAGATION_ATTEMPTS = 20;
-const AUTHORITATIVE_PROPAGATION_DELAY_MS = 3_000;
+// WEDOS commits are eventually visible on every authoritative server. Keep
+// the retry bounded, but long enough for the provider's normal DNS window.
+const AUTHORITATIVE_PROPAGATION_ATTEMPTS = 60;
+const AUTHORITATIVE_PROPAGATION_DELAY_MS = 5_000;
 
 function sleep(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -313,11 +315,11 @@ export async function cleanupDnsOperation(db: Db, operationId: string, value: st
   return withOperationLock(db, operationId, async (client) => {
     let operation = await getOperation(client, operationId, true);
     if (operation.state === "CLEANUP_PROPAGATED") return operation;
-    if (!["PROPAGATED", "COMMITTED", "CLEANUP_REQUESTED", "DELETED"].includes(operation.state)) throw new Error(`wedos_dns_cleanup_not_allowed:${operation.state}`);
+    if (!["ROW_ADDED", "PROPAGATED", "COMMITTED", "CLEANUP_REQUESTED", "DELETED"].includes(operation.state)) throw new Error(`wedos_dns_cleanup_not_allowed:${operation.state}`);
     await recordAttempt(client, operationId);
     try {
-      if (operation.state === "PROPAGATED" || operation.state === "COMMITTED") {
-        await updateState(client, operationId, ["PROPAGATED", "COMMITTED"], "CLEANUP_REQUESTED");
+      if (operation.state === "ROW_ADDED" || operation.state === "PROPAGATED" || operation.state === "COMMITTED") {
+        await updateState(client, operationId, ["ROW_ADDED", "PROPAGATED", "COMMITTED"], "CLEANUP_REQUESTED");
         operation = await getOperation(client, operationId, true);
       }
       if (operation.state === "CLEANUP_REQUESTED") {
@@ -341,6 +343,64 @@ export async function cleanupDnsOperation(db: Db, operationId: string, value: st
       await recordSafeError(client, operationId, error);
       throw error;
     }
+  });
+}
+
+/**
+ * Recover an interrupted operation without persisting or logging the TXT
+ * value. The current WEDOS row is accepted only when every ownership field
+ * and the stored digest match. This is intentionally stricter than a lookup
+ * by name because the cleanup path must never touch a foreign TXT row.
+ */
+export async function cleanupDnsOperationByOwnership(
+  db: Db,
+  operationId: string,
+  api: WedosDnsApi,
+  resolver: AuthoritativeTxtResolver = waitForAuthoritativeTxt
+): Promise<WedosDnsOperation> {
+  const operation = await getWedosDnsOperation(db, operationId);
+  if (operation.state === "CLEANUP_PROPAGATED") return operation;
+  const response = await api.rowsList(operation.zone);
+  const rows = parseWdnsRows(response.data);
+  const candidates = rows.filter((row) =>
+    row.name === operation.recordName &&
+    row.rdtype === "TXT" &&
+    row.authorComment === operation.authorComment &&
+    sha256Digest(row.rdata) === operation.valueDigest &&
+    (!operation.wedosRowId || row.id.toUpperCase() === operation.wedosRowId.toUpperCase())
+  );
+  if (candidates.length > 1) throw new Error("wedos_dns_owned_row_ambiguous");
+  const owned = candidates[0];
+  if (!owned) {
+    if (operation.state === "CREATED") {
+      return failWedosDnsOperation(db, operation.id, new Error("wedos_dns_owned_row_not_found_before_add"));
+    }
+    throw new Error("wedos_dns_owned_row_missing_for_recovery");
+  }
+  if (operation.wedosRowId && owned.id.toUpperCase() !== operation.wedosRowId.toUpperCase()) {
+    throw new Error("wedos_dns_cleanup_row_ownership_mismatch");
+  }
+  return cleanupDnsOperation(db, operation.id, owned.rdata, api, resolver);
+}
+
+export async function listActiveWedosDnsOperations(db: Db, purpose?: WedosDnsPurpose): Promise<WedosDnsOperation[]> {
+  const clauses = ["state NOT IN ('CLEANUP_PROPAGATED','FAILED','BLOCKED')"];
+  const params: string[] = [];
+  if (purpose) {
+    params.push(purpose);
+    clauses.push(`purpose=$${params.length}`);
+  }
+  const result = await db.query(`${operationSelect} where ${clauses.join(" and ")} order by created_at asc`, params);
+  return result.rows.map((row) => operationFromRow(row));
+}
+
+export async function failWedosDnsOperation(db: Db, operationId: string, error: unknown): Promise<WedosDnsOperation> {
+  return withOperationLock(db, operationId, async (client) => {
+    const operation = await getOperation(client, operationId, true);
+    if (["CLEANUP_PROPAGATED", "FAILED", "BLOCKED"].includes(operation.state)) return operation;
+    await recordSafeError(client, operationId, error);
+    await updateState(client, operationId, ["CREATED", "ROW_ADDED", "COMMITTED", "PROPAGATED", "CLEANUP_REQUESTED", "DELETED"], "FAILED");
+    return getOperation(client, operationId);
   });
 }
 

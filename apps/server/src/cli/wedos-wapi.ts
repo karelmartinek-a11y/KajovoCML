@@ -3,7 +3,19 @@ import { loadBootstrapConfig } from "../config.js";
 import { createDb } from "../db.js";
 import { platformWorkerSecretPrincipal, resolveSecret } from "../domain/secret-manager.js";
 import { acmeRelativeTxtName, WedosWapiClient, parseWdnsDomainInfo, parseWdnsDomains } from "../tls/wedos-wapi.js";
-import { cleanupDnsOperation, findOperationIdInAuthOutput, getWedosDnsOperation, recoverDnsOperation, runDnsOperation } from "../tls/wedos-dns-operation.js";
+import {
+  addTxtRow,
+  cleanupDnsOperation,
+  cleanupDnsOperationByOwnership,
+  commitDnsOperation,
+  createWedosDnsOperation,
+  findOperationIdInAuthOutput,
+  getWedosDnsOperation,
+  listActiveWedosDnsOperations,
+  markPropagated,
+  recoverDnsOperation,
+  runDnsOperation
+} from "../tls/wedos-dns-operation.js";
 
 type SafeResult = Readonly<{ command: string; outcome: string; code: number }>;
 
@@ -94,10 +106,34 @@ async function main(): Promise<void> {
     const recordName = `_kcml-wapi-test-${suffix}`;
     const value = `kcml-wapi-${randomUUID()}`;
     const result = await withClient(async (client, db) => {
-      const operation = await runDnsOperation(db, { purpose: "PREFLIGHT_TEST", zone, recordName, value }, client);
-      return cleanupDnsOperation(db, operation.id, value, client);
+      const created = await createWedosDnsOperation(db, { purpose: "PREFLIGHT_TEST", zone, recordName, value });
+      try {
+        await addTxtRow(db, created.id, value, client);
+        await commitDnsOperation(db, created.id, value, client);
+        const propagated = await markPropagated(db, created.id, value, client);
+        return cleanupDnsOperation(db, propagated.id, value, client);
+      } catch (error) {
+        const current = await getWedosDnsOperation(db, created.id);
+        if (current.state !== "CREATED") {
+          await cleanupDnsOperationByOwnership(db, created.id, client);
+        }
+        throw error;
+      }
     });
     process.stdout.write(`wedos-wapi:roundtrip:operation=${result.id}:record=${recordName}:state=${result.state}\n`);
+    return;
+  }
+  if (command === "recover-preflight") {
+    const result = await withClient(async (client, db) => {
+      const operations = await listActiveWedosDnsOperations(db, "PREFLIGHT_TEST");
+      const recovered = [];
+      for (const operation of operations) {
+        const cleanup = await cleanupDnsOperationByOwnership(db, operation.id, client);
+        recovered.push({ id: cleanup.id, state: cleanup.state });
+      }
+      return recovered;
+    });
+    process.stdout.write(`wedos-dns-recovery:preflight:${JSON.stringify({ count: result.length, operations: result })}\n`);
     return;
   }
   if (command === "recover") {
@@ -108,7 +144,7 @@ async function main(): Promise<void> {
     process.stdout.write(`wedos-dns-recovery:operation=${result.id}:state=${result.state}\n`);
     return;
   }
-  throw new Error("usage: kcml-wedos-wapi <ping|preflight|acme-auth|acme-cleanup|wapi-test-roundtrip|recover>");
+  throw new Error("usage: kcml-wedos-wapi <ping|preflight|acme-auth|acme-cleanup|wapi-test-roundtrip|recover-preflight|recover>");
 }
 
 void main().catch((error: unknown) => {

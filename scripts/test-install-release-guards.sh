@@ -42,6 +42,8 @@ grep -Fq 'curl -fsS "https://${canonical_component_hostname}/.well-known/oauth-p
 grep -Fq 'deploy/scripts/ensure-canonical-tls.sh' "$install_script"
 grep -Fq 'step wedos-wapi-preflight' "$install_script"
 grep -Fq 'dist/cli/wedos-wapi.js" preflight' "$install_script"
+grep -Fq 'step wedos-wapi-recover-preflight' "$install_script"
+grep -Fq 'dist/cli/wedos-wapi.js" recover-preflight' "$install_script"
 grep -Fq 'step wedos-wapi-roundtrip' "$install_script"
 grep -Fq 'dist/cli/wedos-wapi.js" wapi-test-roundtrip' "$install_script"
 grep -Fq '"$PUBLIC_BASE_DOMAIN" "$component_hostname_suffix" "$tls_cert_path" "$tls_key_path" "$source_dir"' "$install_script"
@@ -60,14 +62,16 @@ unit_line="$(grep -n 'for unit in kcml.service' "$install_script" | head -1 | cu
 split_config_line="$(grep -n 'step split-config-initial' "$install_script" | head -1 | cut -d: -f1)"
 migrate_line="$(grep -n 'step migrate' "$install_script" | head -1 | cut -d: -f1)"
 wapi_line="$(grep -n 'step wedos-wapi-preflight' "$install_script" | head -1 | cut -d: -f1)"
+recover_line="$(grep -n 'step wedos-wapi-recover-preflight' "$install_script" | head -1 | cut -d: -f1)"
 roundtrip_line="$(grep -n 'step wedos-wapi-roundtrip' "$install_script" | head -1 | cut -d: -f1)"
 test -n "$tls_line"
 test -n "$unit_line"
 test -n "$split_config_line"
 test -n "$migrate_line"
 test -n "$wapi_line"
+test -n "$recover_line"
 test -n "$roundtrip_line"
-if [ "$split_config_line" -ge "$migrate_line" ] || [ "$migrate_line" -ge "$wapi_line" ] || [ "$wapi_line" -ge "$roundtrip_line" ] || [ "$roundtrip_line" -ge "$tls_line" ] || [ "$tls_line" -ge "$unit_line" ]; then
+if [ "$split_config_line" -ge "$migrate_line" ] || [ "$migrate_line" -ge "$wapi_line" ] || [ "$wapi_line" -ge "$recover_line" ] || [ "$recover_line" -ge "$roundtrip_line" ] || [ "$roundtrip_line" -ge "$tls_line" ] || [ "$tls_line" -ge "$unit_line" ]; then
   echo "migration and WAPI/TLS must complete before systemd topology activation" >&2
   exit 1
 fi
