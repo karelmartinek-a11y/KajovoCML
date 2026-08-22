@@ -70,6 +70,7 @@ jobs:
         run: |
           bash -n deploy/scripts/*.sh scripts/*.sh
           bash scripts/test-install-release-guards.sh
+          bash scripts/test-deploy-cancellation-guard.sh
           bash scripts/test-split-service-config.sh
           bash scripts/test-portable-negative-pattern-guards.sh
           bash scripts/test-render-nginx-config.sh
@@ -286,20 +287,34 @@ jobs:
           set -euo pipefail
           echo "::add-mask::$PASS"
           test -n "$PASS"
+          command -v setsid >/dev/null
           deploy_started_at="$(date --iso-8601=seconds)"
           deploy_log="$(mktemp)"
           trap 'rm -f "$deploy_log"' EXIT
+          deploy_pid=""
+          stop_deploy_child() {
+            if [ -n "$deploy_pid" ] && kill -0 "$deploy_pid" 2>/dev/null; then
+              # The deploy wrapper runs in its own session so this only reaches
+              # the release process tree, never the self-hosted runner service.
+              kill -TERM -- "-$deploy_pid" 2>/dev/null || true
+              wait "$deploy_pid" 2>/dev/null || true
+            fi
+          }
+          trap 'stop_deploy_child; exit 143' INT TERM
           set +e
           # PASS is an application credential consumed by the wrapper, never a sudo password.
           # The production runner must grant its service account narrowly scoped NOPASSWD access.
-          sudo -n --preserve-env=PASS,KCML_FACTORY_RESET_CONFIRM /usr/local/sbin/kcml-deploy-wrapper \
+          setsid sudo -n --preserve-env=PASS,KCML_FACTORY_RESET_CONFIRM /usr/local/sbin/kcml-deploy-wrapper \
             "${{ runner.temp }}/kcml-release/kcml-release.tar.zst" \
             "${{ github.repository }}" \
             "${{ github.sha }}" \
             "${{ github.run_id }}" \
             "${{ github.run_attempt }}" \
-            "${{ github.event_name }}" >"$deploy_log" 2>&1
+            "${{ github.event_name }}" >"$deploy_log" 2>&1 &
+          deploy_pid=$!
+          wait "$deploy_pid"
           deploy_status=$?
+          deploy_pid=""
           set -e
           if [ "$deploy_status" -ne 0 ]; then
             echo "::group::Safe KCML deploy diagnostics"

@@ -9,10 +9,12 @@ import {
   cleanupDnsOperationByOwnership,
   commitDnsOperation,
   createWedosDnsOperation,
+  failWedosDnsOperation,
   findOperationIdInAuthOutput,
   getWedosDnsOperation,
   listActiveWedosDnsOperations,
   markPropagated,
+  observeAuthoritativeDns,
   recoverDnsOperation,
   runDnsOperation,
   safeAuthoritativeDnsDiagnostics,
@@ -110,6 +112,7 @@ async function main(): Promise<void> {
     const result = await withClient(async (client, db) => {
       const created = await createWedosDnsOperation(db, { purpose: "PREFLIGHT_TEST", zone, recordName, value });
       try {
+        const baseline = await observeAuthoritativeDns(zone, recordName, value);
         await addTxtRow(db, created.id, value, client);
         await commitDnsOperation(db, created.id, value, client);
         const owned = parseWdnsRows((await client.rowsList(zone)).data).find((row) =>
@@ -119,11 +122,13 @@ async function main(): Promise<void> {
         process.stderr.write(`wedos-dns:wapi-row-present=${owned ? "yes" : "no"}\n`);
         if (owned) process.stderr.write(`wedos-dns:wapi-row-id=${owned.id}\n`);
         if (!owned) throw new Error("wedos_dns_wapi_owned_row_missing_after_commit");
-        const propagated = await markPropagated(db, created.id, value, client);
+        const propagated = await markPropagated(db, created.id, value, client, undefined, baseline);
         return cleanupDnsOperation(db, propagated.id, value, client);
       } catch (error) {
         const current = await getWedosDnsOperation(db, created.id);
-        if (current.state !== "CREATED") {
+        if (current.state === "CREATED") {
+          await failWedosDnsOperation(db, created.id, error);
+        } else {
           await cleanupDnsOperation(db, created.id, value, client);
         }
         throw error;
@@ -163,7 +168,7 @@ async function main(): Promise<void> {
 
 void main().catch((error: unknown) => {
   if (error instanceof WedosDnsObservationError) {
-    for (const line of safeAuthoritativeDnsDiagnostics(error.snapshot)) process.stderr.write(`${line}\n`);
+    for (const line of safeAuthoritativeDnsDiagnostics(error.snapshot, error.baseline)) process.stderr.write(`${line}\n`);
   }
   process.stderr.write(`wedos-wapi:FAIL:${safeErrorMessage(error)}\n`);
   process.exitCode = 1;
