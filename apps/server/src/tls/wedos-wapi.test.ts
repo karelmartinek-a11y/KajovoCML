@@ -45,8 +45,8 @@ describe("WEDOS WAPI client", () => {
 
   it("uses WEDOS-safe exact ownership markers for DNS operations", () => {
     const correlationId = "00000000-0000-0000-0000-000000000000";
-    expect(operationAuthorComment("ACME", correlationId)).toBe(`kcml-acme-${correlationId}`);
-    expect(operationAuthorComment("PREFLIGHT_TEST", correlationId)).toBe(`kcml-wapi-test-${correlationId}`);
+    expect(operationAuthorComment("ACME", correlationId)).toBe("kcmlacme00000000000000000000000000000000");
+    expect(operationAuthorComment("PREFLIGHT_TEST", correlationId)).toBe("kcmlwapitest00000000000000000000000000000000");
     expect(operationAuthorComment("ACME", correlationId)).toMatch(/^[a-z0-9-]+$/);
   });
 
@@ -89,8 +89,8 @@ describe("WEDOS WAPI client", () => {
     const data = { domain: [{ name: "hcasc.cz", status: "ACTIVE", type: "PRIMARY" }] };
     expect(parseWdnsDomains(data)).toEqual([{ name: "hcasc.cz", status: "active", type: "primary" }]);
     expect(parseWdnsDomainInfo(data, "hcasc.cz")).toEqual({ name: "hcasc.cz", status: "active", type: "primary" });
-    expect(parseWdnsRows({ row: [{ ID: "ab12", name: "_acme-challenge", ttl: 300, rdtype: "TXT", rdata: "value", changed_date: "2026-08-22 10:00:00", author_comment: "kcml-acme-00000000-0000-0000-0000-000000000000" }] })).toEqual([
-      { id: "AB12", name: "_acme-challenge", ttl: 300, rdtype: "TXT", rdata: "value", changedDate: "2026-08-22 10:00:00", authorComment: "kcml-acme-00000000-0000-0000-0000-000000000000" }
+    expect(parseWdnsRows({ row: [{ ID: "ab12", name: "_acme-challenge", ttl: 300, rdtype: "TXT", rdata: "value", changed_date: "2026-08-22 10:00:00", author_comment: "kcmlacme00000000000000000000000000000000" }] })).toEqual([
+      { id: "AB12", name: "_acme-challenge", ttl: 300, rdtype: "TXT", rdata: "value", changedDate: "2026-08-22 10:00:00", authorComment: "kcmlacme00000000000000000000000000000000" }
     ]);
   });
 

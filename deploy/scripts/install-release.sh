@@ -187,6 +187,10 @@ NODE_ENV=production \
 BUILD_ID="$release_id" \
   node "$source_dir/apps/server/dist/cli/migrate.js"
 
+step verify-wedos-runtime
+grep -Fq 'kcml${purpose === "ACME" ? "acme" : "wapitest"}' "$source_dir/apps/server/dist/tls/wedos-dns-operation.js"
+grep -Fq 'replaceAll("-", "")' "$source_dir/apps/server/dist/tls/wedos-dns-operation.js"
+
 step wedos-wapi-preflight
 KCML_PROCESS_ROLE=migrate \
 DATABASE_URL_FILE=/etc/kcml/credentials/migrator/database_url \
@@ -468,8 +472,9 @@ wait_for_sql_equals "generation_discussion_browser_runtime_completion_migration_
 wait_for_sql_equals "discussion_turn_exclusivity_and_cancellation_migration_row" "1" "select count(*) from schema_migration where version='017_discussion_turn_exclusivity_and_cancellation.sql'"
 wait_for_sql_equals "wedos_dns_operation_migration_row" "1" "select count(*) from schema_migration where version='018_wedos_dns_operation.sql'"
 wait_for_sql_equals "wedos_dns_author_comment_compatibility_migration_row" "1" "select count(*) from schema_migration where version='019_wedos_dns_author_comment_compatibility.sql'"
+wait_for_sql_equals "wedos_dns_ascii_author_comment_migration_row" "1" "select count(*) from schema_migration where version='020_wedos_dns_ascii_author_comment.sql'"
 wait_for_sql_equals "readiness_gate_evidence_idempotency_migration_row" "1" "select count(*) from schema_migration where version='012_readiness_gate_evidence_idempotency.sql'"
-wait_for_sql_equals "schema_migration_count" "19" "select count(*) from schema_migration"
+wait_for_sql_equals "schema_migration_count" "20" "select count(*) from schema_migration"
 
 step verify-stable-runtime-health
 require_stable_runtime_health "$admin_host"

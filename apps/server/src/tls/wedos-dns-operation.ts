@@ -39,13 +39,14 @@ export function sha256Digest(value: string): string {
 
 export function operationAuthorComment(purpose: WedosDnsPurpose, correlationId: string = randomUUID()): string {
   // WEDOS accepts a restricted author_comment alphabet. Keep the ownership
-  // marker human-readable and correlation-specific without punctuation that
-  // WEDOS rejects (notably ':').
-  return `kcml-${purpose === "ACME" ? "acme" : "wapi-test"}-${correlationId}`;
+  // marker correlation-specific using ASCII alphanumerics only.
+  const compactCorrelationId = correlationId.replaceAll("-", "").toLowerCase();
+  if (!/^[0-9a-f]{32}$/.test(compactCorrelationId)) throw new Error("wedos_dns_correlation_id_invalid");
+  return `kcml${purpose === "ACME" ? "acme" : "wapitest"}${compactCorrelationId}`;
 }
 
 function parseAuthorComment(value: string, purpose: WedosDnsPurpose): boolean {
-  return new RegExp(`^kcml-${purpose === "ACME" ? "acme" : "wapi-test"}-[0-9a-f-]{36}$`).test(value);
+  return new RegExp(`^kcml${purpose === "ACME" ? "acme" : "wapitest"}[0-9a-f]{32}$`).test(value);
 }
 
 function normalizeZone(value: string): string {

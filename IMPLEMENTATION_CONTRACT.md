@@ -87,7 +87,7 @@ uses a unique `clTRID` for every request, and never logs the WAPI password or
 authorization string. WAPI credentials are active Secret Manager records and
 must be explicitly granted only to the canonical platform worker before the
 deployment-side ACME hook may resolve them. TXT cleanup is permitted only for
-an exact row whose name, type, value and WEDOS-safe `kcml-acme-<correlation>` ownership
+an exact row whose name, type, value and WEDOS-safe `kcmlacme<correlation-hex>` ownership
 marker match the persisted operation; no broad `_acme-challenge` deletion is
 allowed.
 

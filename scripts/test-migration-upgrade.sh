@@ -31,7 +31,7 @@ run_migrations
 
 psql "$KCML_UPGRADE_DATABASE_URL" --no-psqlrc --set ON_ERROR_STOP=1 --tuples-only --no-align <<SQL | grep -Fx 'baseline-clean-install-ok'
 select case when
-  (select count(*) from schema_migration) = 19
+  (select count(*) from schema_migration) = 20
   and exists (
     select 1
       from schema_migration
@@ -93,6 +93,7 @@ select case when
   and exists (select 1 from schema_migration where version='017_discussion_turn_exclusivity_and_cancellation.sql' and sequence_number=17 and checksum_sha256 ~ '^[0-9a-f]{64}$')
   and exists (select 1 from schema_migration where version='018_wedos_dns_operation.sql' and sequence_number=18 and checksum_sha256 ~ '^[0-9a-f]{64}$')
   and exists (select 1 from schema_migration where version='019_wedos_dns_author_comment_compatibility.sql' and sequence_number=19 and checksum_sha256 ~ '^[0-9a-f]{64}$')
+  and exists (select 1 from schema_migration where version='020_wedos_dns_ascii_author_comment.sql' and sequence_number=20 and checksum_sha256 ~ '^[0-9a-f]{64}$')
   and (select count(*) from release_epoch) = 1
   and exists (
     select 1
@@ -159,7 +160,7 @@ run_migrations
 
 psql "$KCML_UPGRADE_DATABASE_URL" --no-psqlrc --set ON_ERROR_STOP=1 --tuples-only --no-align <<SQL | grep -Fx 'baseline-compaction-ok'
 select case when
-  (select count(*) from schema_migration) = 19
+  (select count(*) from schema_migration) = 20
   and exists (
     select 1
       from schema_migration
@@ -221,6 +222,7 @@ select case when
   and exists (select 1 from schema_migration where version='017_discussion_turn_exclusivity_and_cancellation.sql' and sequence_number=17 and checksum_sha256 ~ '^[0-9a-f]{64}$')
   and exists (select 1 from schema_migration where version='018_wedos_dns_operation.sql' and sequence_number=18 and checksum_sha256 ~ '^[0-9a-f]{64}$')
   and exists (select 1 from schema_migration where version='019_wedos_dns_author_comment_compatibility.sql' and sequence_number=19 and checksum_sha256 ~ '^[0-9a-f]{64}$')
+  and exists (select 1 from schema_migration where version='020_wedos_dns_ascii_author_comment.sql' and sequence_number=20 and checksum_sha256 ~ '^[0-9a-f]{64}$')
   and (select count(*) from release_epoch) = 1
   and not exists (
     select 1
@@ -247,7 +249,7 @@ run_migrations
 
 psql "$KCML_UPGRADE_DATABASE_URL" --no-psqlrc --set ON_ERROR_STOP=1 --tuples-only --no-align <<SQL | grep -Fx 'baseline-retired-dashboard-ledger-ok'
 select case when
-  (select count(*) from schema_migration) = 19
+  (select count(*) from schema_migration) = 20
   and exists (
     select 1
       from schema_migration
@@ -281,6 +283,7 @@ select case when
   and exists (select 1 from schema_migration where version='017_discussion_turn_exclusivity_and_cancellation.sql' and sequence_number=17 and checksum_sha256 ~ '^[0-9a-f]{64}$')
   and exists (select 1 from schema_migration where version='018_wedos_dns_operation.sql' and sequence_number=18 and checksum_sha256 ~ '^[0-9a-f]{64}$')
   and exists (select 1 from schema_migration where version='019_wedos_dns_author_comment_compatibility.sql' and sequence_number=19 and checksum_sha256 ~ '^[0-9a-f]{64}$')
+  and exists (select 1 from schema_migration where version='020_wedos_dns_ascii_author_comment.sql' and sequence_number=20 and checksum_sha256 ~ '^[0-9a-f]{64}$')
   and not exists (
     select 1
       from schema_migration
