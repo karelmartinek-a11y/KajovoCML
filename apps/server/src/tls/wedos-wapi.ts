@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { z } from "zod";
 
 export const WEDOS_WAPI_URL = "https://api.wedos.com/wapi/json";
 export type WapiCredentials = Readonly<{ login: string; password: string }>;
@@ -50,7 +51,7 @@ function responseError(code: number, result: string): WedosWapiError {
   return new WedosWapiError(code, `wedos_wapi_error_${code}:${result.slice(0, 160)}`);
 }
 
-const ASYNC_COMMANDS = new Set(["dns-domain-commit"]);
+const ASYNC_COMMANDS = new Set<string>();
 const COMMAND_OUTCOMES: Record<string, Readonly<Record<number, WapiOutcome>>> = {
   "poll-req": { 1000: "OK", 1003: "EMPTY" },
   "poll-ack": { 1002: "ACKNOWLEDGED" }
@@ -62,6 +63,47 @@ function outcomeFor(command: string, code: number): WapiOutcome | null {
   if (code === 1000) return "OK";
   if (code === 1001 && ASYNC_COMMANDS.has(command)) return "PENDING";
   return null;
+}
+
+const wapiDomainSchema = z.object({
+  name: z.string().trim().min(1), type: z.string().trim().min(1), status: z.string().trim().min(1),
+  error: z.unknown().optional(), error_code: z.unknown().optional()
+}).passthrough();
+const wapiDomainsDataSchema = z.object({ domain: z.array(wapiDomainSchema).min(1) }).passthrough();
+const wapiRowSchema = z.object({
+  ID: z.union([z.string().trim().min(1), z.number().int().nonnegative()]), name: z.string().trim().min(1),
+  ttl: z.union([z.string().regex(/^\d+$/), z.number().int().positive()]), rdtype: z.string().trim().min(1),
+  rdata: z.string(), changed_date: z.string().trim().min(1), author_comment: z.string()
+}).passthrough();
+const wapiRowsDataSchema = z.object({ row: z.array(wapiRowSchema) }).passthrough();
+
+export type WdnsDomain = Readonly<{ name: string; type: string; status: string }>;
+export type WdnsRow = Readonly<{ id: string; name: string; ttl: number; rdtype: string; rdata: string; changedDate: string; authorComment: string }>;
+
+function noEmbeddedDomainError(value: z.infer<typeof wapiDomainSchema>): void {
+  if (value.error !== undefined || value.error_code !== undefined) throw new Error("wedos_wapi_domain_embedded_error");
+}
+
+export function parseWdnsDomains(data: unknown): WdnsDomain[] {
+  return wapiDomainsDataSchema.parse(data).domain.map((domain) => {
+    noEmbeddedDomainError(domain);
+    return { name: domain.name.toLowerCase(), type: domain.type.toLowerCase(), status: domain.status.toLowerCase() };
+  });
+}
+
+export function parseWdnsDomainInfo(data: unknown, expectedName: string): WdnsDomain {
+  const expected = expectedName.trim().toLowerCase();
+  const domain = parseWdnsDomains(data).find((item) => item.name === expected);
+  if (!domain) throw new Error("wedos_wapi_domain_not_found");
+  if (domain.status !== "active" || domain.type !== "primary") throw new Error("wedos_wapi_domain_not_active_primary");
+  return domain;
+}
+
+export function parseWdnsRows(data: unknown): WdnsRow[] {
+  return wapiRowsDataSchema.parse(data).row.map((row) => ({
+    id: String(row.ID), name: row.name, ttl: Number(row.ttl), rdtype: row.rdtype.toUpperCase(), rdata: row.rdata,
+    changedDate: row.changed_date, authorComment: row.author_comment
+  }));
 }
 
 function validateResponse(command: string, raw: RawResponse | undefined, clTRID: string): { code: number; result: string; svTRID: string | null; data: Record<string, unknown> | null; outcome: WapiOutcome } {

@@ -150,13 +150,20 @@ jobs:
       - name: Enforce clean CodeQL results
         run: |
           jq -r '.runs[].results[]? | [.ruleId, (.level // "warning"), .message.text, (.locations[0].physicalLocation.artifactLocation.uri // ""), ((.locations[0].physicalLocation.region.startLine // 0) | tostring)] | @tsv' /tmp/codeql-results/javascript.sarif
-          # WEDOS documents SHA-1 as its request-authentication protocol.  This
-          # narrow exception is not password storage and applies to one known
-          # source location only; every other CodeQL result remains blocking.
-          jq -e '[.runs[].results[]? | select(
-            .ruleId != "js/insufficient-password-hash" or
-            (.locations[0].physicalLocation.artifactLocation.uri // "") != "apps/server/src/tls/wedos-wapi.ts"
-          )] | length == 0' /tmp/codeql-results/javascript.sarif
+          wedos_path='apps/server/src/tls/wedos-wapi.ts'
+          wedos_sha1_line="$(grep -n 'createHash("sha1")' "$wedos_path" | cut -d: -f1)"
+          test "$(printf '%s\n' "$wedos_sha1_line" | wc -l | tr -d ' ')" = 1
+          # WEDOS WAPI requires SHA-1 request authentication. This exception
+          # permits exactly its two protocol findings at its sole helper line.
+          jq -e --arg path "$wedos_path" --argjson line "$wedos_sha1_line" '
+            def allowed_wedos_protocol_sha1:
+              (.ruleId == "js/insufficient-password-hash" or .ruleId == "js/weak-cryptographic-algorithm") and
+              ((.locations[0].physicalLocation.artifactLocation.uri // "") == $path) and
+              ((.locations[0].physicalLocation.region.startLine // 0) == $line);
+            [.runs[].results[]? | select(allowed_wedos_protocol_sha1 | not)] | length == 0
+          ' /tmp/codeql-results/javascript.sarif
+      - name: Guard WEDOS CodeQL exception scope
+        run: node scripts/test-wedos-codeql-exception.mjs
 
   release:
     if: github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || github.event_name == 'push')

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { loadBootstrapConfig } from "../config.js";
 import { createDb } from "../db.js";
 import { platformWorkerSecretPrincipal, resolveSecret } from "../domain/secret-manager.js";
-import { WedosWapiClient } from "../tls/wedos-wapi.js";
+import { WedosWapiClient, parseWdnsDomainInfo } from "../tls/wedos-wapi.js";
 
 type SafeResult = Readonly<{ command: string; outcome: string; code: number }>;
 
@@ -34,11 +34,10 @@ async function main(): Promise<void> {
     return;
   }
   if (command === "preflight") {
-    const result = await withClient(async (client) => ({
-      ping: safe(await client.ping()),
-      domains: safe(await client.domainsList()),
-      domain: safe(await client.domainInfo("hcasc.cz"))
-    }));
+    const result = await withClient(async (client) => {
+      const [ping, domains, domainInfo] = await Promise.all([client.ping(), client.domainsList(), client.domainInfo("hcasc.cz")]);
+      return { ping: safe(ping), domains: safe(domains), domain: { ...safe(domainInfo), ...parseWdnsDomainInfo(domainInfo.data, "hcasc.cz") } };
+    });
     process.stdout.write(`wedos-wapi:preflight:${JSON.stringify(result)}\n`);
     return;
   }

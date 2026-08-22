@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { WedosWapiClient, WedosWapiCircuitOpenError, acmeRelativeTxtName, pragueHour, wedosAuth } from "./wedos-wapi.js";
+import { WedosWapiClient, WedosWapiCircuitOpenError, acmeRelativeTxtName, parseWdnsDomainInfo, parseWdnsDomains, parseWdnsRows, pragueHour, wedosAuth } from "./wedos-wapi.js";
 
 function responseFor(request: Record<string, unknown>, code = 1000, data?: Record<string, unknown>) {
   return new Response(JSON.stringify({ response: { code, result: "OK", clTRID: request.clTRID, svTRID: "server-1", command: request.command, ...(data ? { data } : {}) } }), { status: 200 });
@@ -60,9 +60,8 @@ describe("WEDOS WAPI client", () => {
     expect(recorded.request()).toMatchObject({ command: _command, ...(expectedData ? { data: expectedData } : {}) });
   });
 
-  it("treats only command-specific 1001/1002/1003 responses as non-error outcomes", async () => {
+  it("treats only command-specific POLL response codes as non-error outcomes", async () => {
     for (const [code, invoke, outcome] of ([
-      [1001, (client: WedosWapiClient) => client.domainCommit("hcasc.cz"), "PENDING"],
       [1003, (client: WedosWapiClient) => client.pollReq(), "EMPTY"],
       [1002, (client: WedosWapiClient) => client.pollAck("notice-1"), "ACKNOWLEDGED"]
     ] as const)) {
@@ -70,6 +69,31 @@ describe("WEDOS WAPI client", () => {
       const client = new WedosWapiClient({ login: "owner@example.test", password: "not-a-real-secret" }, recorded.fetchMock as unknown as typeof fetch);
       await expect(invoke(client)).resolves.toMatchObject({ code, outcome });
     }
+  });
+
+  it("rejects undocumented pending commit responses rather than treating them as success", async () => {
+    const recorded = fetchRecording(1001);
+    const client = new WedosWapiClient({ login: "owner@example.test", password: "not-a-real-secret" }, recorded.fetchMock as unknown as typeof fetch);
+    await expect(client.domainCommit("hcasc.cz")).rejects.toMatchObject({ code: 1001 });
+  });
+
+  it("parses documented WDNS domain and uppercase row schemas strictly", () => {
+    const data = { domain: [{ name: "hcasc.cz", status: "ACTIVE", type: "PRIMARY" }] };
+    expect(parseWdnsDomains(data)).toEqual([{ name: "hcasc.cz", status: "active", type: "primary" }]);
+    expect(parseWdnsDomainInfo(data, "hcasc.cz")).toEqual({ name: "hcasc.cz", status: "active", type: "primary" });
+    expect(parseWdnsRows({ row: [{ ID: 42, name: "_acme-challenge", ttl: 300, rdtype: "TXT", rdata: "value", changed_date: "2026-08-22 10:00:00", author_comment: "kcml-acme:00000000-0000-0000-0000-000000000000" }] })).toEqual([
+      { id: "42", name: "_acme-challenge", ttl: 300, rdtype: "TXT", rdata: "value", changedDate: "2026-08-22 10:00:00", authorComment: "kcml-acme:00000000-0000-0000-0000-000000000000" }
+    ]);
+  });
+
+  it.each([
+    [{ domain: [{ name: "other.cz", status: "ACTIVE", type: "PRIMARY" }] }],
+    [{ domain: [{ name: "hcasc.cz", status: "DISABLED", type: "PRIMARY" }] }],
+    [{ domain: [{ name: "hcasc.cz", status: "ACTIVE", type: "SECONDARY" }] }],
+    [{ domain: [{ name: "hcasc.cz", status: "ACTIVE", type: "PRIMARY", error: { code: 2000 } }] }],
+    [{ domain: [{ name: "hcasc.cz", status: "ACTIVE" }] }]
+  ])("rejects malformed or non-primary WDNS domain-info", (data) => {
+    expect(() => parseWdnsDomainInfo(data, "hcasc.cz")).toThrow();
   });
 
   it("fails closed on a command mismatch and opens its circuit after quota or IP block", async () => {
