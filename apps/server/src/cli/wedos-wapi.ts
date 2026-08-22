@@ -36,7 +36,13 @@ function safeErrorMessage(error: unknown): string {
   }
   if (error && typeof error === "object" && "code" in error && typeof error.code === "number") {
     const command = "command" in error && typeof error.command === "string" ? error.command : "unknown";
-    return `wapi_error:${String(error.code)}:${command}`;
+    const result = "result" in error && typeof error.result === "string" ? error.result : "";
+    const safeResult = result
+      .replace(/(?:password|passwd|auth|secret|token|api[_ -]?key)\s*[:=]\s*[^,;\s]+/gi, "[redacted]")
+      .replace(/[^a-zA-Z0-9_.: -]/g, "_")
+      .replace(/\s+/g, "_")
+      .slice(0, 160);
+    return `wapi_error:${String(error.code)}:${command}:${safeResult || "no_result"}`;
   }
   return (error instanceof Error ? error.message : "unknown").replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 240);
 }

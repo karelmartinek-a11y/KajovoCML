@@ -12,7 +12,7 @@ type FetchLike = typeof fetch;
 type RawResponse = { code?: unknown; result?: unknown; clTRID?: unknown; svTRID?: unknown; command?: unknown; data?: unknown };
 
 export class WedosWapiError extends Error {
-  constructor(readonly code: number, message: string, readonly retryAfterMs: number | null = null, readonly command: string | null = null) { super(message); }
+  constructor(readonly code: number, message: string, readonly retryAfterMs: number | null = null, readonly command: string | null = null, readonly result: string | null = null) { super(message); }
 }
 
 export class WedosWapiCircuitOpenError extends Error {
@@ -44,11 +44,11 @@ export function acmeRelativeTxtName(certbotDomain: string, zone = "hcasc.cz"): s
 function responseError(code: number, result: string, command: string): WedosWapiError {
   // These are orchestration signals, not undocumented WEDOS Retry-After values.
   // A durable caller decides when a later retry is permitted.
-  if (code === 2006) return new WedosWapiError(code, "wedos_wapi_rate_limited", null, command);
-  if (code === 2050) return new WedosWapiError(code, "wedos_wapi_authentication_failed", null, command);
-  if (code === 2051) return new WedosWapiError(code, "wedos_wapi_source_ip_not_allowed", null, command);
-  if (code === 2052) return new WedosWapiError(code, "wedos_wapi_source_ip_temporarily_blocked", null, command);
-  return new WedosWapiError(code, `wedos_wapi_error_${code}:${result.slice(0, 160)}`, null, command);
+  if (code === 2006) return new WedosWapiError(code, "wedos_wapi_rate_limited", null, command, result);
+  if (code === 2050) return new WedosWapiError(code, "wedos_wapi_authentication_failed", null, command, result);
+  if (code === 2051) return new WedosWapiError(code, "wedos_wapi_source_ip_not_allowed", null, command, result);
+  if (code === 2052) return new WedosWapiError(code, "wedos_wapi_source_ip_temporarily_blocked", null, command, result);
+  return new WedosWapiError(code, `wedos_wapi_error_${code}:${result.slice(0, 160)}`, null, command, result);
 }
 
 const ASYNC_COMMANDS = new Set<string>();
