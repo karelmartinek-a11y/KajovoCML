@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { Resolver } from "node:dns/promises";
+import { Resolver, resolve4, resolve6 } from "node:dns/promises";
 import type pg from "pg";
 import type { Db } from "../db.js";
 import { tx } from "../db.js";
@@ -219,23 +219,47 @@ function fqdn(zone: string, recordName: string): string {
   return `${recordName}.${zone}.`;
 }
 
+async function authoritativeNameServerAddresses(authority: string): Promise<string[]> {
+  const host = authority.replace(/\.$/, "");
+  const ipv4 = await resolve4(host).catch(() => [] as string[]);
+  const ipv6 = await resolve6(host).catch(() => [] as string[]);
+  const addresses = [...ipv4, ...ipv6];
+  if (!addresses.length) throw new Error(`wedos_dns_authoritative_nameserver_resolution_failed:${host}`);
+  return [...new Set(addresses)];
+}
+
+function isRetryableAuthoritativeNetworkError(code: string): boolean {
+  return ["ECONNREFUSED", "ETIMEDOUT", "ETIME", "EAI_AGAIN", "ENETUNREACH", "EHOSTUNREACH"].includes(code);
+}
+
 export async function verifyAuthoritativeTxt(zoneInput: string, recordNameInput: string, value: string, expectedPresent: boolean): Promise<void> {
   const zone = normalizeZone(zoneInput); const recordName = normalizeRecordName(recordNameInput);
   const authorities = await Resolver.prototype.resolveNs.call(new Resolver(), `${zone}.`);
   if (!authorities.length) throw new Error("wedos_dns_authoritative_nameservers_missing");
   const target = fqdn(zone, recordName);
   for (const authority of authorities) {
-    const resolver = new Resolver(); resolver.setServers([authority.replace(/\.$/, "")]);
-    let records: string[][] = [];
-    try {
-      records = await resolver.resolveTxt(target);
-    } catch (error) {
-      const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
-      if (!expectedPresent && ["ENODATA", "ENOTFOUND", "NXDOMAIN"].includes(code)) records = [];
-      else throw new Error(`wedos_dns_authoritative_query_failed:${authority}:${code || "unknown"}`);
+    const addresses = await authoritativeNameServerAddresses(authority);
+    let responded = false;
+    let lastNetworkError = "unknown";
+    for (const address of addresses) {
+      const resolver = new Resolver(); resolver.setServers([address]);
+      let records: string[][] = [];
+      try {
+        records = await resolver.resolveTxt(target);
+      } catch (error) {
+        const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
+        if (!expectedPresent && ["ENODATA", "ENOTFOUND", "NXDOMAIN"].includes(code)) records = [];
+        else if (isRetryableAuthoritativeNetworkError(code)) {
+          lastNetworkError = code || "unknown";
+          continue;
+        } else throw new Error(`wedos_dns_authoritative_query_failed:${authority}:${address}:${code || "unknown"}`);
+      }
+      responded = true;
+      const present = records.some((record) => record.join("") === value);
+      if (present !== expectedPresent) throw new Error(`wedos_dns_authoritative_visibility_mismatch:${authority}:${address}`);
+      break;
     }
-    const present = records.some((record) => record.join("") === value);
-    if (present !== expectedPresent) throw new Error(`wedos_dns_authoritative_visibility_mismatch:${authority}`);
+    if (!responded) throw new Error(`wedos_dns_authoritative_query_failed:${authority}:${lastNetworkError}`);
   }
 }
 
