@@ -69,7 +69,10 @@ const wapiDomainSchema = z.object({
   name: z.string().trim().min(1), type: z.string().trim().min(1), status: z.string().trim().min(1),
   error: z.unknown().optional(), error_code: z.unknown().optional()
 }).passthrough();
-const wapiDomainsDataSchema = z.object({ domain: z.array(wapiDomainSchema).min(1) }).passthrough();
+// WEDOS returns the `domain` member as a collection for multiple results, but
+// as one object when the account currently exposes a single DNS domain. Keep
+// both observed wire shapes explicit and normalize them to one domain list.
+const wapiDomainsDataSchema = z.object({ domain: z.union([z.array(wapiDomainSchema).min(1), wapiDomainSchema]) }).passthrough();
 const wapiRowSchema = z.object({
   ID: z.union([z.string().trim().min(1), z.number().int().nonnegative()]), name: z.string().trim().min(1),
   ttl: z.union([z.string().regex(/^\d+$/), z.number().int().positive()]), rdtype: z.string().trim().min(1),
@@ -85,7 +88,9 @@ function noEmbeddedDomainError(value: z.infer<typeof wapiDomainSchema>): void {
 }
 
 export function parseWdnsDomains(data: unknown): WdnsDomain[] {
-  return wapiDomainsDataSchema.parse(data).domain.map((domain) => {
+  const parsed = wapiDomainsDataSchema.parse(data).domain;
+  const domains = Array.isArray(parsed) ? parsed : [parsed];
+  return domains.map((domain) => {
     noEmbeddedDomainError(domain);
     return { name: domain.name.toLowerCase(), type: domain.type.toLowerCase(), status: domain.status.toLowerCase() };
   });

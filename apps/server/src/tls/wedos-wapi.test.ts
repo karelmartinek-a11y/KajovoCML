@@ -86,6 +86,13 @@ describe("WEDOS WAPI client", () => {
     ]);
   });
 
+  it("normalizes the single-domain WDNS response without accepting an unstructured value", () => {
+    expect(parseWdnsDomains({ domain: { name: "hcasc.cz", status: "ACTIVE", type: "PRIMARY" } })).toEqual([
+      { name: "hcasc.cz", status: "active", type: "primary" }
+    ]);
+    expect(() => parseWdnsDomains({ domain: "hcasc.cz" })).toThrow();
+  });
+
   it.each([
     [{ domain: [{ name: "other.cz", status: "ACTIVE", type: "PRIMARY" }] }],
     [{ domain: [{ name: "hcasc.cz", status: "DISABLED", type: "PRIMARY" }] }],
