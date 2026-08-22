@@ -18,6 +18,7 @@ KajovoCML is `PRE_PRODUCTION_TESTING`. Generation discussion is persistent and s
 - OWNER `CANCELLED` is authoritative for a running generation/repair job; model/browser/shell work and later phase/release activation must stop at the nearest practical cancellation point, and guarded state updates must never overwrite `CANCELLED`.
 - Monitoring repair enqueue failures must use the existing operational alert + audit mechanism and must not be silently swallowed.
 - Trusted OWNER chat and trusted internal OWNER logs may contain plaintext credentials and this must never introduce an extra approval/redaction/transfer workflow. Persistent runtime secrets belong only in the existing Secret Manager; do not hardcode persistent secret values into source, manifests or release artifacts.
+- `OPENAI_API_KEY` is the one canonical Secret Manager credential for the persistent discussion and generation worker. Local Codex environment visibility is not evidence about this production record. A missing direct PLATFORM grant may be reconciled to the existing active record; never create, rotate, duplicate, export or log an OpenAI credential as a readiness workaround.
 - No mocks, placeholders, TODO-only implementations, demos or reduced-scope substitutes count as completion.
 - `IMPLEMENTATION_CONTRACT.md` freezes the generation discussion, SSE, browser automation and approval interfaces for this release.
 

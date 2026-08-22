@@ -9,6 +9,7 @@ import { appendAudit } from "./audit.js";
 import {
   createSecret,
   grantSecret,
+  listSecretGrants,
   listSecrets,
   platformWorkerSecretPrincipal,
   resolveSecret,
@@ -17,7 +18,7 @@ import {
 } from "./secret-manager.js";
 
 export const GENERATION_STATES = [
-  "DISCUSSING", "CREATED", "ANALYZING", "NEEDS_INPUT", "PLAN_READY", "IMPLEMENTING", "INTEGRATING", "VALIDATING",
+  "DISCUSSING", "ANALYZING", "IMPLEMENTING", "INTEGRATING", "VALIDATING",
   "CML_CONFORMANCE", "ACTIVATING", "COMPLETED", "FAILED", "BLOCKED", "CANCELLED"
 ] as const;
 export type GenerationState = typeof GENERATION_STATES[number];
@@ -288,6 +289,12 @@ export function generatedRepairTriggerKey(componentId: string, evidence: Record<
   return `sha256:${createHash("sha256").update(JSON.stringify({ componentId, evidence: repairEvidenceFingerprint(evidence) })).digest("hex")}`;
 }
 
+export function automaticRepairAuthority(inheritedApprovedSpec: boolean): { state: "IMPLEMENTING" | "BLOCKED"; blockerCode: string | null } {
+  return inheritedApprovedSpec
+    ? { state: "IMPLEMENTING", blockerCode: null }
+    : { state: "BLOCKED", blockerCode: "generation_repair_spec_lineage_missing" };
+}
+
 export async function enqueueGeneratedRepairJob(
   db: Db,
   componentId: string,
@@ -301,7 +308,7 @@ export async function enqueueGeneratedRepairJob(
       `select c.id,c.code,c.hostname,c.display_name,c.category,c.registration_type,c.active_revision_id,
               c.lifecycle_state,c.activation_state,c.operational_state,c.monitoring_state,c.enabled,c.ingress_enabled,c.pulse_enabled,c.egress_enabled,
               revision.manifest,release.id active_release_id,
-              prior.job_id prior_job_id,prior.element_key,job.owner_admin_id
+              prior.job_id prior_job_id,prior.element_key,job.owner_admin_id,job.approved_spec_revision_id prior_approved_spec_revision_id
          from component c
          join component_revision revision on revision.id=c.active_revision_id
          left join lateral (
@@ -347,11 +354,22 @@ export async function enqueueGeneratedRepairJob(
       missingInputs: []
     };
     const persistedEvidence = { ...evidence, _kcmlBaseComponentState: { activeRevisionId: String(row.active_revision_id), lifecycleState: String(row.lifecycle_state), activationState: String(row.activation_state), operationalState: String(row.operational_state), monitoringState: String(row.monitoring_state), enabled: Boolean(row.enabled), ingressEnabled: Boolean(row.ingress_enabled), pulseEnabled: Boolean(row.pulse_enabled), egressEnabled: Boolean(row.egress_enabled) } };
+    const inheritedSpec = row.prior_job_id && row.prior_approved_spec_revision_id
+      ? await client.query(
+        `select revision.spec,revision.canonical_json,revision.digest,revision.rendered_markdown
+           from generation_spec_revision revision
+          where revision.id=$1 and revision.job_id=$2`,
+        [row.prior_approved_spec_revision_id, row.prior_job_id]
+      )
+      : { rowCount: 0, rows: [] };
+    const authority = automaticRepairAuthority(Boolean(inheritedSpec.rowCount));
+    const repairState = authority.state;
+    const repairBlocker = authority.blockerCode;
     const prompt = `Automatická OWNER repair cesta pro ${String(row.code)}. Použij aktuální source/release jako základ, diagnostikuj root cause z monitoring/error evidence a proveď nejmenší úplnou opravu. Neměň CML identitu. Evidence: ${JSON.stringify(evidence)}`;
     const inserted = await client.query(
-      `insert into generation_job(owner_admin_id,original_prompt,state,plan,job_kind,repair_component_id,repair_evidence,repair_base_release_id,repair_trigger_key,repair_cooldown_until)
-       values ($1,$2,'IMPLEMENTING',$3::jsonb,'REPAIR',$4,$5::jsonb,$6,$7,now()+($8||' minutes')::interval) returning id`,
-      [row.owner_admin_id, prompt, JSON.stringify(plan), componentId, JSON.stringify(persistedEvidence), row.active_release_id, triggerKey, cooldownMinutes]
+      `insert into generation_job(owner_admin_id,original_prompt,state,plan,job_kind,repair_component_id,repair_evidence,repair_base_release_id,repair_trigger_key,repair_cooldown_until,blocker_summary,blocker_code)
+       values ($1,$2,$3,$4::jsonb,'REPAIR',$5,$6::jsonb,$7,$8,now()+($9||' minutes')::interval,$10,$11) returning id`,
+      [row.owner_admin_id, prompt, repairState, JSON.stringify(plan), componentId, JSON.stringify({ ...persistedEvidence, repairBlocker }), row.active_release_id, triggerKey, cooldownMinutes, repairBlocker, repairBlocker]
     );
     const id = String(inserted.rows[0].id);
     await client.query(
@@ -359,6 +377,22 @@ export async function enqueueGeneratedRepairJob(
        values ($1,$2,$3,$4)`,
       [id, componentId, elementKey, String(row.category) === "AI_AGENT" ? "AI_AGENT" : "MCP_SERVER"]
     );
+    if (inheritedSpec.rowCount) {
+      const source = inheritedSpec.rows[0];
+      const cloned = await client.query(
+        `insert into generation_spec_revision(job_id,revision,spec,canonical_json,digest,source_turn_id,source_job_id,rendered_markdown)
+         values ($1,1,$2::jsonb,$3,$4,null,$1,$5) returning id`,
+        [id, JSON.stringify(source.spec), String(source.canonical_json), String(source.digest), String(source.rendered_markdown ?? "")]
+      );
+      const clonedId = String(cloned.rows[0].id);
+      await client.query(
+        `update generation_job
+            set current_spec_revision_id=$2,current_spec_job_id=$1,approved_spec_revision_id=$2,approved_spec_job_id=$1,
+                approved_spec_digest=$3,discussion_closed_at=now(),updated_at=now()
+          where id=$1`,
+        [id, clonedId, String(source.digest)]
+      );
+    }
     await appendAudit(client, {
       eventType: "generation_repair.queued", actorType: "system", objectType: "generation_job", objectId: id,
       after: { componentId, triggerKey, baseReleaseId: row.active_release_id, cooldownMinutes, evidence }, correlationId
@@ -366,8 +400,9 @@ export async function enqueueGeneratedRepairJob(
     return id;
   });
   if (!jobId) return null;
-  await appendGenerationEvent(db, jobId, "IMPLEMENTING", "generation.repair_queued", "Monitoring zjistil závadu; byl založen řízený AI repair job.", { componentId, triggerKey });
-  return getGenerationJob(db, jobId);
+  const repairJob = await getGenerationJob(db, jobId);
+  await appendGenerationEvent(db, jobId, repairJob.state, repairJob.state === "BLOCKED" ? "generation.repair_blocked" : "generation.repair_queued", repairJob.state === "BLOCKED" ? "Automatická oprava byla zablokována, protože funkční lineage nemá přesnou schválenou specifikaci; je nutná nová OWNER diskuse." : "Monitoring zjistil závadu; byl založen řízený AI repair job s inherited technical authority.", { componentId, triggerKey, inheritedSpec: repairJob.state === "IMPLEMENTING" });
+  return repairJob;
 }
 
 export async function setGenerationNeedsInput(
@@ -412,12 +447,12 @@ export async function setGenerationNeedsInput(
     }
     const missing = await client.query("select count(*)::int n from generation_job_input where job_id=$1 and required and supplied_at is null", [jobId]);
     needsOwnerInput = Number(missing.rows[0].n) > 0;
-    const next = needsOwnerInput ? "NEEDS_INPUT" : resumeState;
-    const updated = await client.query("update generation_job set state=$2,resume_state=case when $2='NEEDS_INPUT' then $3 else null end,blocker_summary=case when $2='NEEDS_INPUT' then $4 else null end,updated_at=now(),lease_owner=null,lease_until=null where id=$1 and state<>'CANCELLED' returning id", [jobId, next, resumeState, blocker]);
+    const next = needsOwnerInput ? "BLOCKED" : resumeState;
+    const updated = await client.query("update generation_job set state=$2,blocker_code=case when $2='BLOCKED' then 'OWNER_INPUT_REQUIRED' else null end,blocker_origin_state=case when $2='BLOCKED' then $3 else null end,resume_state=case when $2='BLOCKED' then $3 else null end,blocker_summary=case when $2='BLOCKED' then $4 else null end,updated_at=now(),lease_owner=null,lease_until=null where id=$1 and state<>'CANCELLED' returning id", [jobId, next, resumeState, blocker]);
     if (!updated.rowCount) throw new GenerationCancelledError();
   });
   if (needsOwnerInput) {
-    await appendGenerationEvent(db, jobId, "NEEDS_INPUT", "generation.needs_input", "Job vyžaduje skutečně chybějící OWNER údaj nebo credential.", { blocker, inputs: normalizedInputs.filter((input) => !input.alreadyAvailable).map((input) => input.key), resumeState });
+    await appendGenerationEvent(db, jobId, "BLOCKED", "generation.owner_input_required", "Job je dočasně blokován, protože vyžaduje skutečně chybějící OWNER údaj nebo credential.", { blocker, inputs: normalizedInputs.filter((input) => !input.alreadyAvailable).map((input) => input.key), resumeState });
   } else {
     await appendGenerationEvent(db, jobId, resumeState, "generation.inputs_reused", "Požadované secrets již existují v KajovoCML Secret Manageru; OWNER vstup není potřeba a job pokračuje.", { reusedSecrets: normalizedInputs.filter((input) => input.alreadyAvailable).map((input) => input.normalizedSecretName).filter(Boolean) });
   }
@@ -465,7 +500,7 @@ export async function setGenerationPlan(db: Db, jobId: string, planInput: Genera
     const moved = await client.query("update generation_job set state=$2,blocker_code=case when $3 then 'OWNER_INPUT_REQUIRED' else null end,blocker_origin_state=case when $3 then 'ANALYZING' else null end,resume_state=case when $3 then 'ANALYZING' else null end,updated_at=now() where id=$1 and state<>'CANCELLED' returning id", [jobId, Number(required.rows[0].n) ? "BLOCKED" : "IMPLEMENTING", Number(required.rows[0].n) > 0]);
     if (!moved.rowCount) throw new GenerationCancelledError();
   });
-  await appendGenerationEvent(db, jobId, "ANALYZING", "generation.plan_ready", "Technický plán je připraven; pipeline pokračuje bez druhého OWNER schválení.", {
+  await appendGenerationEvent(db, jobId, "ANALYZING", "generation.implementation_input_ready", "Schválená specifikace byla převedena na technický implementation input; pipeline pokračuje bez druhého OWNER schválení.", {
     elements: plan.elements.map((element) => element.key),
     missingInputCount: reconciled.unsatisfiedRequiredInputs.length,
     reusedSecrets: Array.from(reconciled.activeSecretNames).filter((name) => generationSecretGrantElementKeys(plan, name).length > 0)
@@ -482,12 +517,87 @@ export async function ensurePlatformOpenAiSecret(db: Db, config: GenerationRoute
   await grantSecret(db, ownerAdminId, correlationId, secret.id, { principalKind: "PLATFORM", principalId: platform.id, principalPublicId: platform.publicId });
 }
 
-export async function generationOpenAiReady(db: Db): Promise<boolean> {
-  // An ACTIVE canonical secret is sufficient for OWNER readiness. The generation worker
-  // deterministically attaches the existing PLATFORM grant before first model use so an
-  // already stored OPENAI_API_KEY never causes duplicate OWNER copy/paste.
-  const result = await db.query("select 1 from secret_record where stable_name='OPENAI_API_KEY' and status='ACTIVE' and deleted_at is null limit 1");
-  return Boolean(result.rowCount);
+export type GenerationOpenAiReadinessReason =
+  | "READY"
+  | "MISSING"
+  | "DELETED"
+  | "INACTIVE"
+  | "ACTIVE_VERSION_MISSING"
+  | "PLATFORM_PRINCIPAL_UNAVAILABLE"
+  | "PLATFORM_GRANT_MISSING"
+  | "RESOLVE_FAILED";
+
+export type GenerationOpenAiReadiness = {
+  ready: boolean;
+  reason: GenerationOpenAiReadinessReason;
+  stableName: "OPENAI_API_KEY";
+  secretExists: boolean;
+  secretStatus: string | null;
+  activeVersion: boolean;
+  platformPrincipal: { id: string; publicId: string } | null;
+  platformGrant: boolean;
+  canonicalResolve: "PASS" | "FAIL" | "NOT_ATTEMPTED";
+};
+
+type GenerationSecretResolverConfig = Pick<GenerationRouteConfig, "CONFIG_VAULT_MASTER_KEY_BASE64" | "CONFIG_VAULT_MASTER_KEY_ID">;
+
+/**
+ * Inspect the single canonical OpenAI credential without exposing a value. A generation
+ * worker may use it only through the PLATFORM identity's direct (not global) grant, so an
+ * ACTIVE record alone is deliberately not considered ready.
+ */
+export async function generationOpenAiReadiness(db: Db, config: GenerationSecretResolverConfig): Promise<GenerationOpenAiReadiness> {
+  const stableName = "OPENAI_API_KEY" as const;
+  const secret = (await listSecrets(db)).find((item) => item.stableName === stableName);
+  const base = {
+    stableName,
+    secretExists: Boolean(secret),
+    secretStatus: secret?.status ?? null,
+    activeVersion: Boolean(secret?.activeVersionId),
+    platformPrincipal: null as { id: string; publicId: string } | null,
+    platformGrant: false,
+    canonicalResolve: "NOT_ATTEMPTED" as const
+  };
+  if (!secret) return { ...base, ready: false, reason: "MISSING" };
+  if (secret.deletedAt || secret.status === "DELETED") return { ...base, ready: false, reason: "DELETED" };
+  if (secret.status !== "ACTIVE") return { ...base, ready: false, reason: "INACTIVE" };
+  if (!secret.activeVersionId) return { ...base, ready: false, reason: "ACTIVE_VERSION_MISSING" };
+
+  let platform;
+  try {
+    platform = await platformWorkerSecretPrincipal(db);
+  } catch {
+    return { ...base, ready: false, reason: "PLATFORM_PRINCIPAL_UNAVAILABLE" };
+  }
+  const withPrincipal = { ...base, platformPrincipal: { id: platform.id ?? "", publicId: platform.publicId } };
+  const grants = await listSecretGrants(db, secret.id);
+  const directGrant = grants.some((grant) => grant.principalKind === "PLATFORM"
+    && grant.principalId === platform.id
+    && grant.principalPublicId === platform.publicId
+    && grant.allSecrets === false
+    && grant.revokedAt === null);
+  if (!directGrant) return { ...withPrincipal, ready: false, reason: "PLATFORM_GRANT_MISSING" };
+
+  try {
+    // Exercise the normal resolver, discard the value immediately, and never return/log it.
+    await resolveGenerationSecret(db, config, stableName);
+    return { ...withPrincipal, platformGrant: true, canonicalResolve: "PASS", ready: true, reason: "READY" };
+  } catch {
+    return { ...withPrincipal, platformGrant: true, canonicalResolve: "FAIL", ready: false, reason: "RESOLVE_FAILED" };
+  }
+}
+
+export async function generationOpenAiReady(db: Db, config: GenerationSecretResolverConfig): Promise<boolean> {
+  return (await generationOpenAiReadiness(db, config)).ready;
+}
+
+/** Reconcile only a missing direct PLATFORM grant; this never creates or rotates a credential. */
+export async function reconcileGenerationOpenAiReadiness(db: Db, config: GenerationSecretResolverConfig, ownerAdminId: string, correlationId: string): Promise<GenerationOpenAiReadiness> {
+  const before = await generationOpenAiReadiness(db, config);
+  if (before.reason === "PLATFORM_GRANT_MISSING") {
+    await ensureGenerationPlatformSecretGrant(db, ownerAdminId, "OPENAI_API_KEY", correlationId);
+  }
+  return generationOpenAiReadiness(db, config);
 }
 
 export async function ensureGenerationPlatformSecretGrant(db: Db, ownerAdminId: string, stableNameInput: string, correlationId: string): Promise<boolean> {
@@ -535,7 +645,7 @@ export async function grantGenerationSecretToElements(
   return result.available;
 }
 
-export async function resolveGenerationSecret(db: Db, config: GenerationRouteConfig, stableName: string, correlationId: string = randomUUID()): Promise<string> {
+export async function resolveGenerationSecret(db: Db, config: GenerationSecretResolverConfig, stableName: string, correlationId: string = randomUUID()): Promise<string> {
   const principal = await platformWorkerSecretPrincipal(db);
   return (await resolveSecret(db, config, principal, stableName, correlationId)).value;
 }
@@ -632,13 +742,8 @@ export async function submitGenerationInputs(db: Db, config: GenerationRouteConf
 }
 
 export async function confirmGenerationPlan(db: Db, jobId: string, ownerAdminId: string, correlationId: string): Promise<GenerationJobView> {
-  const job = await getGenerationJob(db, jobId);
-  if (job.ownerAdminId !== ownerAdminId) throw Object.assign(new Error("not_found"), { statusCode: 404 });
-  if (job.state !== "PLAN_READY") throw Object.assign(new Error("generation_plan_not_ready"), { statusCode: 409 });
-  await setGenerationState(db, jobId, "IMPLEMENTING");
-  await appendGenerationEvent(db, jobId, "IMPLEMENTING", "generation.confirmed", "Návrh byl potvrzen. Začíná technická realizace.");
-  await appendAudit(db, { eventType: "generation_job.confirmed", actorType: "admin", actorId: ownerAdminId, objectType: "generation_job", objectId: jobId, correlationId });
-  return getGenerationJob(db, jobId);
+  void db; void jobId; void ownerAdminId; void correlationId;
+  throw Object.assign(new Error("generation_plan_approval_retired"), { statusCode: 410 });
 }
 
 export async function cancelGenerationJob(db: Db, jobId: string, ownerAdminId: string, correlationId: string): Promise<void> {

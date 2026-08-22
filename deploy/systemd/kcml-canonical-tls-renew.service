@@ -1,0 +1,32 @@
+[Unit]
+Description=KCML unattended canonical wildcard TLS renewal
+Wants=network-online.target
+After=network-online.target nginx.service postgresql.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+EnvironmentFile=-/etc/kcml/web.env
+Environment=KCML_PROCESS_ROLE=migrate
+Environment=KCML_RELEASE_SOURCE=/opt/kcml/current
+Environment=DATABASE_URL_FILE=%d/database_url
+Environment=CONFIG_VAULT_MASTER_KEY_BASE64_FILE=%d/config_vault_master_key
+LoadCredential=database_url:/etc/kcml/credentials/migrator/database_url
+LoadCredential=config_vault_master_key:/etc/kcml/credentials/config_vault_master_key
+ExecStart=/opt/kcml/current/deploy/scripts/renew-canonical-tls.sh
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/etc/kcml/tls /run/kcml /var/lib/letsencrypt /etc/letsencrypt
+TimeoutStartSec=25min
+
+[Install]
+WantedBy=multi-user.target

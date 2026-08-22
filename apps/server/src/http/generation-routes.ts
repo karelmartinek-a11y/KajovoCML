@@ -8,9 +8,10 @@ import {
   createGenerationJob,
   createGenerationFollowUpJob,
   ensurePlatformOpenAiSecret,
-  generationOpenAiReady,
+  generationOpenAiReadiness,
   getGenerationJob,
   listGenerationJobs,
+  reconcileGenerationOpenAiReadiness,
   submitGenerationInputs
 } from "../domain/generation.js";
 import { approveSpec, getCurrentSpec, runDiscussionTurn } from "../domain/generation-discussion.js";
@@ -51,8 +52,19 @@ async function ownedJob(db: Db, id: string, ownerId: string) {
 export function registerGenerationRoutes(app: FastifyInstance, db: Db, config: AppServerConfig): void {
   app.get("/api/generation/setup", async (request, reply) => {
     const correlationId = randomUUID(); const session = await ownerSession(db, config, request, reply, correlationId); if (!session) return;
-    try { return reply.header("cache-control", "no-store").send({ openAiReady: await generationOpenAiReady(db), model: config.GENERATION_OPENAI_MODEL, correlationId }); }
+    try {
+      const openAi = await generationOpenAiReadiness(db, config);
+      return reply.header("cache-control", "no-store").send({ openAiReady: openAi.ready, openAi, model: config.GENERATION_OPENAI_MODEL, correlationId });
+    }
     catch (error) { return routeError(reply, error, correlationId); }
+  });
+
+  app.post("/api/generation/setup/reconcile-openai", async (request, reply) => {
+    const correlationId = randomUUID(); const session = await ownerSession(db, config, request, reply, correlationId, true); if (!session) return;
+    try {
+      const openAi = await reconcileGenerationOpenAiReadiness(db, config, session.accountId, correlationId);
+      return { openAiReady: openAi.ready, openAi, correlationId };
+    } catch (error) { return routeError(reply, error, correlationId); }
   });
 
   app.put("/api/generation/setup/openai-key", async (request, reply) => {
@@ -70,7 +82,13 @@ export function registerGenerationRoutes(app: FastifyInstance, db: Db, config: A
   app.post("/api/generation/jobs", async (request, reply) => {
     const correlationId = randomUUID(); const session = await ownerSession(db, config, request, reply, correlationId, true); if (!session) return;
     try {
-      if (!await generationOpenAiReady(db)) return sendError(reply, 409, "openai_key_required", "Nejdříve uložte OpenAI API key do Secret Manageru.", correlationId);
+      const readiness = await reconcileGenerationOpenAiReadiness(db, config, session.accountId, correlationId);
+      if (!readiness.ready) {
+        const missing = readiness.reason === "MISSING";
+        return sendError(reply, 409, missing ? "openai_key_required" : "openai_secret_unavailable", missing
+          ? "Kanonický OPENAI_API_KEY v Secret Manageru neexistuje."
+          : `Kanonický OPENAI_API_KEY není použitelný (${readiness.reason}); existující credential nebyl vytvořen ani rotován.`, correlationId);
+      }
       const body = createSchema.parse(request.body); const created = await createGenerationJob(db, session.accountId, body.prompt, correlationId, body.clientRequestId); return reply.code(created.idempotent ? 200 : 201).send({ job: created.job, idempotent: created.idempotent, correlationId });
     } catch (error) { return routeError(reply, error, correlationId); }
   });

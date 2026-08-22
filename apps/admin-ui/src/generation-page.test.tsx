@@ -28,7 +28,7 @@ vi.mock("./ui-helpers.js", () => ({
   prettyJson: (value: unknown) => JSON.stringify(value)
 }));
 
-import { GenerationPage } from "./generation-page.js";
+import { GenerationPage, reduceDiscussionEvent } from "./generation-page.js";
 
 afterEach(() => cleanup());
 
@@ -50,5 +50,14 @@ describe("OWNER generation UI", () => {
     expect(names).toContain("spec.revision.created");
     expect(names).toContain("generation.resync.required");
     expect(EventSourceStub.latest?.url).toContain("after=7");
+  });
+
+  it("appends visible text deltas locally and reconciles the terminal message", () => {
+    const initial = [{ id: "assistant-1", sequence: 1, role: "ASSISTANT", status: "STREAMING", content: "", createdAt: "now" }];
+    const first = reduceDiscussionEvent(initial, { eventId: 1, type: "discussion.message.delta", jobId: "job-1", emittedAt: "now", payload: { messageId: "assistant-1", delta: "Normální " } });
+    const second = reduceDiscussionEvent(first.messages, { eventId: 2, type: "discussion.message.delta", jobId: "job-1", emittedAt: "now", payload: { messageId: "assistant-1", delta: "text" } });
+    const completed = reduceDiscussionEvent(second.messages, { eventId: 3, type: "discussion.message.completed", jobId: "job-1", emittedAt: "now", payload: { messageId: "assistant-1", content: "Normální text" } });
+    expect(completed.messages[0]).toMatchObject({ content: "Normální text", status: "COMPLETED" });
+    expect(completed.messages[0]?.content).not.toContain("assistantMessage");
   });
 });

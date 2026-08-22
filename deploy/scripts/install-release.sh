@@ -187,6 +187,14 @@ NODE_ENV=production \
 BUILD_ID="$release_id" \
   node "$source_dir/apps/server/dist/cli/migrate.js"
 
+step openai-secret-preflight
+KCML_PROCESS_ROLE=migrate \
+DATABASE_URL_FILE=/etc/kcml/credentials/migrator/database_url \
+CONFIG_VAULT_MASTER_KEY_BASE64_FILE=/etc/kcml/credentials/config_vault_master_key \
+NODE_ENV=production \
+BUILD_ID="$release_id" \
+  node "$source_dir/apps/server/dist/cli/openai-secret-preflight.js"
+
 step verify-wedos-runtime
 grep -Fq 'kcml${purpose === "ACME" ? "acme" : "wapitest"}' "$source_dir/apps/server/dist/tls/wedos-dns-operation.js"
 grep -Fq 'replaceAll("-", "")' "$source_dir/apps/server/dist/tls/wedos-dns-operation.js"
@@ -237,7 +245,7 @@ kcml ALL=(root) NOPASSWD: /usr/local/sbin/kcml-generated-runtime-helper *
 EOF
 chmod 0440 /etc/sudoers.d/kcml-generated-runtime
 visudo -cf /etc/sudoers.d/kcml-generated-runtime
-for unit in kcml.service kcml-generation-worker.service kcml-generated-component@.service kcml-component-control-worker.service kcml-component-e2e-worker.service kcml-monitor.service kcml-egress-proxy.service kcml-alert-primary.service kcml-alert-backup.service kcml-secret-broker.service; do
+for unit in kcml.service kcml-generation-worker.service kcml-generated-component@.service kcml-component-control-worker.service kcml-component-e2e-worker.service kcml-monitor.service kcml-egress-proxy.service kcml-alert-primary.service kcml-alert-backup.service kcml-secret-broker.service kcml-canonical-tls-renew.service kcml-canonical-tls-renew.timer; do
   install -m 0644 "$source_dir/deploy/systemd/$unit" "/etc/systemd/system/$unit"
 done
 install -d -m 0755 /opt/kcml/alert-sink
@@ -316,6 +324,7 @@ switched=true
 
 step activate-services
 systemctl daemon-reload
+systemctl enable --now kcml-canonical-tls-renew.timer
 systemctl enable kcml kcml-generation-worker kcml-component-control-worker kcml-component-e2e-worker kcml-monitor kcml-egress-proxy kcml-secret-broker kcml-alert-primary kcml-alert-backup
 systemctl restart kcml-alert-primary
 systemctl restart kcml-alert-backup
@@ -491,8 +500,9 @@ wait_for_sql_equals "discussion_turn_exclusivity_and_cancellation_migration_row"
 wait_for_sql_equals "wedos_dns_operation_migration_row" "1" "select count(*) from schema_migration where version='018_wedos_dns_operation.sql'"
 wait_for_sql_equals "wedos_dns_author_comment_compatibility_migration_row" "1" "select count(*) from schema_migration where version='019_wedos_dns_author_comment_compatibility.sql'"
 wait_for_sql_equals "wedos_dns_ascii_author_comment_migration_row" "1" "select count(*) from schema_migration where version='020_wedos_dns_ascii_author_comment.sql'"
+wait_for_sql_equals "retire_legacy_generation_states_migration_row" "1" "select count(*) from schema_migration where version='021_retire_legacy_generation_states.sql'"
 wait_for_sql_equals "readiness_gate_evidence_idempotency_migration_row" "1" "select count(*) from schema_migration where version='012_readiness_gate_evidence_idempotency.sql'"
-wait_for_sql_equals "schema_migration_count" "20" "select count(*) from schema_migration"
+wait_for_sql_equals "schema_migration_count" "21" "select count(*) from schema_migration"
 
 step verify-stable-runtime-health
 require_stable_runtime_health "$admin_host"

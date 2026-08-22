@@ -10,8 +10,11 @@ tls_script="deploy/scripts/ensure-canonical-tls.sh"
 acme_auth_hook="deploy/scripts/acme-auth-hook.sh"
 acme_cleanup_hook="deploy/scripts/acme-cleanup-hook.sh"
 acme_deploy_hook="deploy/scripts/acme-deploy-hook.sh"
+renewal_script="deploy/scripts/renew-canonical-tls.sh"
+renewal_service="deploy/systemd/kcml-canonical-tls-renew.service"
+renewal_timer="deploy/systemd/kcml-canonical-tls-renew.timer"
 
-for file in "$install_script" "$preflight_script" "$generation_unit" "$component_unit" "$helper" "$tls_script" "$acme_auth_hook" "$acme_cleanup_hook" "$acme_deploy_hook"; do
+for file in "$install_script" "$preflight_script" "$generation_unit" "$component_unit" "$helper" "$tls_script" "$acme_auth_hook" "$acme_cleanup_hook" "$acme_deploy_hook" "$renewal_script" "$renewal_service" "$renewal_timer"; do
   test -f "$file"
 done
 
@@ -35,11 +38,20 @@ grep -Fq "where version='017_discussion_turn_exclusivity_and_cancellation.sql'" 
 grep -Fq "where version='018_wedos_dns_operation.sql'" "$install_script"
 grep -Fq "where version='019_wedos_dns_author_comment_compatibility.sql'" "$install_script"
 grep -Fq "where version='020_wedos_dns_ascii_author_comment.sql'" "$install_script"
+grep -Fq "where version='021_retire_legacy_generation_states.sql'" "$install_script"
 grep -Fq 'step verify-wedos-runtime' "$install_script"
+grep -Fq 'step openai-secret-preflight' "$install_script"
+grep -Fq 'dist/cli/openai-secret-preflight.js' "$install_script"
 grep -Fq 'replaceAll("-", "")' "$install_script"
-grep -Fq 'wait_for_sql_equals "schema_migration_count" "20" "select count(*) from schema_migration"' "$install_script"
+grep -Fq 'wait_for_sql_equals "schema_migration_count" "21" "select count(*) from schema_migration"' "$install_script"
 grep -Fq 'curl -fsS "https://${canonical_component_hostname}/.well-known/oauth-protected-resource/mcp"' "$install_script"
 grep -Fq 'deploy/scripts/ensure-canonical-tls.sh' "$install_script"
+grep -Fq 'deploy/scripts/renew-canonical-tls.sh' "$renewal_service"
+grep -Fq 'systemctl enable --now kcml-canonical-tls-renew.timer' "$install_script"
+grep -Fq 'certbot renew' "$renewal_script"
+grep -Fq 'restore_previous' "$renewal_script"
+grep -Fq 'nginx -t' "$renewal_script"
+grep -Fq 'curl --fail' "$renewal_script"
 grep -Fq 'step wedos-wapi-preflight' "$install_script"
 grep -Fq 'dist/cli/wedos-wapi.js" preflight' "$install_script"
 grep -Fq 'step wedos-wapi-recover-preflight' "$install_script"
@@ -61,6 +73,7 @@ tls_line="$(grep -n 'step ensure-canonical-tls' "$install_script" | head -1 | cu
 unit_line="$(grep -n 'for unit in kcml.service' "$install_script" | head -1 | cut -d: -f1)"
 split_config_line="$(grep -n 'step split-config-initial' "$install_script" | head -1 | cut -d: -f1)"
 migrate_line="$(grep -n 'step migrate' "$install_script" | head -1 | cut -d: -f1)"
+openai_line="$(grep -n 'step openai-secret-preflight' "$install_script" | head -1 | cut -d: -f1)"
 wapi_line="$(grep -n 'step wedos-wapi-preflight' "$install_script" | head -1 | cut -d: -f1)"
 recover_line="$(grep -n 'step wedos-wapi-recover-preflight' "$install_script" | head -1 | cut -d: -f1)"
 roundtrip_line="$(grep -n 'step wedos-wapi-roundtrip' "$install_script" | head -1 | cut -d: -f1)"
@@ -68,10 +81,11 @@ test -n "$tls_line"
 test -n "$unit_line"
 test -n "$split_config_line"
 test -n "$migrate_line"
+test -n "$openai_line"
 test -n "$wapi_line"
 test -n "$recover_line"
 test -n "$roundtrip_line"
-if [ "$split_config_line" -ge "$migrate_line" ] || [ "$migrate_line" -ge "$wapi_line" ] || [ "$wapi_line" -ge "$recover_line" ] || [ "$recover_line" -ge "$roundtrip_line" ] || [ "$roundtrip_line" -ge "$tls_line" ] || [ "$tls_line" -ge "$unit_line" ]; then
+if [ "$split_config_line" -ge "$migrate_line" ] || [ "$migrate_line" -ge "$openai_line" ] || [ "$openai_line" -ge "$wapi_line" ] || [ "$wapi_line" -ge "$recover_line" ] || [ "$recover_line" -ge "$roundtrip_line" ] || [ "$roundtrip_line" -ge "$tls_line" ] || [ "$tls_line" -ge "$unit_line" ]; then
   echo "migration and WAPI/TLS must complete before systemd topology activation" >&2
   exit 1
 fi

@@ -52,8 +52,36 @@ type GenerationJob = {
 };
 type DiscussionMessage = { id: string; sequence: number; role: string; status: string; content: string; createdAt: string };
 type SpecRevision = { id: string; revision: number; digest: string; spec: { objective: string; resultSummary: string; behavioralRequirements: string[]; openQuestions: string[] }; renderedMarkdown?: string; createdAt: string };
+type DiscussionSseEnvelope = { eventId: number | null; type: string; jobId: string; emittedAt: string; payload: Record<string, unknown> };
 
 const TERMINAL = new Set(["COMPLETED", "FAILED", "BLOCKED", "CANCELLED"]);
+
+export function reduceDiscussionEvent(messages: DiscussionMessage[], event: DiscussionSseEnvelope): { messages: DiscussionMessage[]; refreshSpec: boolean } {
+  const payload = event.payload;
+  const messageId = typeof payload.messageId === "string" ? payload.messageId : null;
+  const index = messageId ? messages.findIndex((message) => message.id === messageId) : -1;
+  const next = [...messages];
+  if (event.type === "discussion.message.created" && messageId && index < 0) {
+    next.push({
+      id: messageId,
+      sequence: typeof payload.sequence === "number" ? payload.sequence : Number.MAX_SAFE_INTEGER,
+      role: typeof payload.role === "string" ? payload.role : "ASSISTANT",
+      status: "STREAMING",
+      content: typeof payload.content === "string" ? payload.content : "",
+      createdAt: event.emittedAt
+    });
+  } else if (event.type === "discussion.message.delta" && messageId) {
+    const current: DiscussionMessage = (index >= 0 && next[index]) ? next[index] : { id: messageId, sequence: Number.MAX_SAFE_INTEGER, role: "ASSISTANT", status: "STREAMING", content: "", createdAt: event.emittedAt };
+    const delta = typeof payload.delta === "string" ? payload.delta : "";
+    const replacement = { ...current, status: "STREAMING", content: `${current.content}${delta}` };
+    if (index >= 0) next[index] = replacement; else next.push(replacement);
+  } else if (["discussion.message.completed", "discussion.message.interrupted", "discussion.message.failed"].includes(event.type) && messageId && index >= 0) {
+    const status = event.type.endsWith("completed") ? "COMPLETED" : event.type.endsWith("interrupted") ? "INTERRUPTED" : "FAILED";
+    const current = next[index];
+    if (current) next[index] = { ...current, status, content: typeof payload.content === "string" ? payload.content : current.content };
+  }
+  return { messages: next.sort((a, b) => a.sequence - b.sequence), refreshSpec: event.type === "spec.revision.created" };
+}
 
 function stateTone(state: string): "ok" | "warn" | "danger" | "neutral" {
   if (state === "COMPLETED") return "ok";
@@ -66,7 +94,7 @@ export function GenerationPage() {
   const [prompt, setPrompt] = useState("");
   const [jobs, setJobs] = useState<GenerationJob[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [setup, setSetup] = useState<{ openAiReady: boolean; model: string } | null>(null);
+  const [setup, setSetup] = useState<{ openAiReady: boolean; model: string; openAi: { reason: string; secretExists: boolean } } | null>(null);
   const [apiKey, setApiKey] = useState("");
   const [inputs, setInputs] = useState<Record<string, string>>({});
   const [followUpInstruction, setFollowUpInstruction] = useState("");
@@ -79,7 +107,7 @@ export function GenerationPage() {
 
   const load = useCallback(async () => {
     const [setupResponse, jobsResponse] = await Promise.all([
-      api<{ openAiReady: boolean; model: string }>("/api/generation/setup"),
+      api<{ openAiReady: boolean; model: string; openAi: { reason: string; secretExists: boolean } }>("/api/generation/setup"),
       api<{ jobs: GenerationJob[] }>("/api/generation/jobs")
     ]);
     setSetup(setupResponse);
@@ -96,6 +124,8 @@ export function GenerationPage() {
   useEffect(() => {
     if (!selectedId) return;
     let disposed = false;
+    let stream: EventSource | null = null;
+    const cursor = { value: selected?.eventCursor ?? 0 };
     const loadWorkspace = async () => {
       const [messageResponse, specResponse] = await Promise.all([
         api<{ messages: DiscussionMessage[] }>(`/api/generation/jobs/${selectedId}/messages`),
@@ -103,34 +133,49 @@ export function GenerationPage() {
       ]);
       if (!disposed) { setMessages(messageResponse.messages); setSpec(specResponse.spec); }
     };
-    void loadWorkspace().catch(() => undefined);
-    if (typeof EventSource === "undefined") return () => { disposed = true; };
-    const stream = new EventSource(`/api/generation/jobs/${selectedId}/events?after=${selected?.eventCursor ?? 0}`);
-    setStreamStatus("connecting");
-    stream.onopen = () => setStreamStatus("live");
-    const refresh = () => { void loadWorkspace().catch(() => undefined); void load().catch(() => undefined); };
-    [
+    const eventTypes = [
       "generation.state.changed", "discussion.turn.queued", "discussion.turn.started", "discussion.turn.interrupt_requested",
       "discussion.turn.interrupted", "discussion.turn.completed", "discussion.turn.failed", "discussion.message.created",
       "discussion.message.delta", "discussion.message.completed", "discussion.message.interrupted", "discussion.message.failed",
       "discussion.tool.started", "discussion.tool.progress", "discussion.tool.completed", "discussion.tool.failed",
       "spec.revision.created", "spec.approved", "generation.blocked", "generation.cancelled", "generation.failed",
       "generation.completed", "generation.resync.required"
-    ].forEach((eventType) => stream.addEventListener(eventType, refresh));
-    stream.onerror = () => setStreamStatus("reconnecting");
+    ];
+    const refreshJobEvents = new Set(["generation.state.changed", "discussion.turn.completed", "discussion.turn.failed", "spec.approved", "generation.blocked", "generation.cancelled", "generation.failed", "generation.completed"]);
+    const handleEvent = (rawEvent: Event) => {
+      const event = rawEvent as MessageEvent<string>;
+      let envelope: DiscussionSseEnvelope;
+      try { envelope = JSON.parse(event.data) as DiscussionSseEnvelope; } catch { return; }
+      const eventId = Number(event.lastEventId || envelope.eventId || 0);
+      if (eventId > 0 && eventId <= cursor.value) return;
+      if (eventId > 0) cursor.value = eventId;
+      if (envelope.type === "generation.resync.required") {
+        void loadWorkspace().catch(() => undefined);
+        void load().catch(() => undefined);
+        return;
+      }
+      setMessages((current) => reduceDiscussionEvent(current, envelope).messages);
+      if (envelope.type === "spec.revision.created") {
+        void api<{ spec: SpecRevision | null }>(`/api/generation/jobs/${selectedId}/spec`).then((response) => { if (!disposed) setSpec(response.spec); }).catch(() => undefined);
+      }
+      if (refreshJobEvents.has(envelope.type)) void load().catch(() => undefined);
+    };
+    const connect = async () => {
+      try { await loadWorkspace(); } catch { return; }
+      if (disposed || typeof EventSource === "undefined") return;
+      stream = new EventSource(`/api/generation/jobs/${selectedId}/events?after=${cursor.value}`);
+      setStreamStatus("connecting");
+      stream.onopen = () => setStreamStatus("live");
+      eventTypes.forEach((eventType) => stream?.addEventListener(eventType, handleEvent));
+      stream.onerror = () => setStreamStatus("reconnecting");
+    };
+    void connect();
     return () => {
       disposed = true;
-      [
-        "generation.state.changed", "discussion.turn.queued", "discussion.turn.started", "discussion.turn.interrupt_requested",
-        "discussion.turn.interrupted", "discussion.turn.completed", "discussion.turn.failed", "discussion.message.created",
-        "discussion.message.delta", "discussion.message.completed", "discussion.message.interrupted", "discussion.message.failed",
-        "discussion.tool.started", "discussion.tool.progress", "discussion.tool.completed", "discussion.tool.failed",
-        "spec.revision.created", "spec.approved", "generation.blocked", "generation.cancelled", "generation.failed",
-        "generation.completed", "generation.resync.required"
-      ].forEach((eventType) => stream.removeEventListener(eventType, refresh));
-      stream.close(); setStreamStatus("offline");
+      eventTypes.forEach((eventType) => stream?.removeEventListener(eventType, handleEvent));
+      stream?.close(); setStreamStatus("offline");
     };
-  }, [selectedId, load]);
+  }, [selected?.eventCursor, selectedId, load]);
 
   async function mutate(task: () => Promise<void>) {
     setBusy(true); setError("");
@@ -143,6 +188,12 @@ export function GenerationPage() {
     await mutate(async () => {
       await api("/api/generation/setup/openai-key", { method: "PUT", headers: { "x-csrf-token": csrf() }, body: JSON.stringify({ value: apiKey }) });
       setApiKey("");
+    });
+  }
+
+  async function reconcileOpenAiGrant() {
+    await mutate(async () => {
+      await api("/api/generation/setup/reconcile-openai", { method: "POST", headers: { "x-csrf-token": csrf() }, body: "{}" });
     });
   }
 
@@ -195,8 +246,10 @@ export function GenerationPage() {
     </PageHeader>
     {error ? <div className="notice error"><AlertTriangle size={18} /> {error}</div> : null}
     <section className="panel generation-create-panel">
-      <div className="panel-head"><div><h2>Co mám vytvořit?</h2><p>Technickou architekturu, identity, runtime, testy a CML začlenění řeší interní generation pipeline.</p></div>{setup ? <span className={`badge ${setup.openAiReady ? "ok" : "warn"}`}>{setup.openAiReady ? `OpenAI · ${setup.model}` : "OpenAI API key chybí"}</span> : null}</div>
-      {!setup?.openAiReady ? <div className="generation-key-row"><KeyRound size={18} /><input type="text" autoComplete="off" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="OpenAI API key" aria-label="OpenAI API key" /><button disabled={busy || apiKey.length < 20} onClick={() => { void saveApiKey(); }}>Uložit do Secret Manageru</button></div> : null}
+      <div className="panel-head"><div><h2>Co mám vytvořit?</h2><p>Technickou architekturu, identity, runtime, testy a CML začlenění řeší interní generation pipeline.</p></div>{setup ? <span className={`badge ${setup.openAiReady ? "ok" : "warn"}`}>{setup.openAiReady ? `OpenAI · ${setup.model}` : setup.openAi.secretExists ? "OpenAI credential vyžaduje opravu přístupu" : "OpenAI API key chybí"}</span> : null}</div>
+      {!setup?.openAiReady && setup?.openAi.reason === "PLATFORM_GRANT_MISSING" ? <div className="generation-key-row"><KeyRound size={18} /><span>Existující kanonický OpenAI credential je uložený. Obnoví se pouze jeho platformní grant; žádný nový klíč se nevytváří ani nerotuje.</span><button disabled={busy} onClick={() => { void reconcileOpenAiGrant(); }}>Obnovit přístup existujícího credentialu</button></div> : null}
+      {!setup?.openAiReady && setup?.openAi.reason === "MISSING" ? <div className="generation-key-row"><KeyRound size={18} /><input type="text" autoComplete="off" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="OpenAI API key" aria-label="OpenAI API key" /><button disabled={busy || apiKey.length < 20} onClick={() => { void saveApiKey(); }}>Uložit do Secret Manageru</button></div> : null}
+      {!setup?.openAiReady && setup?.openAi.secretExists && setup?.openAi.reason !== "PLATFORM_GRANT_MISSING" ? <div className="notice error"><KeyRound size={18} /> Existující kanonický OpenAI credential není připraven ({setup.openAi.reason}). Spravujte jeho stav v Secret Manageru; tato stránka nevytváří ani nerotuje nový klíč.</div> : null}
       <textarea rows={5} value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="Např. vytvoř MCP schopnost, která…" aria-label="Zadání generování" />
       <div className="generation-actions"><button disabled={busy || !setup?.openAiReady || prompt.trim().length < 3} onClick={() => { void createJob(); }}><Sparkles size={17} /> {busy ? "Pracuji…" : "Začít persistentní diskusi"}</button></div>
     </section>

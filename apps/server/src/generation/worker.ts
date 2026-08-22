@@ -42,7 +42,7 @@ import { deployCandidatesBeforeIntegration, runLiveCandidateIntegration } from "
 import { recoverGenerationTechnicalFailure } from "./generation-failure-recovery.mjs";
 import { canonicalJson, digest, generationSpecificationSchema, processNextDiscussionTurn } from "../domain/generation-discussion.js";
 
-const ACTIVE_STATES = ["CREATED", "ANALYZING", "IMPLEMENTING", "INTEGRATING", "VALIDATING", "CML_CONFORMANCE", "ACTIVATING"] as const;
+const ACTIVE_STATES = ["ANALYZING", "IMPLEMENTING", "INTEGRATING", "VALIDATING", "CML_CONFORMANCE", "ACTIVATING"] as const;
 const MAX_REMEDIATION_ATTEMPTS = 5;
 const LEASE_SECONDS = 180;
 
@@ -684,7 +684,7 @@ export async function processNextGenerationJob(db: Db, config: AppConfig, worker
       const job = await getGenerationJob(db, claimed.id);
       try {
         await withCancellationMonitor(db, job.id, async (signal) => {
-          if (job.state === "CREATED" || job.state === "ANALYZING") await analyzeJob(db, config, job, signal);
+          if (job.state === "ANALYZING") await analyzeJob(db, config, job, signal);
           else if (job.state === "IMPLEMENTING") await implementJob(db, config, job, signal);
           else if (job.state === "INTEGRATING") await resumeIntegratingJob(db, config, job, signal);
           else if (job.state === "VALIDATING") await resumeValidatingJob(db, config, job, signal);

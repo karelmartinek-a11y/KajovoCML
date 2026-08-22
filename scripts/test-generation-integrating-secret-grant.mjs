@@ -94,7 +94,7 @@ try {
   // Candidate is live, but INTEGRATING discovers a genuinely missing OWNER secret.
   const beforeOwner = await providerChallenge();
   assert.equal(beforeOwner.status, 503, "candidate unexpectedly resolved an ungranted/missing secret");
-  jobState = "NEEDS_INPUT";
+  jobState = "BLOCKED";
   ownerPrompts += 1;
 
   // OWNER submits the secret. The same canonical Secret Manager lifecycle makes it ACTIVE.

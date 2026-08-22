@@ -9,6 +9,8 @@ import { captureProviderBrowserSecret, captureProviderJsonSecrets } from "./prov
 const RESPONSES_URL = "https://api.openai.com/v1/responses";
 const MAX_MODEL_TURNS = 40;
 
+export type ResponsesStreamEvent = Record<string, unknown>;
+
 function stringArg(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value : fallback;
 }
@@ -33,6 +35,47 @@ async function responseRequest(apiKey: string, body: Record<string, unknown>, si
   const payload = await response.json() as Record<string, unknown>;
   if (!response.ok) throw new Error(`openai_responses_${response.status}:${JSON.stringify(payload).slice(0, 1200)}`);
   return payload;
+}
+
+function parseResponseSseBlock(block: string): ResponsesStreamEvent | null {
+  const data = block.split(/\r?\n/)
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(5).trimStart())
+    .join("\n");
+  if (!data || data === "[DONE]") return null;
+  try { return JSON.parse(data) as ResponsesStreamEvent; }
+  catch { return null; }
+}
+
+/** Shared Responses streaming transport used by all model tool loops. */
+export async function* streamResponse(apiKey: string, body: Record<string, unknown>, signal?: AbortSignal): AsyncGenerator<ResponsesStreamEvent> {
+  const response = await fetch(RESPONSES_URL, {
+    method: "POST",
+    headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
+    body: JSON.stringify({ ...body, stream: true }),
+    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(180_000)]) : AbortSignal.timeout(180_000)
+  });
+  if (!response.ok || !response.body) {
+    const payload = await response.text();
+    throw new Error(`openai_responses_${response.status}:${payload.slice(0, 1200)}`);
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let pending = "";
+  while (true) {
+    const next = await reader.read();
+    if (next.done) break;
+    pending += decoder.decode(next.value, { stream: true });
+    const blocks = pending.split(/\r?\n\r?\n/);
+    pending = blocks.pop() ?? "";
+    for (const block of blocks) {
+      const event = parseResponseSseBlock(block);
+      if (event) yield event;
+    }
+  }
+  pending += decoder.decode();
+  const finalEvent = parseResponseSseBlock(pending);
+  if (finalEvent) yield finalEvent;
 }
 
 function outputText(response: Record<string, unknown>): string {

@@ -39,7 +39,7 @@ const plan = {
 };
 
 const existing = reconcileGenerationPlanSecrets(plan, { jobId, activeSecretNames: ["MAIL_TOKEN"] });
-assert.equal(existing.unsatisfiedRequiredInputs.length, 0, "ACTIVE Secret Manager value incorrectly triggers NEEDS_INPUT");
+assert.equal(existing.unsatisfiedRequiredInputs.length, 0, "ACTIVE Secret Manager value incorrectly triggers OWNER_INPUT_REQUIRED");
 const reusedMailInput = existing.plan.missingInputs.find((input) => input.stableSecretName === "MAIL_TOKEN");
 assert.ok(reusedMailInput, "existing secret plan metadata unexpectedly disappeared");
 assert.deepEqual(reusedMailInput.grantToElementKeys, ["mail"], "existing secret did not receive deterministic grant keys");
@@ -51,7 +51,7 @@ const missingPlan = structuredClone(plan);
 missingPlan.elements.push({ key: "calendar", requiredSecretNames: ["CALENDAR_TOKEN"], providerGeneratedSecretNames: [] });
 const missing = reconcileGenerationPlanSecrets(missingPlan, { jobId, activeSecretNames: ["MAIL_TOKEN"] });
 const calendarInput = missing.plan.missingInputs.find((input) => input.stableSecretName === "CALENDAR_TOKEN");
-assert.ok(calendarInput, "missing required secret did not produce NEEDS_INPUT");
+assert.ok(calendarInput, "missing required secret did not produce OWNER_INPUT_REQUIRED");
 assert.deepEqual(calendarInput.grantToElementKeys, ["calendar"], "requiredSecretNames did not deterministically create component grant keys");
 assert.ok(missing.unsatisfiedRequiredInputs.some((input) => input.stableSecretName === "CALENDAR_TOKEN"));
 
@@ -117,7 +117,7 @@ export async function invoke(name,args,context){ if(name!=='secretEcho') throw n
     assert.deepEqual(await sandbox.dispatch("invoke", { name: "secretEcho", arguments: {} }), { value: "provider-v1" }, "generated runtime could not immediately use provider-generated Secret Manager value");
   } finally { await sandbox.close(); }
 
-  console.log("PASS generation Secret Manager reuse NEEDS_INPUT filtering deterministic grants provider capture rotate and immediate browser/runtime use");
+  console.log("PASS generation Secret Manager reuse OWNER_INPUT_REQUIRED filtering deterministic grants provider capture rotate and immediate browser/runtime use");
 } finally {
   await browser.close();
   for (let attempt = 0; attempt < 10; attempt += 1) {

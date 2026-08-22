@@ -4,6 +4,7 @@ import type { AppServerConfig } from "../config.js";
 import type { Db } from "../db.js";
 import { tx } from "../db.js";
 import type pg from "pg";
+import { streamResponse, type ResponsesStreamEvent } from "../generation/openai-responses.js";
 
 type SqlExecutor = Db | pg.PoolClient;
 
@@ -128,7 +129,50 @@ async function createSpecRevisionLocked(db: SqlExecutor, jobId: string, input: u
   return { ...revision, created: true };
 }
 
-const discussionInstructions = `Return only JSON with two properties: assistantMessage (OWNER-readable Czech text) and specification. specification must be a complete GenerationSpecification object with objective, resultSummary, behavioralRequirements, inputsAndOutputs, externalSystems, businessRules, explicitOwnerDecisions, constraints, acceptanceCriteria, verifiedFacts, openQuestions and browserAutomations. Do not expose chain of thought.`;
+const nullableObject = { type: ["object", "null"], additionalProperties: true };
+const stringArray = { type: "array", items: { type: "string" } };
+const browserAutomationToolSchema = {
+  type: "object", additionalProperties: false,
+  properties: {
+    id: { type: "string" }, name: { type: "string" }, purpose: { type: "string" },
+    invocation: { type: "object", additionalProperties: false, properties: {
+      type: { type: "string", enum: ["MCP_TOOL", "INTERNAL_FUNCTION"] }, executionMode: { type: "string", enum: ["SYNC", "ASYNC", "AUTO"] }, businessToolName: { type: "string" }, asyncCompanionTools: { type: "boolean" }
+    }, required: ["type", "executionMode", "businessToolName", "asyncCompanionTools"] },
+    runtime: { type: "object", additionalProperties: false, properties: { engine: { type: "string", enum: ["KCML_PLAYWRIGHT_PLATFORM"] }, contractVersion: { type: "string" } }, required: ["engine", "contractVersion"] },
+    navigationPolicy: { type: "object", additionalProperties: false, properties: { entryOrigins: stringArray, allowedOrigins: stringArray, authOrigins: stringArray, redirectOrigins: stringArray, downloadOrigins: stringArray, denyPrivateNetwork: { type: "boolean" } }, required: ["entryOrigins", "allowedOrigins", "authOrigins", "redirectOrigins", "downloadOrigins", "denyPrivateNetwork"] },
+    browserContext: { type: "object", additionalProperties: false, properties: { locale: { type: "string" }, timezoneId: { type: "string" }, viewport: { type: "object", additionalProperties: false, properties: { width: { type: "integer" }, height: { type: "integer" } }, required: ["width", "height"] }, userAgentPolicy: { type: "string", enum: ["PLAYWRIGHT_DEFAULT", "PINNED"] } }, required: ["userAgentPolicy"] },
+    inputSchema: { type: "object", additionalProperties: true }, outputSchema: { type: "object", additionalProperties: true },
+    authentication: { type: "object", additionalProperties: false, properties: { mode: { type: "string", enum: ["NONE", "LOGIN_EACH_RUN", "REUSABLE_SESSION_STATE", "HYBRID"] }, accountKey: { type: "string" }, secretBindings: { type: "array", items: { type: "object", additionalProperties: false, properties: { name: { type: "string" }, purpose: { type: "string" }, required: { type: "boolean" } }, required: ["name", "purpose", "required"] } }, challengePolicy: { type: "string", enum: ["PAUSE_FOR_OWNER", "FAIL"] } }, required: ["mode", "secretBindings", "challengePolicy"] },
+    workflow: { type: "array", items: { type: "object", additionalProperties: false, properties: { sequence: { type: "integer" }, purpose: { type: "string" }, action: { type: "string", enum: ["NAVIGATE", "CLICK", "FILL", "FILL_SECRET", "SELECT", "CHECK", "UNCHECK", "PRESS", "UPLOAD", "DOWNLOAD", "WAIT_FOR", "ASSERT", "EXTRACT", "BRANCH", "REPEAT_BOUNDED"] }, locator: nullableObject, inputBinding: nullableObject, precondition: nullableObject, waitCondition: nullableObject, postcondition: nullableObject, sideEffectClass: { type: "string", enum: ["READ_ONLY", "LOCAL_INPUT", "AUTHENTICATION", "MUTATION_IDEMPOTENT", "MUTATION_NON_IDEMPOTENT", "DESTRUCTIVE"] }, retryClass: { type: "string", enum: ["SAFE_RETRY", "RECHECK_BEFORE_RETRY", "NO_AUTO_RETRY"] }, timeoutMs: { type: "integer" }, maxIterations: { type: "integer" } }, required: ["sequence", "purpose", "action", "locator", "inputBinding", "precondition", "waitCondition", "postcondition", "sideEffectClass", "retryClass"] } },
+    successCriteria: { type: "array", items: { type: "object", additionalProperties: true } }, failureCriteria: { type: "array", items: { type: "object", additionalProperties: true } },
+    idempotency: { type: "object", additionalProperties: false, properties: { strategy: { type: "string", enum: ["READ_ONLY", "CALLER_KEY", "PRECONDITION_POSTCONDITION", "NO_BLIND_RETRY"] }, keyInputPaths: stringArray }, required: ["strategy"] },
+    concurrency: { type: "object", additionalProperties: false, properties: { keyTemplate: { type: "string" }, maxConcurrent: { type: "integer" } }, required: ["keyTemplate", "maxConcurrent"] },
+    execution: { type: "object", additionalProperties: false, properties: { queueTimeoutMs: { type: "integer" }, runTimeoutMs: { type: "integer" }, stepDefaultTimeoutMs: { type: "integer" }, maxSteps: { type: "integer" } }, required: ["queueTimeoutMs", "runTimeoutMs", "stepDefaultTimeoutMs", "maxSteps"] },
+    artifacts: { type: "object", additionalProperties: false, properties: { allowUpload: { type: "boolean" }, allowDownload: { type: "boolean" }, maxUploadBytes: { type: "integer" }, maxDownloadBytes: { type: "integer" }, allowedMimeTypes: stringArray, retentionHours: { type: "integer" } }, required: ["allowUpload", "allowDownload", "retentionHours"] },
+    monitoring: { type: "object", additionalProperties: false, properties: { driftDetection: { type: "boolean" }, recordFailedStepEvidence: { type: "boolean" }, repairOnContractDrift: { type: "boolean" } }, required: ["driftDetection", "recordFailedStepEvidence", "repairOnContractDrift"] },
+    teachingEvidenceIds: stringArray
+  }, required: ["id", "name", "purpose", "invocation", "runtime", "navigationPolicy", "browserContext", "inputSchema", "outputSchema", "authentication", "workflow", "successCriteria", "failureCriteria", "idempotency", "concurrency", "execution", "artifacts", "monitoring", "teachingEvidenceIds"]
+};
+const proposeGenerationSpecificationTool = {
+  type: "function", name: "propose_generation_specification",
+  description: "Persist a complete immutable GenerationSpecification revision when the OWNER request is sufficiently resolved. Call only after asking every necessary OWNER follow-up question.",
+  // GenerationSpecification deliberately contains arbitrary JSON schemas for typed
+  // automation I/O.  Those open sub-schemas are outside the provider's strict subset;
+  // Zod below is therefore the canonical server-side validation boundary.
+  strict: false,
+  parameters: {
+    type: "object", additionalProperties: false,
+    properties: {
+      objective: { type: "string" }, resultSummary: { type: "string" }, behavioralRequirements: stringArray,
+      inputsAndOutputs: stringArray, externalSystems: stringArray, businessRules: stringArray, explicitOwnerDecisions: stringArray,
+      constraints: stringArray, acceptanceCriteria: stringArray, verifiedFacts: stringArray, openQuestions: stringArray,
+      browserAutomations: { type: "array", items: browserAutomationToolSchema }
+    },
+    required: ["objective", "resultSummary", "behavioralRequirements", "inputsAndOutputs", "externalSystems", "businessRules", "explicitOwnerDecisions", "constraints", "acceptanceCriteria", "verifiedFacts", "openQuestions", "browserAutomations"]
+  }
+};
+
+const discussionInstructions = `Jsi KajovoCML AI v persistentní OWNER diskusi. Odpovídej OWNERovi normálním srozumitelným českým textem po částech; nikdy nevracej JSON, JSON envelope ani markdownový blok obsahující interní strukturu. Neodhaluj chain of thought. Nejprve pracuj s ověřitelnými fakty a zeptej se jen na rozhodnutí, která nelze odvodit. Pokud je požadavek dostatečně vyřešený, zavolej serverový tool propose_generation_specification s úplnou GenerationSpecification; tool argumenty nejsou OWNER-visible text a specifikaci nikdy nevypisuj jako náhradu za odpověď. Pokud zůstávají open questions, tool nevolej a polož konkrétní další otázku. Browser automation návrhy smí používat pouze KCML_PLAYWRIGHT_PLATFORM a declarativní manifest, nikdy generovaný browser runtime source.`;
 
 export async function queueDiscussionTurn(db: Db, jobId: string, ownerId: string, content: string, idempotencyKey?: string) {
   return tx(db, async (client) => {
@@ -163,13 +207,32 @@ export async function queueDiscussionTurn(db: Db, jobId: string, ownerId: string
 
 export const runDiscussionTurn = queueDiscussionTurn;
 
-function parseSseFrames(buffer: string): { frames: Record<string, unknown>[]; rest: string } {
-  const parts = buffer.split("\n\n"); const rest = parts.pop() ?? "";
-  return { rest, frames: parts.flatMap((part) => {
-    const data = part.split("\n").filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trim()).join("");
-    if (!data || data === "[DONE]") return [];
-    try { return [JSON.parse(data) as Record<string, unknown>]; } catch { return []; }
-  }) };
+type PendingFunctionCall = { callId: string; itemId?: string; name: string; arguments: string };
+
+function recordValue(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function eventResponseId(event: ResponsesStreamEvent): string | null {
+  const response = recordValue(event.response);
+  return typeof response?.id === "string" ? response.id : typeof event.id === "string" && event.type === "response.created" ? event.id : null;
+}
+
+function upsertFunctionCall(calls: Map<string, PendingFunctionCall>, input: { callId?: unknown; itemId?: unknown; name?: unknown; arguments?: unknown; append?: string }): string | null {
+  const callId = typeof input.callId === "string" && input.callId ? input.callId : null;
+  if (!callId) return null;
+  const existing = calls.get(callId) ?? { callId, name: "", arguments: "" };
+  if (typeof input.itemId === "string" && input.itemId) existing.itemId = input.itemId;
+  if (typeof input.name === "string" && input.name) existing.name = input.name;
+  if (typeof input.arguments === "string") existing.arguments = input.arguments;
+  if (input.append) existing.arguments += input.append;
+  calls.set(callId, existing);
+  return callId;
+}
+
+function functionCallFromItem(item: Record<string, unknown>): PendingFunctionCall | null {
+  if (item.type !== "function_call" || typeof item.call_id !== "string") return null;
+  return { callId: item.call_id, itemId: typeof item.id === "string" ? item.id : undefined, name: typeof item.name === "string" ? item.name : "", arguments: typeof item.arguments === "string" ? item.arguments : "" };
 }
 
 export async function processNextDiscussionTurn(db: Db, config: AppServerConfig, workerId: string, apiKey: string): Promise<boolean> {
@@ -190,7 +253,7 @@ export async function processNextDiscussionTurn(db: Db, config: AppServerConfig,
     return { turnId: String(row.id), jobId: String(row.job_id), inputMessageId: String(row.input_message_id) };
   });
   if (!claimed) return false;
-  let assistantId: string | null = null; let accumulated = ""; let interruptedBySteer = false;
+  let assistantId: string | null = null; let accumulated = ""; let modelOutput = ""; let structuredCandidate = false; let interruptedBySteer = false;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 180_000);
   const heartbeat = setInterval(() => {
@@ -207,36 +270,93 @@ export async function processNextDiscussionTurn(db: Db, config: AppServerConfig,
     assistantId = assistant.id;
     await db.query("update generation_job_message set status='STREAMING',model=$2 where id=$1", [assistantId, config.GENERATION_OPENAI_MODEL]);
     const history = (await getDiscussionMessages(db, claimed.jobId)).filter((message) => message.id !== assistantId).slice(-40).map((message) => ({ role: message.role === "OWNER" ? "user" : "assistant", content: message.content }));
-    const response = await fetch("https://api.openai.com/v1/responses", { method: "POST", headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" }, body: JSON.stringify({ model: config.GENERATION_OPENAI_MODEL, stream: true, store: false, instructions: discussionInstructions, input: history }), signal: controller.signal });
-    if (!response.ok || !response.body) throw new Error(`openai_responses_${response.status}`);
-    const reader = response.body.getReader(); const decoder = new TextDecoder(); let pending = ""; let providerResponseId: string | null = null;
-    while (true) {
-      const interrupted = await db.query("select turn.status,job.state job_state from generation_discussion_turn turn join generation_job job on job.id=turn.job_id where turn.id=$1", [claimed.turnId]);
-      if (String(interrupted.rows[0]?.status) === "INTERRUPT_REQUESTED" || String(interrupted.rows[0]?.job_state) === "CANCELLED") { interruptedBySteer = true; controller.abort(); throw Object.assign(new Error("discussion_interrupted"), { interrupted: true }); }
-      const next = await reader.read(); if (next.done) break;
-      const parsed = parseSseFrames(pending + decoder.decode(next.value, { stream: true })); pending = parsed.rest;
-      for (const frame of parsed.frames) {
-        if (typeof frame.response === "object" && frame.response && typeof (frame.response as { id?: unknown }).id === "string") providerResponseId = String((frame.response as { id: string }).id);
+    let inputPayload: unknown = history;
+    let previousResponseId: string | null = null;
+    let providerResponseId: string | null = null;
+    let completedResponse = false;
+    for (let modelTurn = 0; modelTurn < 8 && !completedResponse; modelTurn += 1) {
+      const calls = new Map<string, PendingFunctionCall>();
+      const itemToCall = new Map<string, string>();
+      const requestBody: Record<string, unknown> = {
+        model: config.GENERATION_OPENAI_MODEL,
+        store: true,
+        instructions: discussionInstructions,
+        input: inputPayload,
+        tools: [{ type: "web_search" }, proposeGenerationSpecificationTool]
+      };
+      if (previousResponseId) requestBody.previous_response_id = previousResponseId;
+      for await (const frame of streamResponse(apiKey, requestBody, controller.signal)) {
+        const interrupted = await db.query("select turn.status,job.state job_state from generation_discussion_turn turn join generation_job job on job.id=turn.job_id where turn.id=$1", [claimed.turnId]);
+        if (String(interrupted.rows[0]?.status) === "INTERRUPT_REQUESTED" || String(interrupted.rows[0]?.job_state) === "CANCELLED") { interruptedBySteer = true; controller.abort(); throw Object.assign(new Error("discussion_interrupted"), { interrupted: true }); }
+        providerResponseId = eventResponseId(frame) ?? providerResponseId;
         if (frame.type === "response.output_text.delta" && typeof frame.delta === "string") {
-          accumulated += frame.delta;
-          await db.query("update generation_job_message set content=$2 where id=$1 and status='STREAMING'", [assistantId, accumulated]);
-          await appendDiscussionEvent(db, claimed.jobId, "discussion.message.delta", { messageId: assistantId, delta: frame.delta });
+          modelOutput += frame.delta;
+          const prefix = modelOutput.trimStart();
+          if (!structuredCandidate && (prefix.startsWith("{") || prefix.startsWith("[") || prefix.startsWith("```json"))) structuredCandidate = true;
+          if (!structuredCandidate) {
+            accumulated += frame.delta;
+            await db.query("update generation_job_message set content=$2 where id=$1 and status='STREAMING'", [assistantId, accumulated]);
+            await appendDiscussionEvent(db, claimed.jobId, "discussion.message.delta", { messageId: assistantId, delta: frame.delta });
+          }
+        } else if (frame.type === "response.output_item.added" || frame.type === "response.output_item.done") {
+          const item = recordValue(frame.item);
+          const call = item ? functionCallFromItem(item) : null;
+          if (call) { calls.set(call.callId, call); if (call.itemId) itemToCall.set(call.itemId, call.callId); }
+        } else if (frame.type === "response.function_call_arguments.delta") {
+          let callId = typeof frame.call_id === "string" ? frame.call_id : undefined;
+          if (!callId && typeof frame.item_id === "string") callId = itemToCall.get(frame.item_id);
+          upsertFunctionCall(calls, { callId, itemId: frame.item_id, append: typeof frame.delta === "string" ? frame.delta : "" });
+        } else if (frame.type === "response.function_call_arguments.done") {
+          let callId = typeof frame.call_id === "string" ? frame.call_id : undefined;
+          if (!callId && typeof frame.item_id === "string") callId = itemToCall.get(frame.item_id);
+          upsertFunctionCall(calls, { callId, itemId: frame.item_id, name: frame.name, arguments: frame.arguments });
         }
       }
+      if (!calls.size) { completedResponse = true; break; }
+      const toolOutputs: Array<Record<string, unknown>> = [];
+      for (const call of calls.values()) {
+        if (call.name !== "propose_generation_specification") {
+          toolOutputs.push({ type: "function_call_output", call_id: call.callId, output: JSON.stringify({ ok: false, error: "unsupported_discussion_tool" }) });
+          continue;
+        }
+        await appendDiscussionEvent(db, claimed.jobId, "discussion.tool.started", { turnId: claimed.turnId, toolName: call.name });
+        try {
+          const revision = await createSpecRevision(db, claimed.jobId, JSON.parse(call.arguments), claimed.turnId);
+          toolOutputs.push({ type: "function_call_output", call_id: call.callId, output: JSON.stringify({ ok: true, revisionId: revision.id, revision: revision.revision, digest: revision.digest }) });
+          await appendDiscussionEvent(db, claimed.jobId, "discussion.tool.completed", { turnId: claimed.turnId, toolName: call.name, revisionId: revision.id, revision: revision.revision, digest: revision.digest, revisionCreated: revision.created });
+        } catch (error) {
+          const errorCode = error instanceof Error ? error.message.slice(0, 300) : "generation_specification_invalid";
+          toolOutputs.push({ type: "function_call_output", call_id: call.callId, output: JSON.stringify({ ok: false, error: errorCode }) });
+          await appendDiscussionEvent(db, claimed.jobId, "discussion.tool.failed", { turnId: claimed.turnId, toolName: call.name, errorCode });
+        }
+      }
+      if (!providerResponseId) throw new Error("openai_responses_missing_id");
+      previousResponseId = providerResponseId;
+      inputPayload = toolOutputs;
     }
+    if (!completedResponse) throw new Error("discussion_model_turn_limit");
     const terminal = await db.query("select job.state job_state,turn.status turn_status from generation_job job join generation_discussion_turn turn on turn.job_id=job.id where turn.id=$1", [claimed.turnId]);
     if (String(terminal.rows[0]?.job_state) !== "DISCUSSING" || String(terminal.rows[0]?.turn_status) !== "RUNNING") throw Object.assign(new Error("discussion_interrupted"), { interrupted: true });
-    const parsed = JSON.parse(accumulated) as { assistantMessage?: unknown; specification?: unknown };
-    if (typeof parsed.assistantMessage !== "string") throw new Error("discussion_structured_response_missing_message");
-    const revision = await createSpecRevision(db, claimed.jobId, parsed.specification, claimed.turnId);
-    await db.query("update generation_job_message set content=$2,status='COMPLETED',provider_response_id=$3,completed_at=now() where id=$1 and status='STREAMING'", [assistantId, parsed.assistantMessage, providerResponseId]);
+    if (structuredCandidate) {
+      const candidate = modelOutput.trim().replace(/^```json\s*/i, "").replace(/\s*```$/, "");
+      try {
+        const parsed = JSON.parse(candidate) as { assistantMessage?: unknown };
+        accumulated = typeof parsed.assistantMessage === "string" && parsed.assistantMessage.trim()
+          ? parsed.assistantMessage.trim()
+          : "Odpověď modelu nebyla v zobrazitelném formátu. Pokračujte prosím upřesněním požadavku.";
+      } catch {
+        accumulated = "Odpověď modelu nebyla v zobrazitelném formátu. Pokračujte prosím upřesněním požadavku.";
+      }
+    }
+    await db.query("update generation_job_message set content=$2,status='COMPLETED',provider_response_id=$3,completed_at=now() where id=$1 and status='STREAMING'", [assistantId, accumulated, providerResponseId]);
     await db.query("update generation_discussion_turn set status='COMPLETED',provider_response_id=$2,completed_at=now(),lease_owner=null,lease_until=null where id=$1", [claimed.turnId, providerResponseId]);
-    await appendDiscussionEvent(db, claimed.jobId, "discussion.message.completed", { messageId: assistantId });
-    await appendDiscussionEvent(db, claimed.jobId, "discussion.turn.completed", { turnId: claimed.turnId, revisionId: revision.id, revisionCreated: revision.created });
+    await appendDiscussionEvent(db, claimed.jobId, "discussion.message.completed", { messageId: assistantId, content: accumulated });
+    await appendDiscussionEvent(db, claimed.jobId, "discussion.turn.completed", { turnId: claimed.turnId, providerResponseId });
   } catch (error) {
     const interrupted = interruptedBySteer || Boolean((error as { interrupted?: boolean }).interrupted);
     if (assistantId) await db.query("update generation_job_message set status=$2,content=$3,interrupted_at=case when $2='INTERRUPTED' then now() else null end,completed_at=case when $2='FAILED' then now() else null end where id=$1", [assistantId, interrupted ? "INTERRUPTED" : "FAILED", accumulated]);
     await db.query("update generation_discussion_turn set status=$2,interrupted_at=case when $2='INTERRUPTED' then now() else null end,completed_at=now(),error_code=$3,lease_owner=null,lease_until=null where id=$1", [claimed.turnId, interrupted ? "INTERRUPTED" : "FAILED", interrupted ? null : error instanceof Error ? error.message.slice(0, 300) : "discussion_failed"]);
+    if (assistantId) await appendDiscussionEvent(db, claimed.jobId, interrupted ? "discussion.message.interrupted" : "discussion.message.failed", { messageId: assistantId, content: accumulated });
     await appendDiscussionEvent(db, claimed.jobId, interrupted ? "discussion.turn.interrupted" : "discussion.turn.failed", { turnId: claimed.turnId, messageId: assistantId, errorCode: interrupted ? undefined : error instanceof Error ? error.message : "discussion_failed" });
   } finally { clearInterval(heartbeat); clearTimeout(timeout); }
   return true;

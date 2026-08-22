@@ -33,6 +33,8 @@
     "platform-worker-access:ensure:release": "node dist/cli/ensure-platform-worker-access.js",
     "wedos-wapi": "tsx src/cli/wedos-wapi.ts",
     "wedos-wapi:release": "node dist/cli/wedos-wapi.js",
+    "openai-secret:preflight": "tsx src/cli/openai-secret-preflight.ts",
+    "openai-secret:preflight:release": "node dist/cli/openai-secret-preflight.js",
     "start:generation-worker": "node dist/cli/generation-worker.js",
     "generation-worker": "tsx src/cli/generation-worker.ts"
   },

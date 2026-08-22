@@ -16,6 +16,11 @@ auth_hook="$hook_root/acme-auth-hook.sh"
 cleanup_hook="$hook_root/acme-cleanup-hook.sh"
 deploy_hook="$hook_root/acme-deploy-hook.sh"
 
+install -d -m 0755 "$hook_root"
+install -m 0755 "$source_dir/deploy/scripts/acme-auth-hook.sh" "$auth_hook"
+install -m 0755 "$source_dir/deploy/scripts/acme-cleanup-hook.sh" "$cleanup_hook"
+install -m 0755 "$source_dir/deploy/scripts/acme-deploy-hook.sh" "$deploy_hook"
+
 for domain in "$base_domain" "$component_suffix"; do
   case "$domain" in
     ""|.*|*.|*..*|*[!a-z0-9.-]*) echo "invalid TLS domain" >&2; exit 1 ;;
@@ -89,11 +94,6 @@ trap 'exit 143' TERM
 trap 'exit 130' INT
 
 terminate_stale_certbot
-
-install -d -m 0755 "$hook_root"
-install -m 0755 "$source_dir/deploy/scripts/acme-auth-hook.sh" "$auth_hook"
-install -m 0755 "$source_dir/deploy/scripts/acme-cleanup-hook.sh" "$cleanup_hook"
-install -m 0755 "$source_dir/deploy/scripts/acme-deploy-hook.sh" "$deploy_hook"
 
 setsid env \
   KCML_ACME_ZONE="$base_domain" \

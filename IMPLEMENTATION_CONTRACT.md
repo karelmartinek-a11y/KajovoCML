@@ -27,7 +27,8 @@ with `INTERRUPT_REQUESTED` as its transient steer state.
 
 Migrations `014_generation_discussion.sql`, `015_browser_automation_runtime.sql`
 and forward-only `016_generation_discussion_browser_runtime_completion.sql`
-and `017_discussion_turn_exclusivity_and_cancellation.sql` are one ordered
+and `017_discussion_turn_exclusivity_and_cancellation.sql`, `018`–`020` WEDOS
+operations and `021_retire_legacy_generation_states.sql` are one ordered
 contract. Migration 016 adds same-job composite foreign keys,
 historical digest reuse, request idempotency, interruption/lease metadata,
 operation scopes, irreversible confirmations and teaching records without
@@ -123,14 +124,33 @@ specific automation definition and active revision. No new role, login gate,
 security approval, deployment approval, or credential-transfer workflow is
 introduced.
 
+`OPENAI_API_KEY` is one canonical PLATFORM Secret Manager record shared by the
+discussion and implementation worker paths. Readiness means that record is
+ACTIVE, non-deleted, has an active version, has a non-revoked direct
+`PLATFORM` grant (`all_secrets=false`) for `platformWorkerSecretPrincipal()`,
+and resolves through the canonical resolver. A missing grant is reconciled
+idempotently against the existing record only; no readiness check, setup view,
+or deploy preflight creates or rotates an OpenAI credential. The release
+preflight prints metadata and PASS/FAIL only, never a ciphertext, value or
+authorization header.
+
 ## Runtime interfaces
 
 The generation worker, never an HTTP request, owns OpenAI Responses streaming.
-It persists assistant deltas and safe provider response ids, checks interruption
-while reading, and durably fails malformed structured output. Browser preview,
+It sends OWNER-visible prose through `response.output_text.delta` and uses the
+single shared Responses transport/function-call infrastructure. The only
+discussion function is the server-side `propose_generation_specification` tool;
+its arguments are never rendered as chat text. The worker persists assistant
+deltas and safe provider response ids, checks interruption while reading, and
+redacts accidental JSON envelopes before they reach the OWNER. Browser preview,
 teaching, operation scope and irreversible confirmation are job-scoped records;
 they do not create another approval gate. The manifest DSL has no arbitrary
 source: only declarative locators, navigation, form interaction, waits,
 assertions, extraction, bounded branch/repeat, upload/download handles and
-typed output. Activation follows deterministic automation preflight; repair
-restores the preceding release or flags an uncertain external side effect.
+typed output. Activation follows deterministic automation preflight. Automatic
+REPAIR may enter `IMPLEMENTING` only when the source functional lineage has an
+approved specification; the worker clones that exact canonical digest into the
+new job as inherited technical authority. If lineage is absent, the repair is
+created `BLOCKED` with `generation_repair_spec_lineage_missing` and requires a
+new OWNER discussion. Repair restores the preceding release or flags an
+uncertain external side effect.
