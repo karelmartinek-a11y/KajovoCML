@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { loadBootstrapConfig } from "../config.js";
 import { createDb } from "../db.js";
 import { platformWorkerSecretPrincipal, resolveSecret } from "../domain/secret-manager.js";
-import { acmeRelativeTxtName, WedosWapiClient, parseWdnsDomainInfo, parseWdnsDomains } from "../tls/wedos-wapi.js";
+import { acmeRelativeTxtName, WedosWapiClient, parseWdnsDomainInfo, parseWdnsDomains, parseWdnsRows } from "../tls/wedos-wapi.js";
 import {
   addTxtRow,
   cleanupDnsOperation,
@@ -14,7 +14,9 @@ import {
   listActiveWedosDnsOperations,
   markPropagated,
   recoverDnsOperation,
-  runDnsOperation
+  runDnsOperation,
+  safeAuthoritativeDnsDiagnostics,
+  WedosDnsObservationError
 } from "../tls/wedos-dns-operation.js";
 
 type SafeResult = Readonly<{ command: string; outcome: string; code: number }>;
@@ -110,6 +112,13 @@ async function main(): Promise<void> {
       try {
         await addTxtRow(db, created.id, value, client);
         await commitDnsOperation(db, created.id, value, client);
+        const owned = parseWdnsRows((await client.rowsList(zone)).data).find((row) =>
+          row.name === recordName && row.rdtype === "TXT" && row.rdata === value && row.authorComment === created.authorComment
+        );
+        process.stderr.write(`wedos-dns:operation=${created.id}\n`);
+        process.stderr.write(`wedos-dns:wapi-row-present=${owned ? "yes" : "no"}\n`);
+        if (owned) process.stderr.write(`wedos-dns:wapi-row-id=${owned.id}\n`);
+        if (!owned) throw new Error("wedos_dns_wapi_owned_row_missing_after_commit");
         const propagated = await markPropagated(db, created.id, value, client);
         return cleanupDnsOperation(db, propagated.id, value, client);
       } catch (error) {
@@ -153,6 +162,9 @@ async function main(): Promise<void> {
 }
 
 void main().catch((error: unknown) => {
+  if (error instanceof WedosDnsObservationError) {
+    for (const line of safeAuthoritativeDnsDiagnostics(error.snapshot)) process.stderr.write(`${line}\n`);
+  }
   process.stderr.write(`wedos-wapi:FAIL:${safeErrorMessage(error)}\n`);
   process.exitCode = 1;
 });

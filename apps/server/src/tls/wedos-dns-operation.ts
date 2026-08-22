@@ -33,6 +33,19 @@ export type WedosDnsOperation = Readonly<{
 export type AuthoritativeTxtResolver = (zone: string, recordName: string, value: string, expectedPresent: boolean) => Promise<void>;
 export type WedosDnsApi = Pick<WedosWapiClient, "rowsList" | "rowAdd" | "rowDelete" | "domainCommit">;
 
+export type AuthoritativeDnsObservation = Readonly<{
+  authority: string; address: string; response: "OK" | "NETWORK_FAILURE" | "PROTOCOL_FAILURE";
+  soaSerial: string | null; expectedTxtPresent: boolean | null;
+}>;
+export type AuthoritativeDnsSnapshot = Readonly<{ zone: string; elapsedSeconds: number; observations: AuthoritativeDnsObservation[] }>;
+export type AuthoritativeDnsEvaluation = "PASS" | "STILL_PROPAGATING" | "PROVIDER_REPLICA_DIVERGENCE" | "WAPI_AUTHORITATIVE_DIVERGENCE" | "NETWORK_FAILURE";
+
+export class WedosDnsObservationError extends Error {
+  constructor(readonly snapshot: AuthoritativeDnsSnapshot, readonly evaluation: AuthoritativeDnsEvaluation) {
+    super(`wedos_dns_authoritative_${evaluation.toLowerCase()}`);
+  }
+}
+
 export function sha256Digest(value: string): string {
   return `sha256:${createHash("sha256").update(value, "utf8").digest("hex")}`;
 }
@@ -260,12 +273,60 @@ async function authoritativeTxtValues(zoneInput: string, recordNameInput: string
   return [...new Set(values)];
 }
 
+export async function observeAuthoritativeDns(zoneInput: string, recordNameInput: string, value: string, startedAt = Date.now()): Promise<AuthoritativeDnsSnapshot> {
+  const zone = normalizeZone(zoneInput); const recordName = normalizeRecordName(recordNameInput);
+  const authorities = await Resolver.prototype.resolveNs.call(new Resolver(), `${zone}.`);
+  if (!authorities.length) throw new Error("wedos_dns_authoritative_nameservers_missing");
+  const target = fqdn(zone, recordName);
+  const observations: AuthoritativeDnsObservation[] = [];
+  for (const authority of authorities) {
+    const addresses = await authoritativeNameServerAddresses(authority);
+    for (const address of addresses) {
+      const resolver = new Resolver(); resolver.setServers([address]);
+      try {
+        const [soa, records] = await Promise.all([
+          resolver.resolveSoa(`${zone}.`).catch(() => null),
+          resolver.resolveTxt(target).catch((error: unknown) => {
+            const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
+            if (["ENODATA", "ENOTFOUND", "NXDOMAIN"].includes(code)) return [] as string[][];
+            throw error;
+          })
+        ]);
+        observations.push({ authority, address, response: "OK", soaSerial: soa ? String(soa.serial) : null, expectedTxtPresent: records.some((record) => record.join("") === value) });
+      } catch (error) {
+        const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
+        observations.push({ authority, address, response: isRetryableAuthoritativeNetworkError(code) ? "NETWORK_FAILURE" : "PROTOCOL_FAILURE", soaSerial: null, expectedTxtPresent: null });
+      }
+    }
+  }
+  return { zone, elapsedSeconds: Math.max(0, Math.floor((Date.now() - startedAt) / 1000)), observations };
+}
+
+export function evaluateAuthoritativeTxtSnapshot(snapshot: AuthoritativeDnsSnapshot, expectedPresent: boolean): AuthoritativeDnsEvaluation {
+  if (!snapshot.observations.length || snapshot.observations.some((item) => item.response !== "OK")) return "NETWORK_FAILURE";
+  if (snapshot.observations.every((item) => item.expectedTxtPresent === expectedPresent)) return "PASS";
+  const serials = new Set(snapshot.observations.map((item) => item.soaSerial).filter((serial): serial is string => Boolean(serial)));
+  if (serials.size > 1) return "PROVIDER_REPLICA_DIVERGENCE";
+  return expectedPresent ? "WAPI_AUTHORITATIVE_DIVERGENCE" : "STILL_PROPAGATING";
+}
+
+export function safeAuthoritativeDnsDiagnostics(snapshot: AuthoritativeDnsSnapshot): string[] {
+  const serials = new Set(snapshot.observations.map((item) => item.soaSerial).filter((serial): serial is string => Boolean(serial)));
+  return [
+    `wedos-dns:zone=${snapshot.zone}`,
+    ...snapshot.observations.map((item) => `wedos-dns:authority:host=${item.authority}:address=${item.address}:response=${item.response}:soaSerial=${item.soaSerial ?? "unknown"}:txtExpectedPresent=${item.expectedTxtPresent === null ? "unknown" : item.expectedTxtPresent ? "yes" : "no"}`),
+    `wedos-dns:serials-converged=${serials.size <= 1 ? "yes" : "no"}`,
+    `wedos-dns:authorities-ready=${snapshot.observations.filter((item) => item.expectedTxtPresent).length}/${snapshot.observations.length}`,
+    `wedos-dns:elapsedSeconds=${snapshot.elapsedSeconds}`
+  ];
+}
+
 function isRetryableAuthoritativeNetworkError(code: string): boolean {
   return ["ECONNREFUSED", "ETIMEDOUT", "ETIME", "EAI_AGAIN", "ENETUNREACH", "EHOSTUNREACH"].includes(code);
 }
 
-// WEDOS commits are eventually visible on every authoritative server. Keep
-// the retry bounded, but long enough for the provider's normal DNS window.
+// KCML policy only: this bounded observation deadline is not a WEDOS SLA or
+// a guarantee that every authoritative replica has converged by its expiry.
 const AUTHORITATIVE_PROPAGATION_ATTEMPTS = 60;
 const AUTHORITATIVE_PROPAGATION_DELAY_MS = 5_000;
 
@@ -274,34 +335,9 @@ function sleep(milliseconds: number): Promise<void> {
 }
 
 export async function verifyAuthoritativeTxt(zoneInput: string, recordNameInput: string, value: string, expectedPresent: boolean): Promise<void> {
-  const zone = normalizeZone(zoneInput); const recordName = normalizeRecordName(recordNameInput);
-  const authorities = await Resolver.prototype.resolveNs.call(new Resolver(), `${zone}.`);
-  if (!authorities.length) throw new Error("wedos_dns_authoritative_nameservers_missing");
-  const target = fqdn(zone, recordName);
-  for (const authority of authorities) {
-    const addresses = await authoritativeNameServerAddresses(authority);
-    let responded = false;
-    let lastNetworkError = "unknown";
-    for (const address of addresses) {
-      const resolver = new Resolver(); resolver.setServers([address]);
-      let records: string[][] = [];
-      try {
-        records = await resolver.resolveTxt(target);
-      } catch (error) {
-        const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
-        if (!expectedPresent && ["ENODATA", "ENOTFOUND", "NXDOMAIN"].includes(code)) records = [];
-        else if (isRetryableAuthoritativeNetworkError(code)) {
-          lastNetworkError = code || "unknown";
-          continue;
-        } else throw new Error(`wedos_dns_authoritative_query_failed:${authority}:${address}:${code || "unknown"}`);
-      }
-      responded = true;
-      const present = records.some((record) => record.join("") === value);
-      if (present !== expectedPresent) throw new Error(`wedos_dns_authoritative_visibility_mismatch:${authority}:${address}`);
-      break;
-    }
-    if (!responded) throw new Error(`wedos_dns_authoritative_query_failed:${authority}:${lastNetworkError}`);
-  }
+  const snapshot = await observeAuthoritativeDns(zoneInput, recordNameInput, value);
+  const evaluation = evaluateAuthoritativeTxtSnapshot(snapshot, expectedPresent);
+  if (evaluation !== "PASS") throw new WedosDnsObservationError(snapshot, evaluation);
 }
 
 /**
@@ -316,9 +352,12 @@ export async function findAuthoritativeTxtByDigest(zone: string, recordName: str
 
 export async function waitForAuthoritativeTxt(zone: string, recordName: string, value: string, expectedPresent: boolean): Promise<void> {
   let lastError: unknown = new Error("wedos_dns_authoritative_propagation_unknown");
+  const startedAt = Date.now();
   for (let attempt = 1; attempt <= AUTHORITATIVE_PROPAGATION_ATTEMPTS; attempt += 1) {
     try {
-      await verifyAuthoritativeTxt(zone, recordName, value, expectedPresent);
+      const snapshot = await observeAuthoritativeDns(zone, recordName, value, startedAt);
+      const evaluation = evaluateAuthoritativeTxtSnapshot(snapshot, expectedPresent);
+      if (evaluation !== "PASS") throw new WedosDnsObservationError(snapshot, evaluation);
       return;
     } catch (error) {
       lastError = error;

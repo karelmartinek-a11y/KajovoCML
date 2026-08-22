@@ -31,6 +31,13 @@ matches the ledger. If no authoritative server returns that digest, cleanup is
 terminalized only after all authoritative servers responded without it; a
 partial or uncertain response blocks the release.
 
+The DNS observer queries every currently delegated WEDOS NS hostname and each
+resolved A/AAAA address directly. For each attempt it records only safe
+metadata: authority, address, DNS response class, SOA serial and whether the
+expected TXT digest matched. The bounded KCML retry deadline is an operational
+policy, never a claimed WEDOS propagation SLA; a deadline failure retains the
+complete per-address snapshot in the deploy diagnostic and fails closed.
+
 Generation writes workspaces under `GENERATION_ROOT`, local releases under `GENERATED_COMPONENT_ROOT`, uses `RUNTIME_SOCKET_ROOT` for UDS, and exposes each activated element through its canonical HTTPS hostname. When a candidate is abandoned after a technical failure, the existing generation release cleanup must complete before a new remediation revision starts: first CREATE stops the runtime/removes `current`/marks the release `ROLLED_BACK`; UPDATE/REPAIR restores the previous release. Terminal REPAIR failure additionally restores the captured base component lifecycle/control state. INTEGRATING retry is the exception because the same candidate remains intentionally live for the next provider attempt. Runtime credentials are systemd credentials sourced from KajovoCML Secret Manager, never environment/user handoff tokens.
 
 When an approved specification requires a credential, deterministic component Secret grants are committed through the existing Secret Manager before provider/browser/API work resumes. This applies both to a newly supplied OWNER secret and an already ACTIVE secret rediscovered during integration; it does not introduce a second approval or transfer workflow.
