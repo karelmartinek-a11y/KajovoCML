@@ -206,7 +206,7 @@ step ensure-canonical-tls
 tls_cert_path="${WILDCARD_TLS_CERT_PATH:-/etc/kcml/tls/fullchain.pem}"
 tls_key_path="${WILDCARD_TLS_KEY_PATH:-${tls_cert_path%/*}/privkey.pem}"
 bash "$source_dir/deploy/scripts/ensure-canonical-tls.sh" \
-  "$PUBLIC_BASE_DOMAIN" "$component_hostname_suffix" "$tls_cert_path" "$tls_key_path"
+  "$PUBLIC_BASE_DOMAIN" "$component_hostname_suffix" "$tls_cert_path" "$tls_key_path" "$source_dir"
 
 install -m 0755 "$source_dir/deploy/scripts/kcml-generated-runtime-helper" /usr/local/sbin/kcml-generated-runtime-helper
 cat >/etc/sudoers.d/kcml-generated-runtime <<'EOF'

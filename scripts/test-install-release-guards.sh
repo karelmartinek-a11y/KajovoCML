@@ -38,6 +38,8 @@ grep -Fq 'curl -fsS "https://${canonical_component_hostname}/.well-known/oauth-p
 grep -Fq 'deploy/scripts/ensure-canonical-tls.sh' "$install_script"
 grep -Fq 'step wedos-wapi-preflight' "$install_script"
 grep -Fq 'dist/cli/wedos-wapi.js" preflight' "$install_script"
+grep -Fq '"$PUBLIC_BASE_DOMAIN" "$component_hostname_suffix" "$tls_cert_path" "$tls_key_path" "$source_dir"' "$install_script"
+grep -Fq 'source_dir="${5:?verified release source required}"' "$tls_script"
 grep -Fq 'acme-auth-hook.sh' "$tls_script"
 grep -Fq 'acme-cleanup-hook.sh' "$tls_script"
 grep -Fq 'acme-deploy-hook.sh' "$tls_script"
