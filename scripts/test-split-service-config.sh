@@ -25,7 +25,7 @@ grep -qx 'BUILD_ID=test-build' "$tmp/config/web.env"
 grep -qx 'GENERATION_WORKER_ENABLED=true' "$tmp/config/worker.env"
 grep -qx 'GENERATION_WORKER_INTERVAL_MS=5000' "$tmp/config/worker.env"
 grep -qx 'COMPONENT_WORKER_INTERVAL_MS=15000' "$tmp/config/worker.env"
-if rg -q 'GITHUB_|GHCR_|ONBOARDING_WORKER' "$tmp/config"; then exit 1; fi
+if grep -R -q -E 'GITHUB_|GHCR_|ONBOARDING_WORKER' "$tmp/config"; then exit 1; fi
 test "$(cat "$tmp/config/credentials/web/access_token_hmac")" = 'AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEB'
 test "$(cat "$tmp/config/credentials/config_vault_master_key")" = 'CQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk='
 echo 'split-service-config:PASS'

@@ -56,13 +56,13 @@ grep -Fq 'runuser -u kcml-runtime -- /usr/bin/setpriv --no-new-privs /usr/bin/un
 grep -Fq 'GENERATION_WORKER_ENABLED=true KCML_RELEASE_SOURCE="$source_dir" bash "$source_dir/deploy/scripts/preflight.sh"' "$install_script"
 grep -Fq "where deregistered_at is null and (code <> ('KCML' || lpad(kcml_number::text,4,'0'))" "$install_script"
 
-if rg -n 'kcml-onboarding-worker|GHCR_TOKEN|GITHUB_TOKEN|stage_registry_auth|repository-component-deploy' \
+if grep -E -n 'kcml-onboarding-worker|GHCR_TOKEN|GITHUB_TOKEN|stage_registry_auth|repository-component-deploy' \
   "$install_script" "$preflight_script" "$generation_unit" "$component_unit" "$helper" deploy/scripts/split-service-config.sh >/dev/null; then
   echo "retired external onboarding dependency remains in production generation deployment" >&2
   exit 1
 fi
 
-if rg -n 'cleanup_registry_auth' "$install_script" >/dev/null; then
+if grep -E -n 'cleanup_registry_auth' "$install_script" >/dev/null; then
   echo "retired registry-auth cleanup hook remains in the release installer" >&2
   exit 1
 fi
