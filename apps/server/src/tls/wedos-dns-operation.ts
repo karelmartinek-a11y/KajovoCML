@@ -302,7 +302,7 @@ export async function markPropagated(db: Db, operationId: string, value: string,
   });
 }
 
-export async function runDnsOperation(db: Db, input: Readonly<{ purpose: WedosDnsPurpose; zone: string; recordName: string; value: string }>, api: WedosDnsApi, resolver: AuthoritativeTxtResolver = verifyAuthoritativeTxt): Promise<WedosDnsOperation> {
+export async function runDnsOperation(db: Db, input: Readonly<{ purpose: WedosDnsPurpose; zone: string; recordName: string; value: string }>, api: WedosDnsApi, resolver: AuthoritativeTxtResolver = waitForAuthoritativeTxt): Promise<WedosDnsOperation> {
   const created = await createWedosDnsOperation(db, input);
   await addTxtRow(db, created.id, input.value, api);
   await commitDnsOperation(db, created.id, input.value, api);
