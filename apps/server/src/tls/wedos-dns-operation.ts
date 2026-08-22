@@ -232,6 +232,13 @@ function isRetryableAuthoritativeNetworkError(code: string): boolean {
   return ["ECONNREFUSED", "ETIMEDOUT", "ETIME", "EAI_AGAIN", "ENETUNREACH", "EHOSTUNREACH"].includes(code);
 }
 
+const AUTHORITATIVE_PROPAGATION_ATTEMPTS = 20;
+const AUTHORITATIVE_PROPAGATION_DELAY_MS = 3_000;
+
+function sleep(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
 export async function verifyAuthoritativeTxt(zoneInput: string, recordNameInput: string, value: string, expectedPresent: boolean): Promise<void> {
   const zone = normalizeZone(zoneInput); const recordName = normalizeRecordName(recordNameInput);
   const authorities = await Resolver.prototype.resolveNs.call(new Resolver(), `${zone}.`);
@@ -263,7 +270,22 @@ export async function verifyAuthoritativeTxt(zoneInput: string, recordNameInput:
   }
 }
 
-export async function markPropagated(db: Db, operationId: string, value: string, api: WedosDnsApi, resolver: AuthoritativeTxtResolver = verifyAuthoritativeTxt): Promise<WedosDnsOperation> {
+export async function waitForAuthoritativeTxt(zone: string, recordName: string, value: string, expectedPresent: boolean): Promise<void> {
+  let lastError: unknown = new Error("wedos_dns_authoritative_propagation_unknown");
+  for (let attempt = 1; attempt <= AUTHORITATIVE_PROPAGATION_ATTEMPTS; attempt += 1) {
+    try {
+      await verifyAuthoritativeTxt(zone, recordName, value, expectedPresent);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (attempt === AUTHORITATIVE_PROPAGATION_ATTEMPTS) break;
+      await sleep(AUTHORITATIVE_PROPAGATION_DELAY_MS);
+    }
+  }
+  throw new Error(`wedos_dns_authoritative_propagation_timeout:${lastError instanceof Error ? lastError.message : "unknown"}`);
+}
+
+export async function markPropagated(db: Db, operationId: string, value: string, api: WedosDnsApi, resolver: AuthoritativeTxtResolver = waitForAuthoritativeTxt): Promise<WedosDnsOperation> {
   return withOperationLock(db, operationId, async (client) => {
     const operation = await getOperation(client, operationId, true);
     if (["PROPAGATED", "CLEANUP_REQUESTED", "DELETED", "CLEANUP_PROPAGATED"].includes(operation.state)) return operation;
@@ -287,7 +309,7 @@ export async function runDnsOperation(db: Db, input: Readonly<{ purpose: WedosDn
   return markPropagated(db, created.id, input.value, api, resolver);
 }
 
-export async function cleanupDnsOperation(db: Db, operationId: string, value: string, api: WedosDnsApi, resolver: AuthoritativeTxtResolver = verifyAuthoritativeTxt): Promise<WedosDnsOperation> {
+export async function cleanupDnsOperation(db: Db, operationId: string, value: string, api: WedosDnsApi, resolver: AuthoritativeTxtResolver = waitForAuthoritativeTxt): Promise<WedosDnsOperation> {
   return withOperationLock(db, operationId, async (client) => {
     let operation = await getOperation(client, operationId, true);
     if (operation.state === "CLEANUP_PROPAGATED") return operation;
@@ -322,7 +344,7 @@ export async function cleanupDnsOperation(db: Db, operationId: string, value: st
   });
 }
 
-export async function recoverDnsOperation(db: Db, operationId: string, value: string, api: WedosDnsApi, resolver: AuthoritativeTxtResolver = verifyAuthoritativeTxt): Promise<WedosDnsOperation> {
+export async function recoverDnsOperation(db: Db, operationId: string, value: string, api: WedosDnsApi, resolver: AuthoritativeTxtResolver = waitForAuthoritativeTxt): Promise<WedosDnsOperation> {
   const operation = await getWedosDnsOperation(db, operationId);
   if (["CREATED", "ROW_ADDED"].includes(operation.state)) {
     await addTxtRow(db, operationId, value, api);
