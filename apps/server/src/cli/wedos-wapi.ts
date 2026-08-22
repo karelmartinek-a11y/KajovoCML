@@ -201,7 +201,7 @@ async function main(): Promise<void> {
 
 void main().catch((error: unknown) => {
   if (error instanceof WedosDnsObservationError) {
-    for (const line of safeAuthoritativeDnsDiagnostics(error.snapshot, error.baseline)) process.stderr.write(`${line}\n`);
+    for (const line of safeAuthoritativeDnsDiagnostics(error.snapshot, error.baseline, error.expectedPresent)) process.stderr.write(`${line}\n`);
   }
   process.stderr.write(`wedos-wapi:FAIL:${safeErrorMessage(error)}\n`);
   process.exitCode = 1;

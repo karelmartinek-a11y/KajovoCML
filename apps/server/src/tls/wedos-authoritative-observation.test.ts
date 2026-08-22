@@ -72,6 +72,16 @@ describe("WEDOS authoritative observation evaluation", () => {
     expect(diagnostics.join("\n")).not.toContain("challenge-value");
   });
 
+  it("reports readiness by delegated nameserver and by the expected cleanup state", () => {
+    const diagnostics = safeAuthoritativeDnsDiagnostics(snapshot([
+      { ...ready, expectedTxtPresent: false },
+      { ...ready, address: "2a01:430:16::1", response: "NETWORK_FAILURE", soaStatus: "NETWORK_FAILURE", soaSerial: null, expectedTxtPresent: null },
+      { ...ready, authority: "ns.wedos.eu", address: "185.8.238.0", expectedTxtPresent: false }
+    ]), undefined, false).join("\n");
+    expect(diagnostics).toContain("authorities-ready=2/2");
+    expect(diagnostics).toContain("addresses-ready=2/3");
+  });
+
   it("uses expectedPresent=false for asynchronous cleanup", () => {
     const post = snapshot([{ ...ready, expectedTxtPresent: false }]);
     expect(evaluateAuthoritativeTxtSnapshot(post, false)).toBe("PASS");

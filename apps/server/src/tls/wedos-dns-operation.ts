@@ -42,7 +42,12 @@ export type AuthoritativeDnsSnapshot = Readonly<{ zone: string; elapsedSeconds: 
 export type AuthoritativeDnsEvaluation = "PASS" | "STILL_PROPAGATING" | "PROVIDER_REPLICA_DIVERGENCE" | "WAPI_AUTHORITATIVE_DIVERGENCE" | "NETWORK_FAILURE" | "PROTOCOL_FAILURE";
 
 export class WedosDnsObservationError extends Error {
-  constructor(readonly snapshot: AuthoritativeDnsSnapshot, readonly evaluation: AuthoritativeDnsEvaluation, readonly baseline?: AuthoritativeDnsSnapshot) {
+  constructor(
+    readonly snapshot: AuthoritativeDnsSnapshot,
+    readonly evaluation: AuthoritativeDnsEvaluation,
+    readonly baseline?: AuthoritativeDnsSnapshot,
+    readonly expectedPresent = true
+  ) {
     super(`wedos_dns_authoritative_${evaluation.toLowerCase()}`);
   }
 }
@@ -241,11 +246,13 @@ function boundedPositiveInteger(name: string, fallback: number, maximum: number)
   return value;
 }
 
-// These are KCML operational limits, not a WEDOS propagation SLA. The query
-// timeout must remain independent, otherwise one unreachable IPv6 endpoint can
-// consume the whole propagation deadline before another authority is observed.
+// These are KCML operational limits, not a WEDOS propagation SLA. Production
+// evidence on 2026-08-23 showed an exact WAPI deletion still visible on every
+// healthy authority after 317 seconds and absent before eight minutes. The
+// query timeout remains independent, otherwise one unreachable IPv6 endpoint
+// can consume the whole propagation deadline before another authority is seen.
 const AUTHORITATIVE_DNS_QUERY_TIMEOUT_MS = boundedPositiveInteger("WEDOS_DNS_QUERY_TIMEOUT_MS", 3_000, 15_000);
-const AUTHORITATIVE_PROPAGATION_TIMEOUT_MS = boundedPositiveInteger("WEDOS_DNS_PROPAGATION_TIMEOUT_MS", 300_000, 900_000);
+const AUTHORITATIVE_PROPAGATION_TIMEOUT_MS = boundedPositiveInteger("WEDOS_DNS_PROPAGATION_TIMEOUT_MS", 480_000, 900_000);
 const AUTHORITATIVE_PROPAGATION_DELAY_MS = 5_000;
 
 function dnsTimeoutError(): Error & { code: string } {
@@ -401,13 +408,26 @@ export function evaluateAuthoritativeTxtSnapshot(snapshot: AuthoritativeDnsSnaps
   return expectedPresent ? "WAPI_AUTHORITATIVE_DIVERGENCE" : "STILL_PROPAGATING";
 }
 
-export function safeAuthoritativeDnsDiagnostics(snapshot: AuthoritativeDnsSnapshot, baseline?: AuthoritativeDnsSnapshot): string[] {
+export function safeAuthoritativeDnsDiagnostics(snapshot: AuthoritativeDnsSnapshot, baseline?: AuthoritativeDnsSnapshot, expectedPresent = true): string[] {
   const serials = new Set(snapshot.observations.map((item) => item.soaSerial).filter((serial): serial is string => Boolean(serial)));
+  const byAuthority = new Map<string, AuthoritativeDnsObservation[]>();
+  for (const observation of snapshot.observations) {
+    const observations = byAuthority.get(observation.authority) ?? [];
+    observations.push(observation);
+    byAuthority.set(observation.authority, observations);
+  }
+  const readyAuthorities = [...byAuthority.values()].filter((observations) => observations.some((item) =>
+    item.response === "OK" && item.soaStatus === "AVAILABLE" && item.expectedTxtPresent === expectedPresent
+  )).length;
+  const readyAddresses = snapshot.observations.filter((item) =>
+    item.response === "OK" && item.soaStatus === "AVAILABLE" && item.expectedTxtPresent === expectedPresent
+  ).length;
   return [
     `wedos-dns:zone=${snapshot.zone}`,
     ...snapshot.observations.map((item) => `wedos-dns:authority:host=${item.authority}:address=${item.address}:response=${item.response}:baselineSoaSerial=${baselineSerial(baseline, item) ?? "unknown"}:soaStatus=${item.soaStatus}:soaSerial=${item.soaSerial ?? "unknown"}:txtExpectedPresent=${item.expectedTxtPresent === null ? "unknown" : item.expectedTxtPresent ? "yes" : "no"}`),
     `wedos-dns:serials-converged=${serials.size <= 1 ? "yes" : "no"}`,
-    `wedos-dns:authorities-ready=${snapshot.observations.filter((item) => item.expectedTxtPresent).length}/${snapshot.observations.length}`,
+    `wedos-dns:authorities-ready=${readyAuthorities}/${byAuthority.size}`,
+    `wedos-dns:addresses-ready=${readyAddresses}/${snapshot.observations.length}`,
     `wedos-dns:elapsedSeconds=${snapshot.elapsedSeconds}`
   ];
 }
@@ -423,7 +443,7 @@ function sleep(milliseconds: number): Promise<void> {
 export async function verifyAuthoritativeTxt(zoneInput: string, recordNameInput: string, value: string, expectedPresent: boolean): Promise<void> {
   const snapshot = await observeAuthoritativeDns(zoneInput, recordNameInput, value);
   const evaluation = evaluateAuthoritativeTxtSnapshot(snapshot, expectedPresent);
-  if (evaluation !== "PASS") throw new WedosDnsObservationError(snapshot, evaluation);
+  if (evaluation !== "PASS") throw new WedosDnsObservationError(snapshot, evaluation, undefined, expectedPresent);
 }
 
 /**
@@ -443,7 +463,7 @@ export async function waitForAuthoritativeTxt(zone: string, recordName: string, 
     try {
       const snapshot = await observeAuthoritativeDns(zone, recordName, value, startedAt);
       const evaluation = evaluateAuthoritativeTxtSnapshot(snapshot, expectedPresent, baseline);
-      if (evaluation !== "PASS") throw new WedosDnsObservationError(snapshot, evaluation, baseline);
+      if (evaluation !== "PASS") throw new WedosDnsObservationError(snapshot, evaluation, baseline, expectedPresent);
       return;
     } catch (error) {
       lastError = error;
