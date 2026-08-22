@@ -17,13 +17,19 @@ const enabled = process.env.KCML_TEST_DATABASE === "1";
 let db: Db;
 let config: AppConfig;
 let ownerId = "";
+const testOwnerUsername = "generation-openai-readiness-test-owner";
 
 describe.skipIf(!enabled)("canonical OpenAI Secret Manager readiness", () => {
   beforeAll(async () => {
     config = loadConfig(process.env);
     db = createDb(config);
-    const owner = await db.query("select id from admin_account where role='OWNER' and active=true order by created_at limit 1");
-    if (!owner.rowCount) throw new Error("generation_openai_readiness_owner_missing");
+    const owner = await db.query(
+      `insert into admin_account(username,role,active,activated_at)
+       values ($1,'OWNER',true,now())
+       on conflict (username) do update set role='OWNER',active=true,activated_at=coalesce(admin_account.activated_at,now())
+       returning id`,
+      [testOwnerUsername]
+    );
     ownerId = String(owner.rows[0].id);
     // The CI database is dedicated to this suite; preserve no canonical record between runs.
     await db.query("delete from secret_record where stable_name='OPENAI_API_KEY'");
@@ -32,6 +38,7 @@ describe.skipIf(!enabled)("canonical OpenAI Secret Manager readiness", () => {
   afterAll(async () => {
     if (!db) return;
     await db.query("delete from secret_record where stable_name='OPENAI_API_KEY'");
+    await db.query("delete from admin_account where username=$1", [testOwnerUsername]);
     await db.end();
   });
 
