@@ -20,7 +20,7 @@ class FakeWedosApi {
   async rowsList() { return { code: 1000, result: "OK", clTRID: "test", svTRID: "server", command: "dns-rows-list", outcome: "OK" as const, data: { row: this.rows } }; }
   async rowAdd(_zone: string, name: string, rdata: string, authorComment: string, ttl: number) {
     this.addCalls += 1;
-    this.rows.push({ ID: `owned-${this.addCalls}`, name, ttl, rdtype: "TXT", rdata, changed_date: "2026-08-22 10:00:00", author_comment: authorComment });
+    this.rows.push({ ID: `OWNED-${this.addCalls}`, name, ttl, rdtype: "TXT", rdata, changed_date: "2026-08-22 10:00:00", author_comment: authorComment });
     return { code: 1000, result: "OK", clTRID: "test", svTRID: "server", command: "dns-row-add", outcome: "OK" as const, data: null };
   }
   async rowDelete(_zone: string, id: string) {
