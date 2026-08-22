@@ -115,7 +115,7 @@ async function main(): Promise<void> {
       } catch (error) {
         const current = await getWedosDnsOperation(db, created.id);
         if (current.state !== "CREATED") {
-          await cleanupDnsOperationByOwnership(db, created.id, client);
+          await cleanupDnsOperation(db, created.id, value, client);
         }
         throw error;
       }
@@ -128,7 +128,12 @@ async function main(): Promise<void> {
       const operations = await listActiveWedosDnsOperations(db, "PREFLIGHT_TEST");
       const recovered = [];
       for (const operation of operations) {
-        const cleanup = await cleanupDnsOperationByOwnership(db, operation.id, client);
+        let cleanup;
+        try {
+          cleanup = await cleanupDnsOperationByOwnership(db, operation.id, client);
+        } catch (error) {
+          throw new Error(`wedos_dns_preflight_recovery_failed:${operation.id}:${operation.recordName}:${safeErrorMessage(error)}`);
+        }
         recovered.push({ id: cleanup.id, state: cleanup.state });
       }
       return recovered;

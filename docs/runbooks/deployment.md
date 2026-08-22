@@ -14,6 +14,12 @@ When the operator uses the repository's platform release workflow, its self-host
 
 Canonical TLS issuance runs only after the reversible nginx ACME challenge configuration, forward migrations, WEDOS WAPI preflight and the safe WEDOS roundtrip. Before the roundtrip, the installer runs recovery-first cleanup for active `PREFLIGHT_TEST` ledger rows using exact WEDOS ownership. The release keeps the previous systemd topology active until DNS-01, certificate SAN/key verification and the release checks are ready. If authoritative DNS does not publish the challenge within the bounded propagation window, the deploy is blocked externally and no new topology is activated. The DNS publisher is an external production dependency; do not replace authoritative-DNS confirmation with a timer, a non-authoritative resolver result, or a fake success.
 
+If a worker restarts after a WEDOS row deletion but before authoritative cleanup
+verification, recovery can use only an authoritative TXT answer whose digest
+matches the ledger. If no authoritative server returns that digest, cleanup is
+terminalized only after all authoritative servers responded without it; a
+partial or uncertain response blocks the release.
+
 Generation writes workspaces under `GENERATION_ROOT`, local releases under `GENERATED_COMPONENT_ROOT`, uses `RUNTIME_SOCKET_ROOT` for UDS, and exposes each activated element through its canonical HTTPS hostname. When a candidate is abandoned after a technical failure, the existing generation release cleanup must complete before a new remediation revision starts: first CREATE stops the runtime/removes `current`/marks the release `ROLLED_BACK`; UPDATE/REPAIR restores the previous release. Terminal REPAIR failure additionally restores the captured base component lifecycle/control state. INTEGRATING retry is the exception because the same candidate remains intentionally live for the next provider attempt. Runtime credentials are systemd credentials sourced from KajovoCML Secret Manager, never environment/user handoff tokens.
 
 When an approved specification requires a credential, deterministic component Secret grants are committed through the existing Secret Manager before provider/browser/API work resumes. This applies both to a newly supplied OWNER secret and an already ACTIVE secret rediscovered during integration; it does not introduce a second approval or transfer workflow.

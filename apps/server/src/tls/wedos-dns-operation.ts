@@ -228,6 +228,38 @@ async function authoritativeNameServerAddresses(authority: string): Promise<stri
   return [...new Set(addresses)];
 }
 
+async function authoritativeTxtValues(zoneInput: string, recordNameInput: string): Promise<string[]> {
+  const zone = normalizeZone(zoneInput); const recordName = normalizeRecordName(recordNameInput);
+  const authorities = await Resolver.prototype.resolveNs.call(new Resolver(), `${zone}.`);
+  if (!authorities.length) throw new Error("wedos_dns_authoritative_nameservers_missing");
+  const target = fqdn(zone, recordName);
+  const values: string[] = [];
+  for (const authority of authorities) {
+    const addresses = await authoritativeNameServerAddresses(authority);
+    let responded = false;
+    let lastNetworkError = "unknown";
+    for (const address of addresses) {
+      const resolver = new Resolver(); resolver.setServers([address]);
+      let records: string[][] = [];
+      try {
+        records = await resolver.resolveTxt(target);
+      } catch (error) {
+        const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
+        if (["ENODATA", "ENOTFOUND", "NXDOMAIN"].includes(code)) records = [];
+        else if (isRetryableAuthoritativeNetworkError(code)) {
+          lastNetworkError = code || "unknown";
+          continue;
+        } else throw new Error(`wedos_dns_authoritative_query_failed:${authority}:${address}:${code || "unknown"}`);
+      }
+      responded = true;
+      values.push(...records.map((record) => record.join("")));
+      break;
+    }
+    if (!responded) throw new Error(`wedos_dns_authoritative_query_failed:${authority}:${lastNetworkError}`);
+  }
+  return [...new Set(values)];
+}
+
 function isRetryableAuthoritativeNetworkError(code: string): boolean {
   return ["ECONNREFUSED", "ETIMEDOUT", "ETIME", "EAI_AGAIN", "ENETUNREACH", "EHOSTUNREACH"].includes(code);
 }
@@ -270,6 +302,16 @@ export async function verifyAuthoritativeTxt(zoneInput: string, recordNameInput:
     }
     if (!responded) throw new Error(`wedos_dns_authoritative_query_failed:${authority}:${lastNetworkError}`);
   }
+}
+
+/**
+ * Finds the value represented by a persisted digest without exposing it in
+ * logs or durable state. This is used only after a WEDOS row has already been
+ * deleted and a worker must recover the authoritative cleanup verification.
+ */
+export async function findAuthoritativeTxtByDigest(zone: string, recordName: string, valueDigest: string): Promise<string | null> {
+  const values = await authoritativeTxtValues(zone, recordName);
+  return values.find((value) => sha256Digest(value) === valueDigest) ?? null;
 }
 
 export async function waitForAuthoritativeTxt(zone: string, recordName: string, value: string, expectedPresent: boolean): Promise<void> {
@@ -375,12 +417,28 @@ export async function cleanupDnsOperationByOwnership(
     if (operation.state === "CREATED") {
       return failWedosDnsOperation(db, operation.id, new Error("wedos_dns_owned_row_not_found_before_add"));
     }
+    if (operation.state === "CLEANUP_REQUESTED" || operation.state === "DELETED") {
+      const authoritativeValue = await findAuthoritativeTxtByDigest(operation.zone, operation.recordName, operation.valueDigest);
+      if (authoritativeValue) return cleanupDnsOperation(db, operation.id, authoritativeValue, api, resolver);
+      return markCleanupPropagatedWithoutValue(db, operation.id);
+    }
     throw new Error("wedos_dns_owned_row_missing_for_recovery");
   }
+  if (operation.state === "DELETED") throw new Error("wedos_dns_deleted_operation_row_still_present");
   if (operation.wedosRowId && owned.id.toUpperCase() !== operation.wedosRowId.toUpperCase()) {
     throw new Error("wedos_dns_cleanup_row_ownership_mismatch");
   }
   return cleanupDnsOperation(db, operation.id, owned.rdata, api, resolver);
+}
+
+async function markCleanupPropagatedWithoutValue(db: Db, operationId: string): Promise<WedosDnsOperation> {
+  return withOperationLock(db, operationId, async (client) => {
+    const operation = await getOperation(client, operationId, true);
+    if (operation.state === "CLEANUP_PROPAGATED") return operation;
+    if (operation.state === "CLEANUP_REQUESTED") await updateState(client, operationId, ["CLEANUP_REQUESTED"], "DELETED");
+    await updateState(client, operationId, ["DELETED"], "CLEANUP_PROPAGATED");
+    return getOperation(client, operationId);
+  });
 }
 
 export async function listActiveWedosDnsOperations(db: Db, purpose?: WedosDnsPurpose): Promise<WedosDnsOperation[]> {

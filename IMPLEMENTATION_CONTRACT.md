@@ -97,7 +97,10 @@ WEDOS-safe author marker. The canonical lifecycle is `CREATED` â†’ `ROW_ADDED` â
 `CLEANUP_PROPAGATED`. The deployment runner executes `recover-preflight` before
 a new safe roundtrip. Recovery obtains the TXT value only from a row that
 matches the stored digest, exact name, type, author marker and persisted
-uppercase row ID; the value is never logged or persisted as plaintext.
+uppercase row ID. If the provider row was already deleted before a worker
+restart, recovery may derive the value only from authoritative TXT answers
+whose SHA-256 matches the persisted digest; otherwise it fails closed. The
+value is never logged or persisted as plaintext.
 Authoritative propagation and cleanup retry for a bounded five-minute window.
 An unresolved result fails the release and leaves the prior release active.
 
