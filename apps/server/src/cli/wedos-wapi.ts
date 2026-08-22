@@ -27,6 +27,17 @@ function safe(response: { command: string; outcome: string; code: number }): Saf
   return { command: response.command, outcome: response.outcome, code: response.code };
 }
 
+function safeErrorMessage(error: unknown): string {
+  if (error && typeof error === "object" && "issues" in error && Array.isArray(error.issues)) {
+    const issue = error.issues[0] as { path?: unknown[]; message?: unknown } | undefined;
+    const path = Array.isArray(issue?.path) ? issue.path.map((part) => String(part)).join(".") : "unknown";
+    const message = typeof issue?.message === "string" ? issue.message : "validation_failed";
+    return `validation_error:${path}:${message}`.replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 240);
+  }
+  if (error && typeof error === "object" && "code" in error && typeof error.code === "number") return `wapi_error:${String(error.code)}`;
+  return (error instanceof Error ? error.message : "unknown").replace(/[^a-zA-Z0-9_.:-]/g, "_").slice(0, 240);
+}
+
 async function main(): Promise<void> {
   const command = process.argv[2];
   if (command === "ping") {
@@ -92,6 +103,6 @@ async function main(): Promise<void> {
 }
 
 void main().catch((error: unknown) => {
-  process.stderr.write(`wedos-wapi:FAIL:${error instanceof Error ? error.message : "unknown"}\n`);
+  process.stderr.write(`wedos-wapi:FAIL:${safeErrorMessage(error)}\n`);
   process.exitCode = 1;
 });
