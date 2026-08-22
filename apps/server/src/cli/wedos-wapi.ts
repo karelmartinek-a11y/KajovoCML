@@ -153,27 +153,39 @@ async function main(): Promise<void> {
     process.stdout.write(`wedos-wapi:roundtrip:operation=${result.id}:record=${recordName}:state=${result.state}\n`);
     return;
   }
-  if (command === "recover-preflight") {
+  if (command === "recover-preflight" || command === "recover-acme") {
+    const purpose = command === "recover-preflight" ? "PREFLIGHT_TEST" : "ACME";
     const result = await withClient(async (client, db) => {
-      const operations = await listActiveWedosDnsOperations(db, "PREFLIGHT_TEST");
-      const recovered = [];
-      for (const operation of operations) {
-        let cleanup;
+      const operations = await listActiveWedosDnsOperations(db, purpose);
+      const recoverOne = async (operation: Awaited<ReturnType<typeof listActiveWedosDnsOperations>>[number]) => {
         try {
-          cleanup = await cleanupDnsOperationByOwnership(db, operation.id, client);
+          const cleanup = await cleanupDnsOperationByOwnership(db, operation.id, client);
+          return { id: cleanup.id, state: cleanup.state };
         } catch (error) {
           const current = await getWedosDnsOperation(db, operation.id);
           await writeRecoveryDiagnostics(client, current);
           // Keep the original structured observation intact. The top-level
           // handler prints only its safe, per-authority diagnostics.
           if (error instanceof WedosDnsObservationError) throw error;
-          throw new Error(`wedos_dns_preflight_recovery_failed:${operation.id}:${operation.recordName}:${safeErrorMessage(error)}`);
+          throw new Error(`wedos_dns_${purpose.toLowerCase()}_recovery_failed:${operation.id}:${operation.recordName}:${safeErrorMessage(error)}`);
         }
-        recovered.push({ id: cleanup.id, state: cleanup.state });
+      };
+      // ACME may leave independent TXT challenges after a cancelled certbot
+      // invocation. Their exact ownership locks are per operation, so recover
+      // them concurrently instead of allowing a serial cleanup to exhaust the
+      // bootstrap deployment budget. PREFLIGHT recovery stays serial for a
+      // single diagnostic operation.
+      if (purpose === "ACME") {
+        const settled = await Promise.allSettled(operations.map(recoverOne));
+        const failed = settled.find((entry): entry is PromiseRejectedResult => entry.status === "rejected");
+        if (failed) throw failed.reason;
+        return settled.map((entry) => (entry as PromiseFulfilledResult<Awaited<ReturnType<typeof recoverOne>>>).value);
       }
+      const recovered = [];
+      for (const operation of operations) recovered.push(await recoverOne(operation));
       return recovered;
     });
-    process.stdout.write(`wedos-dns-recovery:preflight:${JSON.stringify({ count: result.length, operations: result })}\n`);
+    process.stdout.write(`wedos-dns-recovery:${purpose.toLowerCase()}:${JSON.stringify({ count: result.length, operations: result })}\n`);
     return;
   }
   if (command === "recover") {
@@ -184,7 +196,7 @@ async function main(): Promise<void> {
     process.stdout.write(`wedos-dns-recovery:operation=${result.id}:state=${result.state}\n`);
     return;
   }
-  throw new Error("usage: kcml-wedos-wapi <ping|preflight|acme-auth|acme-cleanup|wapi-test-roundtrip|recover-preflight|recover>");
+  throw new Error("usage: kcml-wedos-wapi <ping|preflight|acme-auth|acme-cleanup|wapi-test-roundtrip|recover-preflight|recover-acme|recover>");
 }
 
 void main().catch((error: unknown) => {

@@ -50,7 +50,6 @@ fi
 
 command -v certbot >/dev/null
 command -v pkill >/dev/null
-command -v setsid >/dev/null
 test -r "$config_vault_master_key_file"
 install -d -m 0700 "$runtime_dir"
 terminate_pid() {
@@ -95,7 +94,12 @@ trap 'exit 130' INT
 
 terminate_stale_certbot
 
-setsid env \
+# The release wrapper already owns a dedicated session. Creating a second
+# session here would let certbot survive GitHub cancellation as an orphan.
+# Keep the certbot process in the release session so both cancellation paths
+# terminate the exact TLS child tree; durable WEDOS recovery handles a
+# persisted operation on the next attempt.
+env \
   KCML_ACME_ZONE="$base_domain" \
   KCML_TLS_CERT_PATH="$certificate_path" \
   KCML_TLS_KEY_PATH="$private_key_path" \

@@ -216,6 +216,15 @@ NODE_ENV=production \
 BUILD_ID="$release_id" \
   node "$source_dir/apps/server/dist/cli/wedos-wapi.js" recover-preflight
 
+step wedos-wapi-recover-acme
+KCML_PROCESS_ROLE=migrate \
+DATABASE_URL_FILE=/etc/kcml/credentials/migrator/database_url \
+CONFIG_VAULT_MASTER_KEY_BASE64_FILE=/etc/kcml/credentials/config_vault_master_key \
+KCML_ACME_ZONE="$PUBLIC_BASE_DOMAIN" \
+NODE_ENV=production \
+BUILD_ID="$release_id" \
+  node "$source_dir/apps/server/dist/cli/wedos-wapi.js" recover-acme
+
 step wedos-wapi-roundtrip
 KCML_PROCESS_ROLE=migrate \
 DATABASE_URL_FILE=/etc/kcml/credentials/migrator/database_url \

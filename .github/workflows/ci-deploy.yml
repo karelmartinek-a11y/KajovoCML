@@ -228,7 +228,10 @@ jobs:
     if: github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || github.event_name == 'push')
     needs: [ci, security, release]
     runs-on: [self-hosted, kcml-deploy]
-    timeout-minutes: 30
+    # First DNS-01 issuance can include three SAN challenges, their exact
+    # cleanups, and a one-time WAPI roundtrip. This is a bounded bootstrap
+    # budget; ordinary releases reuse a valid certificate and finish sooner.
+    timeout-minutes: 60
     concurrency:
       group: production-deploy
       cancel-in-progress: false

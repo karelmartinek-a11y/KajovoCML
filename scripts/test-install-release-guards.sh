@@ -64,6 +64,8 @@ grep -Fq 'step wedos-wapi-preflight' "$install_script"
 grep -Fq 'dist/cli/wedos-wapi.js" preflight' "$install_script"
 grep -Fq 'step wedos-wapi-recover-preflight' "$install_script"
 grep -Fq 'dist/cli/wedos-wapi.js" recover-preflight' "$install_script"
+grep -Fq 'step wedos-wapi-recover-acme' "$install_script"
+grep -Fq 'dist/cli/wedos-wapi.js" recover-acme' "$install_script"
 grep -Fq 'step wedos-wapi-roundtrip' "$install_script"
 grep -Fq 'dist/cli/wedos-wapi.js" wapi-test-roundtrip' "$install_script"
 grep -Fq '"$PUBLIC_BASE_DOMAIN" "$component_hostname_suffix" "$tls_cert_path" "$tls_key_path" "$source_dir"' "$install_script"
@@ -84,6 +86,7 @@ migrate_line="$(grep -n 'step migrate' "$install_script" | head -1 | cut -d: -f1
 openai_line="$(grep -n 'step openai-secret-preflight' "$install_script" | head -1 | cut -d: -f1)"
 wapi_line="$(grep -n 'step wedos-wapi-preflight' "$install_script" | head -1 | cut -d: -f1)"
 recover_line="$(grep -n 'step wedos-wapi-recover-preflight' "$install_script" | head -1 | cut -d: -f1)"
+recover_acme_line="$(grep -n 'step wedos-wapi-recover-acme' "$install_script" | head -1 | cut -d: -f1)"
 roundtrip_line="$(grep -n 'step wedos-wapi-roundtrip' "$install_script" | head -1 | cut -d: -f1)"
 test -n "$tls_line"
 test -n "$unit_line"
@@ -92,8 +95,9 @@ test -n "$migrate_line"
 test -n "$openai_line"
 test -n "$wapi_line"
 test -n "$recover_line"
+test -n "$recover_acme_line"
 test -n "$roundtrip_line"
-if [ "$split_config_line" -ge "$migrate_line" ] || [ "$migrate_line" -ge "$openai_line" ] || [ "$openai_line" -ge "$wapi_line" ] || [ "$wapi_line" -ge "$recover_line" ] || [ "$recover_line" -ge "$roundtrip_line" ] || [ "$roundtrip_line" -ge "$tls_line" ] || [ "$tls_line" -ge "$unit_line" ]; then
+if [ "$split_config_line" -ge "$migrate_line" ] || [ "$migrate_line" -ge "$openai_line" ] || [ "$openai_line" -ge "$wapi_line" ] || [ "$wapi_line" -ge "$recover_line" ] || [ "$recover_line" -ge "$recover_acme_line" ] || [ "$recover_acme_line" -ge "$roundtrip_line" ] || [ "$roundtrip_line" -ge "$tls_line" ] || [ "$tls_line" -ge "$unit_line" ]; then
   echo "migration and WAPI/TLS must complete before systemd topology activation" >&2
   exit 1
 fi
