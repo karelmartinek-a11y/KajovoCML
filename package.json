@@ -18,6 +18,7 @@
     "ci": "pnpm lint && pnpm typecheck && pnpm test && pnpm build",
     "db:migrate": "pnpm --filter @kcml/server db:migrate",
     "admin:sync-password": "pnpm --filter @kcml/server admin:sync-password",
+    "wedos-wapi": "pnpm --filter @kcml/server wedos-wapi",
     "dashboard:parity:check": "node scripts/check-capability-parity.mjs",
     "generation:contract:check": "node scripts/check-internal-generation-contract.mjs",
     "generation:runtime:check": "node scripts/test-generated-component-runtime.mjs",

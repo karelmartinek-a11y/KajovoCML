@@ -71,6 +71,7 @@ type SecretManagerConfig = {
   MFA_ENCRYPTION_KEY_BASE64?: Buffer;
   MFA_ALLOW_PLAINTEXT_LEGACY?: boolean;
 };
+type SecretResolverConfig = Pick<SecretManagerConfig, "CONFIG_VAULT_MASTER_KEY_BASE64" | "CONFIG_VAULT_MASTER_KEY_ID">;
 
 function normalizeName(value: string): string {
   const name = value.trim().toUpperCase();
@@ -78,7 +79,7 @@ function normalizeName(value: string): string {
   return name;
 }
 
-function assertMasterKey(config: SecretManagerConfig): void {
+function assertMasterKey(config: SecretResolverConfig): void {
   if (config.CONFIG_VAULT_MASTER_KEY_BASE64.length !== 32) {
     throw Object.assign(new Error("secret_manager_key_unavailable"), { statusCode: 503 });
   }
@@ -527,7 +528,7 @@ async function assertGrant(client: pg.PoolClient, secretId: string, principal: S
   return Boolean(result.rowCount);
 }
 
-export async function resolveSecret(db: Db, config: SecretManagerConfig, principal: SecretPrincipal, stableNameInput: string, correlationId: string): Promise<{
+export async function resolveSecret(db: Db, config: SecretResolverConfig, principal: SecretPrincipal, stableNameInput: string, correlationId: string): Promise<{
   name: string;
   value: string;
   version: number;
