@@ -145,4 +145,6 @@ if grep -Eq 'client_secret_basic|integration_token_bearer' "$install_script"; th
   exit 1
 fi
 
+node scripts/test-ssot-production-acceptance-guard.mjs
+
 echo "install-release-guards:PASS"

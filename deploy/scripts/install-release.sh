@@ -531,5 +531,21 @@ wait_for_sql_equals "schema_migration_count" "25" "select count(*) from schema_m
 step verify-stable-runtime-health
 require_stable_runtime_health "$admin_host"
 
+if [ "${KCML_RUN_FULL_SSOT_ACCEPTANCE:-false}" = "true" ]; then
+  # This is an explicit workflow_dispatch-only gate.  The runner invokes the
+  # release CLI as root because it needs the same systemd database/vault
+  # credentials as the canonical deploy checks.  PASS remains process memory;
+  # the CLI emits only safe identifiers, state, digests, counts and timings.
+  step full-ssot-production-acceptance
+  PASS="$PASS" \
+  KCML_PROCESS_ROLE=migrate \
+  DATABASE_URL_FILE=/etc/kcml/credentials/migrator/database_url \
+  CONFIG_VAULT_MASTER_KEY_BASE64_FILE=/etc/kcml/credentials/config_vault_master_key \
+  NODE_ENV=production \
+  BUILD_ID="$release_id" \
+  KCML_ACCEPTANCE_BASE_URL="https://${admin_host}" \
+    node "$release_dir/apps/server/dist/cli/ssot-production-acceptance.js"
+fi
+
 trap - ERR
 echo "release-installed:$release_id"

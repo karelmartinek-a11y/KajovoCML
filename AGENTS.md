@@ -27,5 +27,13 @@ Human authorization is single-level across the product: every active authenticat
 ## Verification
 Run the repository's canonical checks. At minimum preserve syntax/type/build/test coverage, generation contract checks, actual local generated-runtime checks, release packaging checks and UI tests. Generation-specific checks include `pnpm generation:contract:check`, `pnpm generation:browser:check`, `pnpm generation:browser-automation:check`, `pnpm generation:automation-sandbox-boundary:check`, `pnpm generation:automation-runtime-no-ai:check` and `pnpm generation:automation-recovery:check`. Playwright-managed Chromium is installed by CI/release; production Chromium must run sandboxed under the worker identity. The Browser Automation worker records a `BROWSER_AUTOMATION` heartbeat in the existing platform-worker ledger, and production readiness requires that fresh heartbeat together with generation and component worker heartbeats. This is not a second component or queue registry. If the supported Node/pnpm toolchain or external registry is unavailable, record the exact blocker and still run every independent local check possible.
 
+The signed release contains `apps/server/dist/cli/ssot-production-acceptance.js`
+for the explicit `workflow_dispatch` input
+`run_full_ssot_acceptance=true`. It uses the existing deployment-managed OWNER
+credential in memory on the trusted self-hosted runner and records only safe
+production evidence; it is the canonical path for authenticated generation,
+SSE, Browser Automation and viewport acceptance and must not be replaced by a
+local mock or a second credential flow.
+
 ## Documentation
 Any behavior change must update the active README/runbooks/current-state documents and relevant component catalog card/documentation. Historical artifacts may remain only when clearly labeled historical/superseded.

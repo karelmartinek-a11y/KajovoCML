@@ -228,3 +228,26 @@ new job as inherited technical authority. If lineage is absent, the repair is
 created `BLOCKED` with `generation_repair_spec_lineage_missing` and requires a
 new OWNER discussion. Repair restores the preceding release or flags an
 uncertain external side effect.
+
+## Production acceptance harness
+
+`apps/server/src/cli/ssot-production-acceptance.ts` is the canonical
+authenticated production acceptance runner. It is shipped in the signed
+release bundle but is not part of an ordinary deployment gate. It runs only
+when the repository workflow is explicitly dispatched with
+`run_full_ssot_acceptance=true`; push and pull-request runs keep the flag false.
+The self-hosted deploy runner passes the already deployment-managed `PASS` in
+process memory and uses the existing migrator database/config-vault
+credentials. The runner never creates, rotates, exports or prints a credential
+and emits only safe identifiers, state values, digests, counts and timings.
+
+The runner exercises the real `admin.hcasc.cz` OWNER HTTP/session/CSRF boundary,
+persistent generation job and messages, Responses capability-first event trail,
+SSE bootstrap and `Last-Event-ID` replay, stale approval rejection,
+cancellation, the canonical Browser Automation definition/revision/
+preflight/verification/activation/queue/worker/idempotency/disable path, and
+authenticated browser UI navigation/geometry at the four SSOT viewports. Test
+definitions and cancelled generation fixtures are correlated by generated
+identifiers and are cleaned up through the existing database/runtime records
+after the run. A failed check fails the release; no matrix status is promoted
+from static presence alone.

@@ -20,6 +20,11 @@ on:
         required: false
         default: ""
         type: string
+      run_full_ssot_acceptance:
+        description: "Run the authenticated production SSOT acceptance harness after deployment"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -292,6 +297,7 @@ jobs:
         env:
           PASS: ${{ secrets.PASS }}
           KCML_FACTORY_RESET_CONFIRM: ${{ github.event_name == 'workflow_dispatch' && inputs.perform_factory_reset && inputs.factory_reset_confirmation || '' }}
+          KCML_RUN_FULL_SSOT_ACCEPTANCE: ${{ github.event_name == 'workflow_dispatch' && inputs.run_full_ssot_acceptance || false }}
         run: |
           set -euo pipefail
           echo "::add-mask::$PASS"
@@ -313,7 +319,7 @@ jobs:
           set +e
           # PASS is an application credential consumed by the wrapper, never a sudo password.
           # The production runner must grant its service account narrowly scoped NOPASSWD access.
-          setsid sudo -n --preserve-env=PASS,KCML_FACTORY_RESET_CONFIRM /usr/local/sbin/kcml-deploy-wrapper \
+          setsid sudo -n --preserve-env=PASS,KCML_FACTORY_RESET_CONFIRM,KCML_RUN_FULL_SSOT_ACCEPTANCE /usr/local/sbin/kcml-deploy-wrapper \
             "${{ runner.temp }}/kcml-release/kcml-release.tar.zst" \
             "${{ github.repository }}" \
             "${{ github.sha }}" \

@@ -24,6 +24,15 @@ OWNER uses **Generování** in the admin UI. A persistent generation job analyse
 
 The discussion and implementation worker reuse the same canonical `OPENAI_API_KEY` record in Secret Manager. An existing active record with a missing platform grant is repaired by granting that record to the canonical platform worker; the dashboard does not request, create or rotate another key for that condition.
 
+The full authenticated production acceptance is an explicit release action, not
+a static claim: dispatch `.github/workflows/ci-deploy.yml` with
+`run_full_ssot_acceptance=true`. The signed release runner exercises the real
+OWNER HTTP/CSRF/SSE, generation, Playwright Browser Automation and required UI
+viewport paths on `admin.hcasc.cz`, using the deployment-managed credential only
+in memory and emitting safe evidence. Its temporary fixtures are correlated and
+cleaned after the run. Ordinary CI and deploy runs leave this expensive gate
+disabled.
+
 Human authorization is intentionally single-level: every authenticated active human account is `OWNER`. Legacy `ADMIN`/`AUDITOR` values are normalized by forward-only migration `025_single_owner_human_role.sql`; machine principals remain governed by their separate principal and permission contracts. The admin-account API and UI expose activity, MFA and sessions, but no human role selector.
 
 Internally generated components do **not** use integration-token/programmer handoff, GitHub PR/CI, GHCR or OCI as runtime dependencies or completion gates. Each result is a normal canonical CML `component`/`principal` with one managed runtime access identity, direct secret grants, HTTPS hostname, control/state/heartbeat, monitoring, audit and local rollback.
