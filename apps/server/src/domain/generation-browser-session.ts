@@ -19,6 +19,7 @@ type BrowserSessionModule = { PlaywrightBrowserSession: new (input: { chromiumBi
 const ALLOWED_SCOPE_ACTIONS = new Set(["READ_ONLY", "LOCAL_INPUT", "AUTHENTICATION", "MUTATION_IDEMPOTENT", "MUTATION_NON_IDEMPOTENT", "DESTRUCTIVE"]);
 const READ_ONLY_ACTIONS = new Set(["NAVIGATE", "WAIT", "WAIT_FOR", "ASSERT", "ASSERT_TEXT", "EXTRACT", "EXTRACT_TEXT", "BRANCH", "REPEAT_BOUNDED"]);
 const MUTATING_MANIFEST_ACTIONS = new Set(["CLICK", "FILL", "FILL_SECRET", "SELECT", "CHECK", "UNCHECK", "PRESS", "UPLOAD", "DOWNLOAD"]);
+const liveBrowserSessions = new Map<string, BrowserSession>();
 
 function text(value: unknown): string { return typeof value === "string" ? value : ""; }
 function record(value: unknown): JsonRecord { return value && typeof value === "object" && !Array.isArray(value) ? value as JsonRecord : {}; }
@@ -67,6 +68,8 @@ async function ensureSession(db: Db, config: BrowserSessionConfig, jobId: string
     return { id: String(existing.rows[0].id), status: String(existing.rows[0].status) };
   }
   if (existing.rowCount) {
+    const oldSession = liveBrowserSessions.get(String(existing.rows[0].id));
+    if (oldSession) { await oldSession.close().catch(() => undefined); liveBrowserSessions.delete(String(existing.rows[0].id)); }
     await db.query("update generation_browser_session set status='ACTIVE',expires_at=now()+interval '30 minutes',updated_at=now() where id=$1", [existing.rows[0].id]);
     return { id: String(existing.rows[0].id), status: "ACTIVE" };
   }
@@ -116,7 +119,9 @@ export async function openGenerationBrowserPreview(db: Db, config: BrowserSessio
   const url = new URL(input.url);
   if (url.protocol !== "https:") fail("browser_https_required", 400);
   const sessionModule = await import("../generation/playwright-session.mjs") as unknown as BrowserSessionModule;
-  const browser = new sessionModule.PlaywrightBrowserSession({ chromiumBinary: config.CHROMIUM_BINARY, workspace: path.join(config.GENERATION_ROOT, "generation-browser", jobId), sessionId: session.id, allowLocal: false });
+  const browser = liveBrowserSessions.get(session.id) ?? new sessionModule.PlaywrightBrowserSession({ chromiumBinary: config.CHROMIUM_BINARY, workspace: path.join(config.GENERATION_ROOT, "generation-browser", jobId), sessionId: session.id, allowLocal: false });
+  liveBrowserSessions.set(session.id, browser);
+  let artifactAbsolute: string | null = null;
   try {
     await browser.open(url.toString());
     const state = await browser.state();
@@ -128,6 +133,7 @@ export async function openGenerationBrowserPreview(db: Db, config: BrowserSessio
       let storageKey: string | null = null;
       if (mode === "NORMAL") {
         const artifact = relativeArtifact(config.GENERATION_ROOT, jobId, `preview-${revision}-${randomUUID()}.png`);
+        artifactAbsolute = artifact.absolute;
         const shot = await browser.screenshot();
         await writeFile(artifact.absolute, shot.body, { mode: 0o600 });
         storageKey = artifact.relative;
@@ -143,9 +149,12 @@ export async function openGenerationBrowserPreview(db: Db, config: BrowserSessio
     });
     return { status: revisionResult.mode, sessionId: session.id, frameId: revisionResult.id, revision: revisionResult.revision, url: safeUrlMetadata(state.url), title: String(state.title ?? "").slice(0, 500), contentType: revisionResult.contentType };
   } catch (error) {
+    if (artifactAbsolute) await rm(artifactAbsolute, { force: true }).catch(() => undefined);
     await db.query("update generation_browser_session set status='FAILED',updated_at=now() where id=$1", [session.id]).catch(() => undefined);
+    await browser.close().catch(() => undefined);
+    liveBrowserSessions.delete(session.id);
     throw error;
-  } finally { await browser.close(); }
+  }
 }
 
 export async function createGenerationOperationScope(db: Db, jobId: string, ownerId: string, input: { sourceMessageId: string; purpose: string; targetAccountLabel?: string; allowedOrigins: string[]; allowedActionClasses: string[]; browserSessionId?: string | null; expiresAt?: string | null }, correlationId: string): Promise<JsonRecord> {
@@ -178,8 +187,9 @@ export async function createIrreversibleConfirmation(db: Db, jobId: string, owne
   if (!/^sha256:[0-9a-f]{64}$/.test(input.actionDigest)) fail("browser_action_digest_invalid", 400);
   const origin = safeOrigin(input.targetOrigin);
   return tx(db, async (client) => {
-    const scope = await client.query("select id,allowed_origins,allowed_operations,status,expires_at from generation_external_operation_scope where id=$1 and job_id=$2", [input.scopeId, jobId]);
+    const scope = await client.query("select id,owner_instruction_message_id,allowed_origins,allowed_operations,status,expires_at from generation_external_operation_scope where id=$1 and job_id=$2", [input.scopeId, jobId]);
     if (!scope.rowCount || String(scope.rows[0].status) !== "ACTIVE" || new Date(String(scope.rows[0].expires_at)).getTime() <= Date.now()) fail("browser_scope_not_active", 409);
+    if (scope.rows[0].owner_instruction_message_id && String(scope.rows[0].owner_instruction_message_id) !== input.sourceMessageId) fail("browser_confirmation_source_message_mismatch", 409);
     const rawAllowedOrigins: unknown = scope.rows[0].allowed_origins;
     const allowedOrigins = Array.isArray(rawAllowedOrigins) ? rawAllowedOrigins.filter((value): value is string => typeof value === "string") : [];
     if (!allowedOrigins.includes(origin)) fail("browser_confirmation_origin_outside_scope", 409);
@@ -320,6 +330,12 @@ export async function recordGenerationTeachingRun(db: Db, jobId: string, ownerId
 
 export async function cleanupGenerationBrowserSession(db: Db, config: BrowserSessionConfig, jobId: string, ownerId: string): Promise<void> {
   await ownedJob(db, jobId, ownerId);
+  const session = await db.query("select id from generation_browser_session where job_id=$1 and owner_admin_id=$2", [jobId, ownerId]);
+  for (const row of session.rows) {
+    const browser = liveBrowserSessions.get(String(row.id));
+    if (browser) await browser.close().catch(() => undefined);
+    liveBrowserSessions.delete(String(row.id));
+  }
   await db.query("update generation_browser_session set status='CLOSED',updated_at=now() where job_id=$1 and owner_admin_id=$2 and status<>'CLOSED'", [jobId, ownerId]);
   await db.query("delete from generation_browser_preview_frame where job_id=$1", [jobId]);
   const target = path.resolve(config.GENERATION_ROOT, "generation-browser", jobId);
