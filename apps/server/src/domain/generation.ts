@@ -767,11 +767,6 @@ export async function submitGenerationInputs(db: Db, config: GenerationRouteConf
   return getGenerationJob(db, jobId);
 }
 
-export async function confirmGenerationPlan(db: Db, jobId: string, ownerAdminId: string, correlationId: string): Promise<GenerationJobView> {
-  void db; void jobId; void ownerAdminId; void correlationId;
-  throw Object.assign(new Error("generation_plan_approval_retired"), { statusCode: 410 });
-}
-
 export async function cancelGenerationJob(db: Db, jobId: string, ownerAdminId: string, correlationId: string): Promise<void> {
   const result = await tx(db, async (client) => {
     const cancelled = await client.query("update generation_job set state='CANCELLED',cancelled_at=now(),updated_at=now(),lease_owner=null,lease_until=null where id=$1 and owner_admin_id=$2 and state not in ('COMPLETED','CANCELLED') returning id", [jobId, ownerAdminId]);
