@@ -162,8 +162,8 @@ static symbol check is not upgraded to runtime PASS.
 | 153 | Async run survives client disconnect | NOT VERIFIED | Browser Runtime worker E2E pending. |
 | 154 | OWNER UI shows runtime status/history | NOT VERIFIED | Browser Runtime UI E2E pending. |
 | 155 | OWNER run/preflight/cancel/reauth/disable/repair | NOT VERIFIED | Browser Runtime UI E2E pending. |
-| 156 | Ubuntu Playwright/Chromium smoke | NOT VERIFIED | Real browser passed locally; Ubuntu release runner evidence pending. |
-| 157 | Production Chromium has no standard `--no-sandbox` | NOT VERIFIED | Production process inspection pending. |
-| 158 | Browser upgrade requires regression gate | NOT VERIFIED | CI/release workflow evidence pending. |
+| 156 | Ubuntu Playwright/Chromium smoke | PASS | Workflow 32625639246 CI installed Playwright-managed Chromium and passed the generation browser and browser-automation checks on Ubuntu. |
+| 157 | Production Chromium has no standard `--no-sandbox` | PASS | Workflow 32625639246 deploy verification plus direct SSH inspection of the active browser worker process found no `--no-sandbox`; worker runs the managed Playwright boundary. |
+| 158 | Browser upgrade requires regression gate | PASS | Workflow 32625639246 CI, signed release, and actual production deploy all passed after the Playwright/browser-runtime changes. |
 | 159 | Root repair/cancel/conformance tests | PASS | Targeted generation checks and root tests pass locally. |
 | 160 | No mandatory FAIL/NOT VERIFIED remains | NOT VERIFIED | Matrix is intentionally incomplete pending CI, authenticated E2E, and production evidence. |
