@@ -7,11 +7,12 @@ case "$source_dir" in
   /*) ;;
   *) echo "release source must be absolute" >&2; exit 2 ;;
 esac
-test -d "$source_dir/apps/server/node_modules/playwright"
-playwright_cli="$source_dir/apps/server/node_modules/.bin/playwright"
-test -x "$playwright_cli"
+playwright_package="$source_dir/apps/server/node_modules/playwright"
+test -d "$playwright_package"
+playwright_cli="$playwright_package/cli.js"
+test -f "$playwright_cli"
 echo "playwright-browser:module=present" >&2
-echo "playwright-browser:cli=executable" >&2
+echo "playwright-browser:cli=file" >&2
 
 browser_root="${PLAYWRIGHT_BROWSERS_PATH:-/opt/kcml/playwright-browsers}"
 case "$browser_root" in
@@ -23,7 +24,7 @@ install -d -m 0755 "$browser_root"
 test -w "$browser_root"
 echo "playwright-browser:root=ready" >&2
 echo "playwright-browser:install=chromium" >&2
-PLAYWRIGHT_BROWSERS_PATH="$browser_root" "$playwright_cli" install --with-deps chromium >&2
+PLAYWRIGHT_BROWSERS_PATH="$browser_root" node "$playwright_cli" install --with-deps chromium >&2
 echo "playwright-browser:install=complete" >&2
 
 chromium_binary="$(

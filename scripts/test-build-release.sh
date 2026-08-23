@@ -102,3 +102,5 @@ require_text 'certbot-lineage.sh' "$tmpdir/release/deploy/scripts/renew-canonica
 require_text 'dist/cli/ssot-production-acceptance.js' "$tmpdir/release/deploy/scripts/install-release.sh"
 require_text 'install-playwright-browser.sh' "$tmpdir/release/deploy/scripts/install-release.sh"
 require_text 'install --with-deps chromium' "$tmpdir/release/deploy/scripts/install-playwright-browser.sh"
+require_text 'playwright_package="$source_dir/apps/server/node_modules/playwright"' "$tmpdir/release/deploy/scripts/install-playwright-browser.sh"
+require_text 'node "$playwright_cli" install --with-deps chromium' "$tmpdir/release/deploy/scripts/install-playwright-browser.sh"
