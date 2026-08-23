@@ -537,9 +537,10 @@ wait_for_sql_equals "readiness_gate_evidence_idempotency_migration_row" "1" "sel
 wait_for_sql_equals "browser_automation_execution_runtime_migration_row" "1" "select count(*) from schema_migration where version='023_browser_automation_execution_runtime.sql'"
 wait_for_sql_equals "browser_automation_worker_heartbeat_migration_row" "1" "select count(*) from schema_migration where version='024_browser_automation_worker_heartbeat.sql'"
 wait_for_sql_equals "single_owner_human_role_migration_row" "1" "select count(*) from schema_migration where version='025_single_owner_human_role.sql'"
+wait_for_sql_equals "generation_browser_session_contract_migration_row" "1" "select count(*) from schema_migration where version='026_generation_browser_session_contract.sql'"
 wait_for_sql_equals "single_owner_role_violations" "0" "select count(*) from admin_account where role <> 'OWNER'"
 wait_for_sql_equals "single_owner_role_constraint" "1" "select count(*) from pg_constraint where conname='admin_account_role_check' and pg_get_constraintdef(oid) like '%role = ''OWNER''%'"
-wait_for_sql_equals "schema_migration_count" "25" "select count(*) from schema_migration"
+wait_for_sql_equals "schema_migration_count" "26" "select count(*) from schema_migration"
 
 step verify-stable-runtime-health
 require_stable_runtime_health "$admin_host"

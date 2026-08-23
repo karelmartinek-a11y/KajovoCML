@@ -85,6 +85,7 @@ require_file "$tmpdir/release/deploy/systemd/kcml-generated-component@.service"
 require_executable "$tmpdir/release/deploy/scripts/kcml-generated-runtime-helper"
 require_file "$tmpdir/release/deploy/scripts/certbot-lineage.sh"
 require_file "$tmpdir/release/deploy/scripts/install-playwright-browser.sh"
+require_file "$tmpdir/release/deploy/scripts/playwright-lock-recovery.mjs"
 
 forbid_file "$tmpdir/release/deploy/systemd/kcml-onboarding-worker.service"
 forbid_file "$tmpdir/release/deploy/scripts/kcml-handler-preload-wrapper.sh"
@@ -104,3 +105,4 @@ require_text 'install-playwright-browser.sh' "$tmpdir/release/deploy/scripts/ins
 require_text 'install --with-deps chromium' "$tmpdir/release/deploy/scripts/install-playwright-browser.sh"
 require_text 'playwright_package="$source_dir/apps/server/node_modules/playwright"' "$tmpdir/release/deploy/scripts/install-playwright-browser.sh"
 require_text 'node "$playwright_cli" install --with-deps chromium' "$tmpdir/release/deploy/scripts/install-playwright-browser.sh"
+require_text 'playwright-lock-recovery.mjs' "$tmpdir/release/deploy/scripts/install-playwright-browser.sh"

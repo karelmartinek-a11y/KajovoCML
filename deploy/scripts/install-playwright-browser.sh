@@ -8,9 +8,11 @@ case "$source_dir" in
   *) echo "release source must be absolute" >&2; exit 2 ;;
 esac
 playwright_package="$source_dir/apps/server/node_modules/playwright"
+lock_recovery="$source_dir/deploy/scripts/playwright-lock-recovery.mjs"
 test -d "$playwright_package"
 playwright_cli="$playwright_package/cli.js"
 test -f "$playwright_cli"
+test -f "$lock_recovery"
 echo "playwright-browser:module=present" >&2
 echo "playwright-browser:cli=file" >&2
 
@@ -22,6 +24,7 @@ esac
 
 install -d -m 0755 "$browser_root"
 test -w "$browser_root"
+command -v flock >/dev/null
 echo "playwright-browser:root=ready" >&2
 chromium_binary="$(
   cd "$source_dir"
@@ -33,6 +36,10 @@ if test -x "$chromium_binary"; then
   echo "playwright-browser:reuse=existing" >&2
 else
   echo "playwright-browser:install=chromium" >&2
+  install_lock="$browser_root/.kcml-playwright-install.lock"
+  exec 9>"$install_lock"
+  flock -n 9 || { echo "playwright-browser:lock=kcml-installer-active" >&2; exit 1; }
+  node "$lock_recovery" "$browser_root"
   PLAYWRIGHT_BROWSERS_PATH="$browser_root" node "$playwright_cli" install --with-deps chromium >&2
   echo "playwright-browser:install=complete" >&2
 fi
