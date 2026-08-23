@@ -121,6 +121,7 @@ jobs:
       - name: Generation and browser automation quality gates
         run: |
           pnpm generation:contract:check
+          pnpm generation:execution-authority:check
           pnpm generation:browser:check
           pnpm generation:browser-automation:check
           pnpm generation:automation:check
