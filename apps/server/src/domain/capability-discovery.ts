@@ -22,7 +22,8 @@ function contractDigest(value: unknown): string { return `sha256:${createHash("s
 /** Read-only discovery over the canonical component/revision/tool contracts; no parallel registry. */
 export async function lookupCmlCapabilities(db: Queryable, input: { requirement: string; keywords?: string[]; componentId?: string }): Promise<CapabilityCandidate[]> {
   const terms = [input.requirement, ...(input.keywords ?? [])].map((item) => item.trim()).filter(Boolean).slice(0, 20);
-  const pattern = `%${terms.join(" ").replace(/[%_]/g, "\\$&")}%`;
+  const escapedTerms = terms.map((term) => term.replace(/[\\%_]/g, (character) => `\\${character}`));
+  const pattern = `%${escapedTerms.join(" ")}%`;
   const result = await db.query(`
     select c.id,c.code,c.display_name,c.description,c.enabled,c.lifecycle_state,c.activation_state,c.operational_state,
            principal.status principal_status,r.id revision_id,r.revision,r.manifest_digest,r.capabilities,r.validation_state,
