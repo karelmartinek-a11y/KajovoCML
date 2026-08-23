@@ -5,6 +5,7 @@ import type { AppServerConfig } from "../config.js";
 import type { Db } from "../db.js";
 import {
   createBrowserAutomationDefinition,
+  createBrowserAutomationAuthBinding,
   createBrowserAutomationRevision,
   createBrowserAutomationRun,
   getBrowserAutomation,
@@ -17,7 +18,9 @@ import {
   reauthenticateBrowserAutomation,
   repairBrowserAutomation,
   requestBrowserAutomationCancel,
-  setBrowserAutomationEnabled
+  setBrowserAutomationEnabled,
+  verifyBrowserAutomationRevision,
+  activateBrowserAutomationRevision
 } from "../domain/browser-automation.js";
 import { ownerSession, routeError } from "./generation-routes.js";
 
@@ -25,6 +28,8 @@ const id = z.object({ id: z.string().uuid() }).strict();
 const runId = z.object({ runId: z.string().uuid() }).strict();
 const definitionSchema = z.object({ code: z.string().trim().min(3).max(80), displayName: z.string().trim().min(1).max(160), purpose: z.string().trim().max(2_000).optional(), ownerComponentId: z.string().uuid().nullable().optional() }).strict();
 const revisionSchema = z.object({ manifest: z.record(z.unknown()) }).strict();
+const authBindingSchema = z.object({ stableSecretName: z.string().trim().min(3).max(128), mode: z.enum(["SECRET_MANAGER", "HYBRID", "OWNER_CHALLENGE"]).default("SECRET_MANAGER") }).strict();
+const verificationSchema = z.object({ input: z.record(z.unknown()).default({}) }).strict();
 const runSchema = z.object({ input: z.record(z.unknown()).default({}), idempotencyKey: z.string().trim().min(1).max(200), callerPrincipalId: z.string().uuid().nullable().optional() }).strict();
 
 export function registerBrowserAutomationRoutes(app: FastifyInstance, db: Db, config: AppServerConfig): void {
@@ -58,9 +63,30 @@ export function registerBrowserAutomationRoutes(app: FastifyInstance, db: Db, co
     catch (error) { return routeError(reply, error, correlationId); }
   });
 
+  app.post("/api/browser-automations/:id/auth-bindings", async (request, reply) => {
+    const correlationId = randomUUID(); const session = await ownerSession(db, config, request, reply, correlationId, true); if (!session) return;
+    try { const { id: definitionId } = id.parse(request.params); const body = authBindingSchema.parse(request.body); await createBrowserAutomationAuthBinding(db, definitionId, body.stableSecretName, body.mode, session.accountId, correlationId); return reply.code(201).send({ ok: true, correlationId }); }
+    catch (error) { return routeError(reply, error, correlationId); }
+  });
+
   app.post("/api/browser-automations/:id/preflight", async (request, reply) => {
     const correlationId = randomUUID(); const session = await ownerSession(db, config, request, reply, correlationId, true); if (!session) return;
     try { const { id: definitionId } = id.parse(request.params); return { preflight: await preflightBrowserAutomation(db, definitionId, session.accountId, correlationId), correlationId }; }
+    catch (error) { return routeError(reply, error, correlationId); }
+  });
+
+  app.post("/api/browser-automations/:id/revisions/:revisionId/verify", async (request, reply) => {
+    const correlationId = randomUUID(); const session = await ownerSession(db, config, request, reply, correlationId, true); if (!session) return;
+    try {
+      const params = z.object({ id: z.string().uuid(), revisionId: z.string().uuid() }).parse(request.params);
+      const body = verificationSchema.parse(request.body);
+      return { verification: await verifyBrowserAutomationRevision(db, config, params.id, params.revisionId, body.input, session.accountId, correlationId), correlationId };
+    } catch (error) { return routeError(reply, error, correlationId); }
+  });
+
+  app.post("/api/browser-automations/:id/revisions/:revisionId/activate", async (request, reply) => {
+    const correlationId = randomUUID(); const session = await ownerSession(db, config, request, reply, correlationId, true); if (!session) return;
+    try { const params = z.object({ id: z.string().uuid(), revisionId: z.string().uuid() }).parse(request.params); await activateBrowserAutomationRevision(db, params.id, params.revisionId, session.accountId, correlationId); return { ok: true, correlationId }; }
     catch (error) { return routeError(reply, error, correlationId); }
   });
 

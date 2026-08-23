@@ -703,6 +703,34 @@ input[type="checkbox"] { width: 17px; height: 17px; min-height: 17px; padding: 0
 .job-cards strong, .job-cards small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .job-cards small { color: #7b8794; font-size: 9.5px; }
 
+.automation-layout { display: grid; grid-template-columns: minmax(240px, 0.72fr) minmax(0, 1.65fr); gap: 16px; align-items: start; }
+.automation-list-panel, .automation-detail-panel { min-width: 0; }
+.automation-list { display: grid; gap: 8px; padding: 12px; }
+.automation-list > button { min-width: 0; min-height: 62px; display: grid; grid-template-columns: 8px minmax(0, 1fr); gap: 10px; align-items: center; justify-content: start; background: #fff; color: #344150; border-color: var(--line); text-align: left; }
+.automation-list > button:hover, .automation-list > button.selected { background: #f4fbfa; border-color: #91cac7; }
+.automation-list > button > span:last-child { min-width: 0; display: grid; gap: 4px; }
+.automation-list strong, .automation-list small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.automation-list small { color: #7b8794; font-size: 9.5px; }
+.automation-detail-body { display: grid; gap: 14px; padding: 14px; min-width: 0; }
+.automation-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; }
+.automation-summary > div, .automation-card { min-width: 0; border: 1px solid var(--line); border-radius: 6px; background: #fbfcfd; padding: 12px; }
+.automation-summary > div { display: grid; gap: 6px; }
+.automation-summary small { color: var(--muted); font-size: 9.5px; font-weight: 700; text-transform: uppercase; }
+.automation-summary strong { overflow-wrap: anywhere; font-size: 13px; }
+.automation-card { display: grid; gap: 10px; }
+.automation-card h3 { margin: 0; font-size: 12px; }
+.automation-card p { margin: 0; color: var(--muted); font-size: 10.5px; line-height: 1.45; overflow-wrap: anywhere; }
+.automation-card code { overflow-wrap: anywhere; word-break: break-word; }
+.automation-card pre { max-height: 260px; margin: 0; overflow: auto; white-space: pre-wrap; word-break: break-word; font-size: 10px; }
+.automation-card .panel-head { min-height: 0; padding: 0 0 8px; border-bottom: 1px solid var(--line); }
+.automation-binding-list { display: grid; gap: 7px; margin: 0; padding: 0; list-style: none; }
+.automation-binding-list li { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 8px; border: 1px solid var(--line); border-radius: 5px; background: #fff; }
+.automation-binding-list li code { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.automation-binding-form { display: flex; align-items: end; gap: 10px; margin-top: 4px; }
+.automation-binding-form label { flex: 1; min-width: 0; }
+.automation-binding-form input { width: 100%; }
+@media (max-width: 700px) { .automation-binding-form { align-items: stretch; flex-direction: column; } .automation-binding-form button { width: 100%; } }
+
 .component-filter-bar { align-items: end; flex-wrap: wrap; gap: 10px; }
 .component-filter-bar h2 { margin-right: auto; align-self: center; }
 .component-filter-bar > label:not(.search-box) { display: grid; gap: 4px; color: #5f6c7a; font-size: 9.5px; font-weight: 650; }

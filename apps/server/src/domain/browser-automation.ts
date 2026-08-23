@@ -1,4 +1,4 @@
-import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import type { AppServerConfig } from "../config.js";
@@ -6,6 +6,7 @@ import type { Db } from "../db.js";
 import { tx } from "../db.js";
 import { appendAudit } from "./audit.js";
 import { runBrowserAutomation, validateManifest } from "../generation/browser-automation-runtime.mjs";
+import { platformWorkerSecretPrincipal, resolveSecret } from "./secret-manager.js";
 
 type JsonRecord = Record<string, unknown>;
 type Queryable = Pick<Db, "query">;
@@ -41,7 +42,7 @@ export type BrowserAutomationRunView = {
   steps: Array<{ index: number; action: string; status: string; errorCode: string | null }>;
 };
 
-type AutomationConfig = Pick<AppServerConfig, "GENERATION_ROOT" | "CHROMIUM_BINARY">;
+type AutomationConfig = Pick<AppServerConfig, "GENERATION_ROOT" | "CHROMIUM_BINARY" | "CONFIG_VAULT_MASTER_KEY_BASE64" | "CONFIG_VAULT_MASTER_KEY_ID">;
 
 function object(value: unknown): JsonRecord {
   return value && typeof value === "object" && !Array.isArray(value) ? value as JsonRecord : {};
@@ -165,6 +166,31 @@ export async function listBrowserAutomationRevisions(db: Queryable, definitionId
   return result.rows.map((row) => ({ id: String(row.id), revision: Number(row.revision), digest: String(row.digest), status: String(row.status), verificationStatus: String(row.verification_status), sourceGenerationJobId: row.source_generation_job_id ? String(row.source_generation_job_id) : null, approvedSpecRevisionId: row.approved_spec_revision_id ? String(row.approved_spec_revision_id) : null, createdAt: new Date(row.created_at).toISOString(), activatedAt: iso(row.activated_at) }));
 }
 
+export async function createBrowserAutomationAuthBinding(
+  db: Db,
+  definitionId: string,
+  stableSecretName: string,
+  mode: "SECRET_MANAGER" | "HYBRID" | "OWNER_CHALLENGE",
+  actorId: string,
+  correlationId: string
+): Promise<void> {
+  const name = stableSecretName.trim().toUpperCase();
+  if (!/^[A-Z][A-Z0-9_]{2,127}$/.test(name)) fail("automation_secret_name_invalid");
+  await tx(db, async (client) => {
+    const definition = await client.query("select id from browser_automation_definition where id=$1 for update", [definitionId]);
+    if (!definition.rowCount) fail("not_found", 404);
+    const secret = await client.query("select id,status,active_version_id,deleted_at from secret_record where stable_name=$1", [name]);
+    if (!secret.rowCount || String(secret.rows[0].status) !== "ACTIVE" || !secret.rows[0].active_version_id || secret.rows[0].deleted_at) fail("automation_secret_unavailable", 409);
+    await client.query(
+      `insert into browser_automation_auth_binding(definition_id,stable_secret_name,mode,enabled)
+       values ($1,$2,$3,true)
+       on conflict (definition_id,stable_secret_name) do update set mode=excluded.mode,enabled=true`,
+      [definitionId, name, mode]
+    );
+    await appendAudit(client, { eventType: "browser_automation.auth_binding.created", actorType: "admin", actorId, objectType: "browser_automation_definition", objectId: definitionId, after: { stableSecretName: name, mode }, correlationId });
+  });
+}
+
 export async function createBrowserAutomationDefinition(
   db: Db,
   input: { code: string; displayName: string; purpose?: string; ownerComponentId?: string | null },
@@ -227,6 +253,59 @@ export async function preflightBrowserAutomation(db: Db, definitionId: string, a
     await db.query("update browser_automation_revision set verification_status='FAIL' where id=$1", [row.revision_id]);
     await db.query("update browser_automation_definition set status='REPAIR_REQUIRED',last_failure_at=now(),last_failure_code=$2,updated_at=now() where id=$1", [definitionId, code]);
     fail(code, 400);
+  }
+}
+
+function assertReadOnlyManifest(manifest: BrowserAutomationManifest): void {
+  const visit = (steps: Array<JsonRecord>, pathName: string): void => {
+    for (const [index, raw] of steps.entries()) {
+      const step = object(raw);
+      if (text(step.sideEffectClass) !== "READ_ONLY") fail(`automation_runtime_verification_not_read_only:${pathName}.${index}`, 409);
+      const action = text(step.action).toUpperCase();
+      if (["FILL_SECRET", "FILL", "SELECT", "CLICK", "CHECK", "UNCHECK", "PRESS", "UPLOAD", "DOWNLOAD"].includes(action)) fail(`automation_runtime_verification_action_not_read_only:${action}`, 409);
+      if (action === "BRANCH") {
+        visit((step.then ?? step.ifTrue ?? []) as Array<JsonRecord>, `${pathName}.${index}.then`);
+        if (step.else !== undefined || step.ifFalse !== undefined) visit((step.else ?? step.ifFalse ?? []) as Array<JsonRecord>, `${pathName}.${index}.else`);
+      }
+      if (action === "REPEAT_BOUNDED") visit((step.steps ?? []) as Array<JsonRecord>, `${pathName}.${index}.steps`);
+    }
+  };
+  visit(manifest.steps, "steps");
+}
+
+export async function verifyBrowserAutomationRevision(
+  db: Db,
+  config: AutomationConfig,
+  definitionId: string,
+  revisionId: string,
+  input: JsonRecord,
+  actorId: string,
+  correlationId: string
+): Promise<Record<string, unknown>> {
+  const result = await db.query("select r.id,r.manifest,r.digest,r.status,r.verification_status from browser_automation_revision r where r.id=$1 and r.definition_id=$2", [revisionId, definitionId]);
+  if (!result.rowCount) fail("not_found", 404);
+  const row = result.rows[0]; const manifest = safeManifest(row.manifest);
+  const digest = browserAutomationDigest(manifest);
+  if (digest !== String(row.digest)) fail("automation_digest_mismatch", 409);
+  assertReadOnlyManifest(manifest);
+  const verificationRoot = path.join(config.GENERATION_ROOT, "browser-automation");
+  await mkdir(verificationRoot, { recursive: true, mode: 0o750 });
+  const workspace = await mkdtemp(path.join(verificationRoot, "verification-"));
+  try {
+    const execution = await runBrowserAutomation({ manifest, input, workspace, sessionId: `verification-${revisionId}`, chromiumBinary: config.CHROMIUM_BINARY, allowLocal: false });
+    await tx(db, async (client) => {
+      await client.query("update browser_automation_revision set verification_status='PASS',status=case when status='DRAFT' then 'PREFLIGHTED' else status end where id=$1 and digest=$2", [revisionId, digest]);
+      await client.query("update browser_automation_definition set last_preflight_at=now(),last_preflight_error=null,updated_at=now() where id=$1", [definitionId]);
+      await appendAudit(client, { eventType: "browser_automation.runtime_verification.completed", actorType: "admin", actorId, objectType: "browser_automation_revision", objectId: revisionId, after: { definitionId, digest, stepCount: execution.steps.length, verification: "RUNTIME_READ_ONLY" }, correlationId });
+    });
+    return { definitionId, revisionId, digest, valid: true, verificationStatus: "PASS", executionMode: "PLAYWRIGHT_READ_ONLY", stepCount: execution.steps.length, outputKeys: Object.keys(execution.output) };
+  } catch (error) {
+    const code = safeErrorCode(error);
+    await db.query("update browser_automation_revision set verification_status='FAIL' where id=$1", [revisionId]);
+    await db.query("update browser_automation_definition set last_preflight_at=now(),last_preflight_error=$2,updated_at=now() where id=$1", [definitionId, code]);
+    fail(code, 409);
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
   }
 }
 
@@ -391,7 +470,21 @@ export async function processNextBrowserAutomationRun(db: Db, config: Automation
     })();
   }, Math.max(1_000, Math.floor(leaseMs / 3)));
   try {
-    const result = await runBrowserAutomation({ manifest: run.manifest, input: object(run.input_json), workspace: path.join(config.GENERATION_ROOT, "browser-automation", runId), sessionId: runId, chromiumBinary: config.CHROMIUM_BINARY, allowLocal: false, signal: controller.signal });
+    const result = await runBrowserAutomation({
+      manifest: run.manifest,
+      input: object(run.input_json),
+      workspace: path.join(config.GENERATION_ROOT, "browser-automation", runId),
+      sessionId: runId,
+      chromiumBinary: config.CHROMIUM_BINARY,
+      allowLocal: false,
+      signal: controller.signal,
+      resolveSecret: async (stableName) => {
+        const binding = await db.query("select 1 from browser_automation_auth_binding where definition_id=$1 and stable_secret_name=$2 and enabled=true", [String(run.definition_id), stableName.trim().toUpperCase()]);
+        if (!binding.rowCount) fail("automation_secret_binding_required", 403);
+        const principal = await platformWorkerSecretPrincipal(db);
+        return (await resolveSecret(db, config, principal, stableName, randomUUID())).value;
+      }
+    });
     const canceled = await isCancelled(db, runId, workerId, leaseToken);
     await finalizeRun(db, config, run, workerId, leaseToken, canceled ? "CANCELLED" : "SUCCEEDED", object(result.output), canceled ? "automation_cancelled" : null, result.steps.map((step: Record<string, unknown>) => ({ index: step.index, action: step.action, status: step.status, output: step.output })));
   } catch (error) {

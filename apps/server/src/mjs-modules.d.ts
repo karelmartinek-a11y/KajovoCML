@@ -1,8 +1,8 @@
 declare module "*browser-automation-runtime.mjs" {
   export type BrowserAutomationStepResult = {
-    index: number;
+    index: number | string;
     action: string;
-    status: "SUCCEEDED" | "FAILED";
+    status: "SUCCEEDED" | "FAILED" | "UNCERTAIN";
     startedAt: string;
     completedAt: string;
     output?: unknown;
@@ -22,5 +22,6 @@ declare module "*browser-automation-runtime.mjs" {
     chromiumBinary?: string;
     allowLocal?: boolean;
     signal?: AbortSignal;
+    resolveSecret?: (stableName: string) => Promise<string>;
   }): Promise<BrowserAutomationResult>;
 }

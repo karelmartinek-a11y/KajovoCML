@@ -1,4 +1,4 @@
-export type Page = "dashboard" | "generation" | "registered" | "identities" | "components" | "external" | "monitoring" | "secrets" | "tokens" | "permissions" | "audit" | "config" | "security" | "admins";
+export type Page = "dashboard" | "generation" | "automations" | "registered" | "identities" | "components" | "external" | "monitoring" | "secrets" | "tokens" | "permissions" | "audit" | "config" | "security" | "admins";
 export type AdminRole = "OWNER" | "ADMIN" | "AUDITOR";
 export type Session = { authenticated: boolean; account: string | null; role: AdminRole | null; bootstrapRequired?: boolean };
 export type ReleaseInfo = {
@@ -395,6 +395,7 @@ export type OperationalConfigSetting = {
 export const pageNames: Record<Page, string> = {
   dashboard: "Dashboard",
   generation: "Generování",
+  automations: "Browser automatizace",
   registered: "Registrované prvky",
   identities: "Tokeny a identity",
   components: "Katalog komponent",

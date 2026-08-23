@@ -35,6 +35,7 @@ import { ComponentCatalogPage } from "./component-page.js";
 import { DashboardPage } from "./dashboard-page.js";
 import { ExternalComponentsPage } from "./external-components-page.js";
 import { GenerationPage } from "./generation-page.js";
+import { BrowserAutomationsPage } from "./browser-automations-page.js";
 import { RegisteredElementsPage } from "./registered-elements-page.js";
 import {
   CreateCredentialModal,
@@ -1247,6 +1248,7 @@ function Dashboard({ accountName, role, releaseInfo, onLogout }: { accountName: 
       <PageRouter page={page} routes={{
         dashboard: role === "OWNER" ? <DashboardPage releaseInfo={releaseInfo} onOpenStandardPage={(target) => setPage(target === "tokens" ? "identities" : target)} /> : null,
         generation: role === "OWNER" ? <GenerationPage /> : null,
+        automations: role === "OWNER" ? <BrowserAutomationsPage /> : null,
         registered: role === "OWNER" ? <RegisteredElementsPage onOpenPage={setPage} /> : null,
         identities: role !== "AUDITOR" ? <section className="identity-center-page"><CredentialsPage credentials={credentials} components={components} onOpenCreate={() => setCreateOpen(true)} onEditPermissions={openPermissions} onRename={setRenameCredential} onConfirm={(credential, action) => setConfirm({ credential, action })} onComponentTokenRevoke={async (component, token) => { await updateComponent(component, () => revokeComponentAccessTokenRequest(component, token.id), "Revokace přístupového tokenu selhala"); }} onComponentTokenRotate={async (component, token) => { const result = await rotateComponentAccessTokenRequest(component, token.id); setComponents((current) => current.map((entry) => entry.id === result.component.id ? result.component : entry)); return result.accessToken; }} onRefresh={() => { void load(); }} /></section> : null,
         components: <ComponentCatalogPage components={components} platformWorkerAccess={platformWorkerAccess} role={role} onRefresh={() => { void load(); }} onLoadDetail={loadComponentDetail} onToggle={toggleComponent}

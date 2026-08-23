@@ -56,6 +56,7 @@ export function AppLayout({
         <nav>
           {role === "OWNER" ? navigationButton("dashboard", "Dashboard", <LayoutDashboard size={18} />) : null}
           {role === "OWNER" ? navigationButton("generation", "Generování", <Sparkles size={18} />) : null}
+          {role === "OWNER" ? navigationButton("automations", "Browser automatizace", <Workflow size={18} />) : null}
           {role === "OWNER" ? navigationButton("registered", "Registrované prvky", <Activity size={18} />) : null}
           {navigationButton("components", "Katalog komponent", <Boxes size={18} />)}
           {navigationButton("external", "Externí strany", <Workflow size={18} />)}

@@ -13,6 +13,11 @@ routine Browser Automation Runtime does not call an LLM. See
 [`IMPLEMENTATION_CONTRACT.md`](IMPLEMENTATION_CONTRACT.md) for the frozen
 interfaces and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for runtime
 boundaries.
+Browser automation administration is available under **Browser automatizace**:
+the page shows immutable manifest digests, static preflight versus measured
+read-only runtime verification, Secret Manager stable-name bindings, run
+history, cancellation, repair and enable/disable controls. Routine runs use
+Playwright only and never call an LLM.
 OWNER uses **Generování** in the admin UI. A persistent generation job analyses the human request, asks only for genuinely missing and non-derivable inputs, creates a local job workspace/revision point, uses the OpenAI Responses API for focused implementation/research, stores durable credentials in the existing Secret Manager, validates the generated source, installs a versioned local release, proves CML conformance and only then activates the component. A failed or blocked run can be continued as a new linked, auditable run with a plain-text correction instruction while preserving the existing CML component identity.
 
 The discussion and implementation worker reuse the same canonical `OPENAI_API_KEY` record in Secret Manager. An existing active record with a missing platform grant is repaired by granting that record to the canonical platform worker; the dashboard does not request, create or rotate another key for that condition.

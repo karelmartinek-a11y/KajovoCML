@@ -89,10 +89,13 @@ Generation resources use `/api/generation/jobs/:id`. The discussion API is:
 
 Browser automation resources use `/api/browser-automations` and are
 OWNER/CSRF-protected. They provide definition/revision creation and listing,
-static preflight, queued run creation, history/detail, cancellation,
-reauthentication, enable/disable, repair and protected evidence download.
-`preflight` returns `STATIC_VALIDATED` after manifest/digest validation; only a
-separately measured runtime verification may produce an activation PASS.
+static preflight, read-only runtime verification, explicit revision
+activation, auth-binding metadata, queued run creation, history/detail,
+cancellation, reauthentication, enable/disable, repair and protected evidence
+download. `preflight` returns `STATIC_VALIDATED` after manifest/digest
+validation; the `revisions/:revisionId/verify` route runs the same Playwright
+interpreter and can produce `PASS` only for a manifest whose every step is
+explicitly `READ_ONLY`. No static check is promoted to runtime PASS.
 
 SSE envelopes are `{eventId, type, jobId, emittedAt, payload}`. Persistent ids
 are monotonic; heartbeat and resync notices do not reuse them. Canonical names
@@ -109,11 +112,13 @@ are `generation.state.changed`,
 All browser code is platform-owned and uses Playwright. Generated handlers have
 no Playwright, process, direct network, filesystem, shell, or arbitrary import
 authority. They call the canonical Browser Automation Runtime only through
-`context.callComponent`. Runtime manifests are declarative and currently
-limited to the implemented `NAVIGATE`, `FILL`, `SELECT`, `CLICK`, `WAIT`,
-`ASSERT_TEXT` and `EXTRACT_TEXT` actions with typed extraction. Future
-branch/repeat or upload/download behavior requires an explicit versioned
-contract extension.
+`context.callComponent`. Runtime manifests are declarative and implement
+`NAVIGATE`, `CLICK`, `FILL`, `FILL_SECRET`, `SELECT`, `CHECK`, `UNCHECK`,
+`PRESS`, `UPLOAD`, `DOWNLOAD`, `WAIT_FOR`, `ASSERT`, `EXTRACT`, `BRANCH` and
+bounded `REPEAT_BOUNDED` (plus compatibility aliases). Locators and predicates
+are semantic/explicit; arbitrary JavaScript, `page.evaluate`, dynamic imports,
+shell and direct fetch are rejected. Runtime verification is read-only and
+must use the same interpreter as production runs.
 
 Navigation is HTTPS-only, allowlist/operation-scope constrained, and blocks
 private/link-local targets. Credentials are resolved only through Secret
