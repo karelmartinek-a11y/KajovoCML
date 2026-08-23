@@ -41,6 +41,13 @@ function safeOrigin(value: string): string {
   return url.origin;
 }
 
+function boundedExpiry(value: string | null | undefined, maximumMs: number, code: string): string | null {
+  if (!value) return null;
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp) || timestamp <= Date.now() || timestamp > Date.now() + maximumMs) fail(code, 400);
+  return new Date(timestamp).toISOString();
+}
+
 function safeUrlMetadata(value: string): string {
   const url = new URL(value);
   return `${url.origin}${url.pathname}`.slice(0, 2_000);
@@ -158,9 +165,14 @@ export async function openGenerationBrowserPreview(db: Db, config: BrowserSessio
 }
 
 export async function createGenerationOperationScope(db: Db, jobId: string, ownerId: string, input: { sourceMessageId: string; purpose: string; targetAccountLabel?: string; allowedOrigins: string[]; allowedActionClasses: string[]; browserSessionId?: string | null; expiresAt?: string | null }, correlationId: string): Promise<JsonRecord> {
+  const requestedExpiry = boundedExpiry(input.expiresAt, 2 * 60 * 60 * 1_000, "browser_scope_expiry_invalid");
   const scope = await tx(db, async (client) => {
     const job = await client.query("select id from generation_job where id=$1 and owner_admin_id=$2 for update", [jobId, ownerId]);
     if (!job.rowCount) fail("not_found", 404);
+    if (input.browserSessionId) {
+      const session = await client.query("select id,status,expires_at from generation_browser_session where id=$1 and job_id=$2 and owner_admin_id=$3", [input.browserSessionId, jobId, ownerId]);
+      if (!session.rowCount || String(session.rows[0].status) !== "ACTIVE" || new Date(String(session.rows[0].expires_at)).getTime() <= Date.now()) fail("browser_session_not_active", 409);
+    }
     const message = await client.query("select id,content from generation_job_message where id=$1 and job_id=$2 and role='OWNER'", [input.sourceMessageId, jobId]);
     if (!message.rowCount) fail("browser_scope_owner_message_required", 400);
     const origins = Array.from(new Set(input.allowedOrigins.map(safeOrigin)));
@@ -174,7 +186,7 @@ export async function createGenerationOperationScope(db: Db, jobId: string, owne
     const inserted = await client.query(
       `insert into generation_external_operation_scope(id,job_id,owner_instruction_message_id,purpose,allowed_origins,allowed_operations,status,expires_at,browser_session_id,target_account_label,scope_digest)
        values ($1,$2,$3,$4,$5,$6,'ACTIVE',coalesce($7::timestamptz,now()+interval '30 minutes'),$8,$9,$10)
-       returning id,expires_at`, [randomUUID(), jobId, input.sourceMessageId, input.purpose.trim(), origins, actions, input.expiresAt ?? null, input.browserSessionId ?? null, input.targetAccountLabel?.trim() || null, scopeDigest]
+       returning id,expires_at`, [randomUUID(), jobId, input.sourceMessageId, input.purpose.trim(), origins, actions, requestedExpiry, input.browserSessionId ?? null, input.targetAccountLabel?.trim() || null, scopeDigest]
     );
     await appendDiscussionEvent(client, jobId, "browser.operation_scope.established", { scopeId: String(inserted.rows[0].id), scopeDigest, sourceMessageId: input.sourceMessageId, allowedOrigins: origins, allowedActionClasses: actions });
     await appendAudit(client, { eventType: "generation.browser.operation_scope_established", actorType: "admin", actorId: ownerId, objectType: "generation_job", objectId: jobId, after: { scopeId: String(inserted.rows[0].id), scopeDigest, sourceMessageId: input.sourceMessageId, allowedOriginCount: origins.length, actionClasses: actions }, correlationId });
@@ -186,7 +198,10 @@ export async function createGenerationOperationScope(db: Db, jobId: string, owne
 export async function createIrreversibleConfirmation(db: Db, jobId: string, ownerId: string, input: { scopeId: string; sourceMessageId: string; actionDigest: string; actionSummary: string; targetOrigin: string; browserSessionId?: string | null; expiresAt?: string | null }, correlationId: string): Promise<JsonRecord> {
   if (!/^sha256:[0-9a-f]{64}$/.test(input.actionDigest)) fail("browser_action_digest_invalid", 400);
   const origin = safeOrigin(input.targetOrigin);
+  const requestedExpiry = boundedExpiry(input.expiresAt, 60 * 60 * 1_000, "browser_confirmation_expiry_invalid");
   return tx(db, async (client) => {
+    const job = await client.query("select id from generation_job where id=$1 and owner_admin_id=$2 for update", [jobId, ownerId]);
+    if (!job.rowCount) fail("not_found", 404);
     const scope = await client.query("select id,owner_instruction_message_id,allowed_origins,allowed_operations,status,expires_at from generation_external_operation_scope where id=$1 and job_id=$2", [input.scopeId, jobId]);
     if (!scope.rowCount || String(scope.rows[0].status) !== "ACTIVE" || new Date(String(scope.rows[0].expires_at)).getTime() <= Date.now()) fail("browser_scope_not_active", 409);
     if (scope.rows[0].owner_instruction_message_id && String(scope.rows[0].owner_instruction_message_id) !== input.sourceMessageId) fail("browser_confirmation_source_message_mismatch", 409);
@@ -196,6 +211,10 @@ export async function createIrreversibleConfirmation(db: Db, jobId: string, owne
     const rawAllowedOperations: unknown = scope.rows[0].allowed_operations;
     const allowedOperations = Array.isArray(rawAllowedOperations) ? rawAllowedOperations.filter((value): value is string => typeof value === "string") : [];
     if (!allowedOperations.some((value) => value === "MUTATION_NON_IDEMPOTENT" || value === "DESTRUCTIVE")) fail("browser_confirmation_action_class_outside_scope", 409);
+    if (input.browserSessionId) {
+      const session = await client.query("select id,status,expires_at from generation_browser_session where id=$1 and job_id=$2 and owner_admin_id=$3", [input.browserSessionId, jobId, ownerId]);
+      if (!session.rowCount || String(session.rows[0].status) !== "ACTIVE" || new Date(String(session.rows[0].expires_at)).getTime() <= Date.now()) fail("browser_session_not_active", 409);
+    }
     const message = await client.query("select id from generation_job_message where id=$1 and job_id=$2 and role='OWNER'", [input.sourceMessageId, jobId]);
     if (!message.rowCount) fail("browser_confirmation_owner_message_required", 400);
     const existing = await client.query("select id,status from generation_irreversible_action_confirmation where job_id=$1 and action_digest=$2", [jobId, input.actionDigest]);
@@ -203,7 +222,7 @@ export async function createIrreversibleConfirmation(db: Db, jobId: string, owne
     const inserted = await client.query(
       `insert into generation_irreversible_action_confirmation(id,job_id,scope_id,action_digest,status,confirmed_at,browser_session_id,source_message_id,action_summary,target_origin,expires_at)
        values ($1,$2,$3,$4,'CONFIRMED',now(),$5,$6,$7,$8,coalesce($9::timestamptz,now()+interval '10 minutes')) returning id,expires_at`,
-      [randomUUID(), jobId, input.scopeId, input.actionDigest, input.browserSessionId ?? null, input.sourceMessageId, input.actionSummary.trim().slice(0, 2_000), origin, input.expiresAt ?? null]
+      [randomUUID(), jobId, input.scopeId, input.actionDigest, input.browserSessionId ?? null, input.sourceMessageId, input.actionSummary.trim().slice(0, 2_000), origin, requestedExpiry]
     );
     await appendDiscussionEvent(client, jobId, "browser.irreversible_confirmation.used", { confirmationId: String(inserted.rows[0].id), scopeId: input.scopeId, actionDigest: input.actionDigest, targetOrigin: origin });
     await appendAudit(client, { eventType: "generation.browser.irreversible_confirmation_used", actorType: "admin", actorId: ownerId, objectType: "generation_job", objectId: jobId, after: { confirmationId: String(inserted.rows[0].id), scopeId: input.scopeId, actionDigest: input.actionDigest, targetOrigin: origin }, correlationId });

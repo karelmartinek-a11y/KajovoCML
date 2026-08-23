@@ -1,4 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
+import { rm } from "node:fs/promises";
+import path from "node:path";
 import { authenticator } from "otplib";
 import { chromium, type BrowserContext, type Page } from "playwright";
 import type { AppConfig } from "../config.js";
@@ -279,13 +281,16 @@ async function cleanupAutomation(db: ReturnType<typeof createDb>, definitionId: 
   await db.query("delete from browser_automation_definition where id=$1", [definitionId]).catch(() => undefined);
 }
 
-async function cleanupDiscussion(db: ReturnType<typeof createDb>, jobId: string): Promise<void> {
+async function cleanupDiscussion(db: ReturnType<typeof createDb>, config: AppConfig, jobId: string): Promise<void> {
   await db.query(
     `delete from generation_job
       where id=$1 and state in ('CANCELLED','FAILED','BLOCKED')
         and not exists (select 1 from generation_component where job_id=$1)`,
     [jobId]
   ).catch(() => undefined);
+  const root = path.resolve(config.GENERATION_ROOT);
+  const target = path.resolve(root, "generation-browser", jobId);
+  if (target.startsWith(`${root}${path.sep}`)) await rm(target, { recursive: true, force: true }).catch(() => undefined);
 }
 
 async function resolveAcceptanceTotpSecret(db: ReturnType<typeof createDb>, config: AppConfig): Promise<string | undefined> {
@@ -649,7 +654,7 @@ async function main(): Promise<void> {
         await db.query("update secret_grant set revoked_at=coalesce(revoked_at,now()) where secret_id=$1", [id]);
         await db.query("update secret_record set status='DELETED',deleted_at=coalesce(deleted_at,now()),active_version_id=null where id=$1", [id]);
       }
-      for (const id of createdJobs) await cleanupDiscussion(db, id);
+      for (const id of createdJobs) await cleanupDiscussion(db, config, id);
       return { automationFixtures: createdAutomations.length, browserCredentialFixtures: createdBrowserCredentialIds.length, discussionFixtures: createdJobs.length, cleanup: "attempted" };
     });
 
