@@ -31,11 +31,11 @@ test "$(file_mode "$target/fullchain.pem")" = "644"
 test "$(file_mode "$target/privkey.pem")" = "600"
 
 # Regression for a valid certbot reuse: ensure-canonical-tls must explicitly
-# materialise the lineage after certbot exits, because certbot can skip its
-# deploy hook when no renewal is needed.
+# materialise the resolved lineage after certbot exits, because certbot can
+# skip its deploy hook when no renewal is needed.
 awk '
   /test "\$certbot_exit" = 0/ { seen_exit=NR }
-  /RENEWED_LINEAGE="\/etc\/letsencrypt\/live\/kcml-wildcards"/ { seen_lineage=NR }
+  /RENEWED_LINEAGE="\$certbot_lineage"/ { seen_lineage=NR }
   END { exit !(seen_exit && seen_lineage > seen_exit) }
 ' deploy/scripts/ensure-canonical-tls.sh
 

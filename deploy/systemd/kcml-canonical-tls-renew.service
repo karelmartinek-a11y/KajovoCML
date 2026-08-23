@@ -31,7 +31,11 @@ LockPersonality=true
 # opens the configured nginx error log even though it is only validating the
 # configuration. Keep ProtectSystem=strict and grant only these exact runtime
 # paths instead of weakening the service sandbox.
-ReadWritePaths=/etc/kcml/tls /run/kcml /var/lib/letsencrypt /etc/letsencrypt /var/log/letsencrypt /var/log/nginx
+# nginx -t opens every configured access/error log, including the existing
+# dagmar and hotelapp sites owned outside KCML. These exact directories are
+# writable only so validation can open its log files; no foreign config is
+# edited by this service.
+ReadWritePaths=/etc/kcml/tls /run/kcml /var/lib/letsencrypt /etc/letsencrypt /var/log/letsencrypt /var/log/nginx /var/log/dagmar /var/log/hotelapp
 TimeoutStartSec=25min
 
 [Install]

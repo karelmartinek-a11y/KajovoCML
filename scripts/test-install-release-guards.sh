@@ -15,8 +15,9 @@ renewal_service="deploy/systemd/kcml-canonical-tls-renew.service"
 renewal_failure_service="deploy/systemd/kcml-canonical-tls-renew-failure.service"
 renewal_recovered_service="deploy/systemd/kcml-canonical-tls-renew-recovered.service"
 renewal_timer="deploy/systemd/kcml-canonical-tls-renew.timer"
+lineage_helper="deploy/scripts/certbot-lineage.sh"
 
-for file in "$install_script" "$preflight_script" "$generation_unit" "$component_unit" "$helper" "$tls_script" "$acme_auth_hook" "$acme_cleanup_hook" "$acme_deploy_hook" "$renewal_script" "$renewal_service" "$renewal_failure_service" "$renewal_recovered_service" "$renewal_timer"; do
+for file in "$install_script" "$preflight_script" "$generation_unit" "$component_unit" "$helper" "$tls_script" "$acme_auth_hook" "$acme_cleanup_hook" "$acme_deploy_hook" "$renewal_script" "$renewal_service" "$renewal_failure_service" "$renewal_recovered_service" "$renewal_timer" "$lineage_helper"; do
   test -f "$file"
 done
 
@@ -60,7 +61,7 @@ grep -Fq 'nginx -t' "$renewal_script"
 grep -Fq 'curl --fail' "$renewal_script"
 grep -Fq 'OnFailure=kcml-canonical-tls-renew-failure.service' "$renewal_service"
 grep -Fq 'kcml-canonical-tls-renew-recovered.service' "$renewal_service"
-grep -Fq 'ReadWritePaths=/etc/kcml/tls /run/kcml /var/lib/letsencrypt /etc/letsencrypt /var/log/letsencrypt /var/log/nginx' "$renewal_service"
+grep -Fq 'ReadWritePaths=/etc/kcml/tls /run/kcml /var/lib/letsencrypt /etc/letsencrypt /var/log/letsencrypt /var/log/nginx /var/log/dagmar /var/log/hotelapp' "$renewal_service"
 grep -Fq 'report-canonical-tls-renewal.js failed' "$renewal_failure_service"
 grep -Fq 'report-canonical-tls-renewal.js recovered' "$renewal_recovered_service"
 grep -Fq 'kcml-canonical-tls-renew-failure.service' "$install_script"
@@ -81,7 +82,9 @@ grep -Fq 'KCML_PROCESS_ROLE=migrate' "$tls_script"
 grep -Fq 'acme-auth-hook.sh' "$tls_script"
 grep -Fq 'acme-cleanup-hook.sh' "$tls_script"
 grep -Fq 'acme-deploy-hook.sh' "$tls_script"
-grep -Fq 'RENEWED_LINEAGE="/etc/letsencrypt/live/kcml-wildcards"' "$tls_script"
+grep -Fq 'RENEWED_LINEAGE="$certbot_lineage"' "$tls_script"
+grep -Fq 'certbot-lineage.sh' "$tls_script"
+grep -Fq 'resolve_certbot_lineage_name' "$renewal_script"
 if grep -E -n 'WAITING_DNS|kcml-dns-challenge\.json|manual-cleanup-hook /bin/true|--force-renewal' "$tls_script" "$acme_auth_hook" "$acme_cleanup_hook" "$acme_deploy_hook" >/dev/null; then
   echo "legacy manual DNS challenge flow remains in canonical TLS automation" >&2
   exit 1

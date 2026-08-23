@@ -82,6 +82,7 @@ require_file "$tmpdir/release/deploy/systemd/kcml-generation-worker.service"
 require_file "$tmpdir/release/deploy/systemd/kcml-browser-automation-worker.service"
 require_file "$tmpdir/release/deploy/systemd/kcml-generated-component@.service"
 require_executable "$tmpdir/release/deploy/scripts/kcml-generated-runtime-helper"
+require_file "$tmpdir/release/deploy/scripts/certbot-lineage.sh"
 
 forbid_file "$tmpdir/release/deploy/systemd/kcml-onboarding-worker.service"
 forbid_file "$tmpdir/release/deploy/scripts/kcml-handler-preload-wrapper.sh"
@@ -95,3 +96,4 @@ require_text '(.auth | sort) == ["access_token_bearer"]' "$tmpdir/release/deploy
 require_text 'kcml-generation-worker.service' "$tmpdir/release/deploy/scripts/install-release.sh"
 require_text 'kcml-generated-component@.service' "$tmpdir/release/deploy/scripts/install-release.sh"
 require_text 'kcml-generated-runtime-helper' "$tmpdir/release/deploy/scripts/install-release.sh"
+require_text 'certbot-lineage.sh' "$tmpdir/release/deploy/scripts/renew-canonical-tls.sh"

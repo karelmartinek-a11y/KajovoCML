@@ -8,6 +8,9 @@ certificate_path="${3:?certificate path required}"
 private_key_path="${4:?private key path required}"
 source_dir="${5:?verified release source required}"
 config_vault_master_key_file="${CONFIG_VAULT_MASTER_KEY_BASE64_FILE:-/etc/kcml/credentials/config_vault_master_key}"
+source "$source_dir/deploy/scripts/certbot-lineage.sh"
+certbot_cert_name="$(KCML_CERTBOT_BASE_DOMAIN="$base_domain" resolve_certbot_lineage_name "$certificate_path")"
+certbot_lineage="/etc/letsencrypt/live/$certbot_cert_name"
 runtime_dir="/run/kcml"
 pid_file="$runtime_dir/canonical-certbot.pid"
 certbot_pid=""
@@ -71,13 +74,13 @@ terminate_stale_certbot() {
     if [[ "$pid" =~ ^[0-9]+$ ]]; then
       command="$(ps -p "$pid" -o args= 2>/dev/null || true)"
       case "$command" in
-        *certbot*certonly*"--cert-name kcml-wildcards"*) terminate_pid "$pid" ;;
+        *certbot*certonly*"--cert-name $certbot_cert_name"*) terminate_pid "$pid" ;;
       esac
     fi
   fi
   while read -r pid command; do
     case "$command" in
-      *certbot*certonly*"--cert-name kcml-wildcards"*) terminate_pid "$pid" ;;
+      *certbot*certonly*"--cert-name $certbot_cert_name"*) terminate_pid "$pid" ;;
     esac
   done < <(ps -eo pid=,args=)
   rm -f "$pid_file"
@@ -115,7 +118,7 @@ env \
   --manual-auth-hook "$auth_hook" \
   --manual-cleanup-hook "$cleanup_hook" \
   --deploy-hook "$deploy_hook" \
-  --cert-name kcml-wildcards \
+  --cert-name "$certbot_cert_name" \
   -d "$base_domain" \
   -d "*.${base_domain}" \
   -d "*.${component_suffix}" &
@@ -134,7 +137,7 @@ test "$certbot_exit" = 0
 # is already valid and it therefore reuses it. The KCML runtime path can still
 # be absent (for example after migrating from a pre-canonical install), so
 # atomically materialise the canonical pair on that successful reuse path.
-RENEWED_LINEAGE="/etc/letsencrypt/live/kcml-wildcards" \
+RENEWED_LINEAGE="$certbot_lineage" \
 KCML_TLS_CERT_PATH="$certificate_path" \
 KCML_TLS_KEY_PATH="$private_key_path" \
   "$deploy_hook"

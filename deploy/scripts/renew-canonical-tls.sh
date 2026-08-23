@@ -7,6 +7,7 @@ umask 077
 : "${ADMIN_HOST:?ADMIN_HOST is required}"
 certificate_path="${WILDCARD_TLS_CERT_PATH:-/etc/kcml/tls/fullchain.pem}"
 private_key_path="${WILDCARD_TLS_KEY_PATH:-${certificate_path%/*}/privkey.pem}"
+source "$KCML_RELEASE_SOURCE/deploy/scripts/certbot-lineage.sh"
 hook_root="/usr/local/libexec/kcml"
 auth_hook="$hook_root/acme-auth-hook.sh"
 cleanup_hook="$hook_root/acme-cleanup-hook.sh"
@@ -21,6 +22,9 @@ cleanup() { rm -rf "$renewal_backup"; }
 trap cleanup EXIT
 
 test -x "$auth_hook" -a -x "$cleanup_hook" -a -x "$deploy_hook"
+certbot_cert_name="$(KCML_CERTBOT_BASE_DOMAIN="$PUBLIC_BASE_DOMAIN" resolve_certbot_lineage_name "$certificate_path")"
+certbot_lineage="/etc/letsencrypt/live/$certbot_cert_name"
+test -s "$certbot_lineage/fullchain.pem" -a -s "$certbot_lineage/privkey.pem"
 if [ -s "$certificate_path" ]; then cp --preserve=mode,timestamps "$certificate_path" "$cert_backup"; had_certificate=true; fi
 if [ -s "$private_key_path" ]; then cp --preserve=mode,timestamps "$private_key_path" "$key_backup"; had_private_key=true; fi
 
@@ -53,7 +57,7 @@ for attempt in 1 2 3; do
     KCML_TLS_CERT_PATH="$certificate_path" \
     KCML_TLS_KEY_PATH="$private_key_path" \
     certbot renew \
-      --cert-name kcml-wildcards \
+      --cert-name "$certbot_cert_name" \
       --non-interactive \
       --manual \
       --preferred-challenges dns \
@@ -74,6 +78,13 @@ if ! certificate_contract; then
   restore_previous
   exit 1
 fi
+# certbot skips --deploy-hook when this lineage is not due for renewal. The
+# existing verified lineage must still be materialised into KCML's canonical
+# runtime pair before nginx is reloaded.
+RENEWED_LINEAGE="$certbot_lineage" \
+KCML_TLS_CERT_PATH="$certificate_path" \
+KCML_TLS_KEY_PATH="$private_key_path" \
+  "$deploy_hook"
 if ! nginx -t >/dev/null || ! systemctl reload nginx; then
   restore_previous
   exit 1
