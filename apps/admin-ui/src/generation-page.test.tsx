@@ -20,7 +20,8 @@ Object.defineProperty(globalThis, "EventSource", { configurable: true, value: Ev
 vi.mock("./ui-helpers.js", () => ({
   api: vi.fn(async (url: string) => {
     if (url === "/api/generation/setup") return setupResponse;
-    if (url === "/api/generation/jobs") return { jobs: [{ id: "job-1", originalPrompt: "Vytvoř capability", state: "DISCUSSING", events: [], components: [], inputs: [], createdAt: "now", updatedAt: "now", completedAt: null, eventCursor: 7, jobKind: "CREATE", parentJobId: null, runSequence: 1, operatorPrompt: null, plan: null, resultSummary: null, blockerSummary: null, remediationAttempts: 0 }] };
+    if (url === "/api/generation/jobs") return { jobs: [{ id: "job-1", originalPrompt: "Vytvoř capability", state: "DISCUSSING", events: [], components: [], inputs: [], createdAt: "now", updatedAt: "now", completedAt: null, eventCursor: 7, jobKind: "CREATE", authorityKind: null, authoritySourceJobId: null, authoritySourceSpecRevisionId: null, authoritySpecDigest: null, parentJobId: null, runSequence: 1, operatorPrompt: null, plan: null, resultSummary: null, blockerSummary: null, remediationAttempts: 0 }] };
+    if (url === "/api/generation/jobs/job-1") return { job: { id: "job-1", originalPrompt: "Vytvoř capability", state: "DISCUSSING", events: [], components: [], inputs: [], createdAt: "now", updatedAt: "now", completedAt: null, eventCursor: 7, jobKind: "CREATE", authorityKind: null, authoritySourceJobId: null, authoritySourceSpecRevisionId: null, authoritySpecDigest: null, parentJobId: null, runSequence: 1, operatorPrompt: null, plan: null, resultSummary: null, blockerSummary: null, remediationAttempts: 0 } };
     if (url === "/api/generation/jobs/job-1/messages") return { messages: [] };
     if (url === "/api/generation/jobs/job-1/spec") return { spec: null };
     throw new Error(`unexpected:${url}`);
@@ -64,6 +65,12 @@ describe("OWNER generation UI", () => {
     const completed = reduceDiscussionEvent(second.messages, { eventId: 3, type: "discussion.message.completed", jobId: "job-1", emittedAt: "now", payload: { messageId: "assistant-1", content: "Normální text" } });
     expect(completed.messages[0]).toMatchObject({ content: "Normální text", status: "COMPLETED" });
     expect(completed.messages[0]?.content).not.toContain("assistantMessage");
+  });
+
+  it("does not lose a terminal event when reconnect replay starts at completion", () => {
+    const completed = reduceDiscussionEvent([], { eventId: 8, type: "discussion.message.completed", jobId: "job-1", emittedAt: "now", payload: { messageId: "assistant-2", content: "Obnovená odpověď" } });
+    expect(completed.messages).toHaveLength(1);
+    expect(completed.messages[0]).toMatchObject({ id: "assistant-2", content: "Obnovená odpověď", status: "COMPLETED" });
   });
 
   it("repairs an existing credential grant without asking the OWNER for another API key", async () => {

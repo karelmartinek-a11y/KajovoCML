@@ -510,8 +510,9 @@ wait_for_sql_equals "wedos_dns_operation_migration_row" "1" "select count(*) fro
 wait_for_sql_equals "wedos_dns_author_comment_compatibility_migration_row" "1" "select count(*) from schema_migration where version='019_wedos_dns_author_comment_compatibility.sql'"
 wait_for_sql_equals "wedos_dns_ascii_author_comment_migration_row" "1" "select count(*) from schema_migration where version='020_wedos_dns_ascii_author_comment.sql'"
 wait_for_sql_equals "retire_legacy_generation_states_migration_row" "1" "select count(*) from schema_migration where version='021_retire_legacy_generation_states.sql'"
+wait_for_sql_equals "generation_execution_authority_migration_row" "1" "select count(*) from schema_migration where version='022_generation_execution_authority.sql'"
 wait_for_sql_equals "readiness_gate_evidence_idempotency_migration_row" "1" "select count(*) from schema_migration where version='012_readiness_gate_evidence_idempotency.sql'"
-wait_for_sql_equals "schema_migration_count" "21" "select count(*) from schema_migration"
+wait_for_sql_equals "schema_migration_count" "22" "select count(*) from schema_migration"
 
 step verify-stable-runtime-health
 require_stable_runtime_health "$admin_host"

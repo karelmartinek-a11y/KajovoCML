@@ -27,6 +27,10 @@ type GenerationElement = {
 type GenerationJob = {
   id: string;
   jobKind: "CREATE" | "REPAIR" | "RETRY";
+  authorityKind: "OWNER_APPROVED" | "INHERITED_TECHNICAL" | null;
+  authoritySourceJobId: string | null;
+  authoritySourceSpecRevisionId: string | null;
+  authoritySpecDigest: string | null;
   parentJobId: string | null;
   runSequence: number;
   operatorPrompt: string | null;
@@ -51,7 +55,7 @@ type GenerationJob = {
   eventCursor: number;
 };
 type DiscussionMessage = { id: string; sequence: number; role: string; status: string; content: string; createdAt: string };
-type SpecRevision = { id: string; revision: number; digest: string; spec: { objective: string; resultSummary: string; behavioralRequirements: string[]; openQuestions: string[] }; renderedMarkdown?: string; createdAt: string };
+type SpecRevision = { id: string; revision: number; digest: string; spec: { objective: string; resultSummary: string; behavioralRequirements: string[]; openQuestions: string[]; capabilityDecisions?: Array<{ requirementDigest: string; decision: string; reuse: Array<{ componentId: string; revisionId: string; toolContractId: string; contractDigest: string }>; reusableBehavior: string[]; missingDelta: string[]; permissionDelta: string[] }> }; renderedMarkdown?: string; createdAt: string };
 type DiscussionSseEnvelope = { eventId: number | null; type: string; jobId: string; emittedAt: string; payload: Record<string, unknown> };
 
 const TERMINAL = new Set(["COMPLETED", "FAILED", "BLOCKED", "CANCELLED"]);
@@ -75,10 +79,10 @@ export function reduceDiscussionEvent(messages: DiscussionMessage[], event: Disc
     const delta = typeof payload.delta === "string" ? payload.delta : "";
     const replacement = { ...current, status: "STREAMING", content: `${current.content}${delta}` };
     if (index >= 0) next[index] = replacement; else next.push(replacement);
-  } else if (["discussion.message.completed", "discussion.message.interrupted", "discussion.message.failed"].includes(event.type) && messageId && index >= 0) {
+  } else if (["discussion.message.completed", "discussion.message.interrupted", "discussion.message.failed"].includes(event.type) && messageId) {
     const status = event.type.endsWith("completed") ? "COMPLETED" : event.type.endsWith("interrupted") ? "INTERRUPTED" : "FAILED";
-    const current = next[index];
-    if (current) next[index] = { ...current, status, content: typeof payload.content === "string" ? payload.content : current.content };
+    const current = (index >= 0 ? next[index] : undefined) ?? { id: messageId, sequence: Number.MAX_SAFE_INTEGER, role: "ASSISTANT", status: "STREAMING", content: "", createdAt: event.emittedAt };
+    next[index >= 0 ? index : next.length] = { ...current, status, content: typeof payload.content === "string" ? payload.content : current.content };
   }
   return { messages: next.sort((a, b) => a.sequence - b.sequence), refreshSpec: event.type === "spec.revision.created" };
 }
@@ -126,12 +130,17 @@ export function GenerationPage() {
     let disposed = false;
     let stream: EventSource | null = null;
     const cursor = { value: selected?.eventCursor ?? 0 };
-    const loadWorkspace = async () => {
-      const [messageResponse, specResponse] = await Promise.all([
+    const loadWorkspace = async (): Promise<number> => {
+      const [messageResponse, specResponse, jobResponse] = await Promise.all([
         api<{ messages: DiscussionMessage[] }>(`/api/generation/jobs/${selectedId}/messages`),
-        api<{ spec: SpecRevision | null }>(`/api/generation/jobs/${selectedId}/spec`)
+        api<{ spec: SpecRevision | null }>(`/api/generation/jobs/${selectedId}/spec`),
+        api<{ job: GenerationJob }>(`/api/generation/jobs/${selectedId}`)
       ]);
-      if (!disposed) { setMessages(messageResponse.messages); setSpec(specResponse.spec); }
+      if (!disposed) {
+        setMessages(messageResponse.messages); setSpec(specResponse.spec);
+        setJobs((current) => current.some((job) => job.id === jobResponse.job.id) ? current.map((job) => job.id === jobResponse.job.id ? jobResponse.job : job) : current);
+      }
+      return jobResponse.job.eventCursor;
     };
     const eventTypes = [
       "generation.state.changed", "discussion.turn.queued", "discussion.turn.started", "discussion.turn.interrupt_requested",
@@ -150,8 +159,7 @@ export function GenerationPage() {
       if (eventId > 0 && eventId <= cursor.value) return;
       if (eventId > 0) cursor.value = eventId;
       if (envelope.type === "generation.resync.required") {
-        void loadWorkspace().catch(() => undefined);
-        void load().catch(() => undefined);
+        void loadWorkspace().then((snapshotCursor) => { if (snapshotCursor > cursor.value) cursor.value = snapshotCursor; }).catch(() => undefined);
         return;
       }
       setMessages((current) => reduceDiscussionEvent(current, envelope).messages);
@@ -161,7 +169,7 @@ export function GenerationPage() {
       if (refreshJobEvents.has(envelope.type)) void load().catch(() => undefined);
     };
     const connect = async () => {
-      try { await loadWorkspace(); } catch { return; }
+      try { cursor.value = await loadWorkspace(); } catch { return; }
       if (disposed || typeof EventSource === "undefined") return;
       stream = new EventSource(`/api/generation/jobs/${selectedId}/events?after=${cursor.value}`);
       setStreamStatus("connecting");
@@ -260,10 +268,10 @@ export function GenerationPage() {
           {selected.parentJobId ? <div className="notice"><RefreshCw size={17} /> Navazující běh #{selected.runSequence}; původní job zůstává neměnnou auditní evidencí.</div> : null}
           {selected.blockerSummary ? <div className="notice error"><AlertTriangle size={17} /> {selected.blockerSummary}</div> : null}
           <section className="generation-workspace" aria-label="Persistentní diskuse">
-            <div className="panel-head"><div><h3>OWNER ↔ AI diskuse</h3><p>Historie je uložená serverově; stream: {streamStatus}.</p></div>{spec ? <span className="badge neutral">Spec v{spec.revision} · {spec.digest.slice(0, 18)}…</span> : null}</div>
+            <div className="panel-head"><div><h3>OWNER ↔ AI diskuse</h3><p>Historie je uložená serverově; stream: {streamStatus}.</p></div><div className="generation-badges">{selected.authorityKind ? <span className="badge ok">Autorita: {selected.authorityKind}</span> : null}{spec ? <span className="badge neutral">Spec v{spec.revision} · {spec.digest.slice(0, 18)}…</span> : null}</div></div>
             <div className="generation-messages">{messages.map((message) => <article key={message.id} className={`generation-message ${message.role.toLowerCase()}`}><strong>{message.role}</strong><p>{message.content}</p><small>{formatDate(message.createdAt)}</small></article>)}</div>
             {selected.state === "DISCUSSING" ? <div className="generation-composer"><textarea rows={3} value={messageDraft} onChange={(event) => setMessageDraft(event.target.value)} placeholder="Doplňte cíl, omezení nebo rozhodnutí…" aria-label="Zpráva do diskuse" /><button disabled={busy || !messageDraft.trim()} onClick={() => { void sendMessage(); }}><Sparkles size={16} /> Odeslat do diskuse</button></div> : null}
-            {spec ? <div className="generation-spec"><h4>Aktuální GenerationSpecification</h4><p>{spec.spec.objective}</p><small>{spec.spec.resultSummary}</small>{spec.spec.openQuestions.length ? <p><strong>Otevřené otázky:</strong> {spec.spec.openQuestions.join(" · ")}</p> : null}<button disabled={busy || selected.state !== "DISCUSSING" || spec.spec.openQuestions.length > 0} onClick={() => { void approveSpec(); }}><CheckCircle2 size={16} /> Schválit tuto revizi a realizovat</button></div> : null}
+            {spec ? <div className="generation-spec"><h4>Aktuální GenerationSpecification</h4><p>{spec.spec.objective}</p><small>{spec.spec.resultSummary}</small>{spec.spec.openQuestions.length ? <p><strong>Otevřené otázky:</strong> {spec.spec.openQuestions.join(" · ")}</p> : null}{spec.spec.capabilityDecisions?.length ? <div className="generation-capability-decisions"><strong>Capability-first rozhodnutí</strong>{spec.spec.capabilityDecisions.map((decision, index) => <article key={`${decision.requirementDigest}-${index}`}><span className="badge neutral">{decision.decision}</span>{decision.reuse.length ? <small>Reuse: {decision.reuse.map((reference) => reference.componentId).join(", ")}</small> : null}{decision.reusableBehavior.length ? <small>Pokryto: {decision.reusableBehavior.join(" · ")}</small> : null}{decision.missingDelta.length ? <small>Chybějící delta: {decision.missingDelta.join(" · ")}</small> : null}{decision.permissionDelta.length ? <small>Permission delta: {decision.permissionDelta.join(" · ")}</small> : null}</article>)}</div> : null}<button disabled={busy || selected.state !== "DISCUSSING" || spec.spec.openQuestions.length > 0} onClick={() => { void approveSpec(); }}><CheckCircle2 size={16} /> Schválit tuto revizi a realizovat</button></div> : null}
           </section>
           {selected.plan ? <section className="generation-plan"><h3>Návrh</h3><p>{selected.plan.understoodIntent}</p><div className="generation-elements">{selected.plan.elements.map((element) => <article key={element.key}><strong>{element.displayName}</strong><span className="badge neutral">{element.kind}</span><p>{element.businessPurpose}</p><small>{element.responsibilities.join(" · ")}</small></article>)}</div>{selected.plan.dependencies.length ? <p><strong>Vazby:</strong> {selected.plan.dependencies.map((dependency) => `${dependency.from} → ${dependency.to}: ${dependency.purpose}`).join("; ")}</p> : null}</section> : <div className="generation-running"><LoaderCircle className="spin" size={20} /> KajovoCML připravuje technický návrh…</div>}
           {selected.state === "BLOCKED" && selected.inputs.some((input) => !input.supplied) ? <section className="generation-inputs"><h3>Potřebuji doplnit</h3><p>Požadovány jsou pouze informace, které KajovoCML nemůže zjistit samo. Pole jsou v tomto zabezpečeném prostoru zobrazená jako běžný text; citlivé hodnoty se po odeslání ukládají pouze do Secret Manageru.</p>{selected.inputs.filter((input) => !input.supplied).map((input) => <label key={input.key}>{input.label}<small>{input.description}</small><input type="text" value={inputs[input.key] ?? ""} onChange={(event) => setInputs((current) => ({ ...current, [input.key]: event.target.value }))} /></label>)}<button disabled={busy} onClick={() => { void submitInputs(); }}>Uložit vstupy</button></section> : null}

@@ -69,6 +69,10 @@ export type GenerationPlan = {
 export type GenerationJobView = {
   id: string;
   jobKind: "CREATE" | "REPAIR" | "RETRY";
+  authorityKind: "OWNER_APPROVED" | "INHERITED_TECHNICAL" | null;
+  authoritySourceJobId: string | null;
+  authoritySourceSpecRevisionId: string | null;
+  authoritySpecDigest: string | null;
   parentJobId: string | null;
   runSequence: number;
   operatorPrompt: string | null;
@@ -152,6 +156,10 @@ export async function getGenerationJob(db: Db, jobId: string): Promise<Generatio
   const row = job.rows[0]; const eventCursor = await db.query("select coalesce(max(sequence),0)::bigint cursor from generation_event where job_id=$1", [jobId]);
   return {
     id: String(row.id), jobKind: String(row.job_kind ?? "CREATE") as "CREATE" | "REPAIR" | "RETRY",
+    authorityKind: row.authority_kind ? String(row.authority_kind) as "OWNER_APPROVED" | "INHERITED_TECHNICAL" : null,
+    authoritySourceJobId: row.authority_source_job_id ? String(row.authority_source_job_id) : null,
+    authoritySourceSpecRevisionId: row.authority_source_spec_revision_id ? String(row.authority_source_spec_revision_id) : null,
+    authoritySpecDigest: row.authority_spec_digest ? String(row.authority_spec_digest) : null,
     parentJobId: row.parent_job_id ? String(row.parent_job_id) : null, runSequence: Number(row.run_sequence ?? 1),
     operatorPrompt: row.operator_prompt ? String(row.operator_prompt) : null, repairComponentId: row.repair_component_id ? String(row.repair_component_id) : null,
     ownerAdminId: String(row.owner_admin_id), originalPrompt: String(row.original_prompt), state: state(row.state),
@@ -295,6 +303,20 @@ export function automaticRepairAuthority(inheritedApprovedSpec: boolean): { stat
     : { state: "BLOCKED", blockerCode: "generation_repair_spec_lineage_missing" };
 }
 
+/**
+ * The only supported generation job-creation/continuation authorities.  The
+ * worker and repair enqueue paths implement these entries; this exported
+ * matrix keeps the contract testable without making diagnostic text an
+ * execution source of truth.
+ */
+export const GENERATION_EXECUTION_AUTHORITY_MATRIX = [
+  { path: "CREATE", jobKind: "CREATE", semanticChange: true, authorityKind: "OWNER_APPROVED", sourceSpecification: "same-job approved immutable revision", approvalRequired: true, startState: "DISCUSSING" },
+  { path: "OWNER_FOLLOW_UP", jobKind: "CREATE|RETRY|REPAIR", semanticChange: true, authorityKind: "OWNER_APPROVED", sourceSpecification: "new linked job discussion revision", approvalRequired: true, startState: "DISCUSSING" },
+  { path: "TECHNICAL_RETRY", jobKind: "CREATE|RETRY|REPAIR", semanticChange: false, authorityKind: "PRESERVE_EXISTING", sourceSpecification: "current frozen authority lineage", approvalRequired: false, startState: "IMPLEMENTING" },
+  { path: "AUTOMATIC_REPAIR", jobKind: "REPAIR", semanticChange: false, authorityKind: "INHERITED_TECHNICAL", sourceSpecification: "source job approved immutable revision", approvalRequired: false, startState: "IMPLEMENTING|BLOCKED" },
+  { path: "REMEDIATION", jobKind: "CREATE|RETRY|REPAIR", semanticChange: false, authorityKind: "PRESERVE_EXISTING", sourceSpecification: "same job frozen authority lineage", approvalRequired: false, startState: "IMPLEMENTING" }
+] as const;
+
 export async function enqueueGeneratedRepairJob(
   db: Db,
   componentId: string,
@@ -308,14 +330,17 @@ export async function enqueueGeneratedRepairJob(
       `select c.id,c.code,c.hostname,c.display_name,c.category,c.registration_type,c.active_revision_id,
               c.lifecycle_state,c.activation_state,c.operational_state,c.monitoring_state,c.enabled,c.ingress_enabled,c.pulse_enabled,c.egress_enabled,
               revision.manifest,release.id active_release_id,
-              prior.job_id prior_job_id,prior.element_key,job.owner_admin_id,job.approved_spec_revision_id prior_approved_spec_revision_id
+              prior.job_id prior_job_id,prior.element_key,prior.owner_admin_id,prior.approved_spec_revision_id prior_approved_spec_revision_id
          from component c
          join component_revision revision on revision.id=c.active_revision_id
          left join lateral (
-           select gc.job_id,gc.element_key from generation_component gc
-            where gc.component_id=c.id order by gc.created_at desc limit 1
-         ) prior on true
-         left join generation_job job on job.id=prior.job_id
+           select gc.job_id,gc.element_key,source_job.owner_admin_id,source_job.approved_spec_revision_id
+             from generation_component gc
+             join generation_job source_job on source_job.id=gc.job_id
+            where gc.component_id=c.id and source_job.approved_spec_revision_id is not null
+            order by gc.created_at desc
+            limit 1
+           ) prior on true
          left join lateral (
            select id from local_component_release where component_id=c.id and state='ACTIVE' order by activated_at desc limit 1
          ) release on true
@@ -381,16 +406,17 @@ export async function enqueueGeneratedRepairJob(
       const source = inheritedSpec.rows[0];
       const cloned = await client.query(
         `insert into generation_spec_revision(job_id,revision,spec,canonical_json,digest,source_turn_id,source_job_id,rendered_markdown)
-         values ($1,1,$2::jsonb,$3,$4,null,$1,$5) returning id`,
-        [id, JSON.stringify(source.spec), String(source.canonical_json), String(source.digest), String(source.rendered_markdown ?? "")]
+         values ($1,1,$2::jsonb,$3,$4,null,$6,$5) returning id`,
+        [id, JSON.stringify(source.spec), String(source.canonical_json), String(source.digest), String(source.rendered_markdown ?? ""), String(row.prior_job_id)]
       );
       const clonedId = String(cloned.rows[0].id);
       await client.query(
         `update generation_job
             set current_spec_revision_id=$2,current_spec_job_id=$1,approved_spec_revision_id=$2,approved_spec_job_id=$1,
-                approved_spec_digest=$3,discussion_closed_at=now(),updated_at=now()
+                approved_spec_digest=$3,authority_kind='INHERITED_TECHNICAL',authority_source_job_id=$4,
+                authority_source_spec_revision_id=$5,authority_spec_digest=$3,discussion_closed_at=now(),updated_at=now()
           where id=$1`,
-        [id, clonedId, String(source.digest)]
+        [id, clonedId, String(source.digest), String(row.prior_job_id), String(row.prior_approved_spec_revision_id)]
       );
     }
     await appendAudit(client, {

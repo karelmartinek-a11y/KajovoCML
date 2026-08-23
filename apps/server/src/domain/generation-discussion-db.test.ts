@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { loadConfig, type AppConfig } from "../config.js";
 import { createDb, type Db } from "../db.js";
 import { cancelGenerationJob, createGenerationJob } from "./generation.js";
-import { approveSpec, createSpecRevision, queueDiscussionTurn, type GenerationSpec } from "./generation-discussion.js";
+import { approveSpec, canonicalJson, createSpecRevision, digest, generationSpecificationSchema, queueDiscussionTurn, recoverExpiredDiscussionTurns, type GenerationSpec } from "./generation-discussion.js";
 
 const enabled = process.env.KCML_TEST_DATABASE === "1";
 let db: Db;
@@ -16,9 +16,23 @@ function specification(objective: string): GenerationSpec {
     objective, resultSummary: "Runtime-backed discussion contract test", behavioralRequirements: ["Persist immutable revisions"],
     inputsAndOutputs: ["Owner input to typed generation plan"], externalSystems: [], businessRules: ["No stale approval"],
     explicitOwnerDecisions: [], constraints: ["PostgreSQL transaction"], acceptanceCriteria: ["FK is valid"], verifiedFacts: [],
-    openQuestions: [], browserAutomations: []
+    openQuestions: [], browserAutomations: [], capabilityDecisions: []
   };
 }
+
+describe("GenerationSpecification compatibility", () => {
+  it("keeps historical canonical payloads and digests unchanged when capability decisions are absent", () => {
+    const historical = {
+      objective: "Historical specification", resultSummary: "No capability field", behavioralRequirements: ["read"],
+      inputsAndOutputs: ["typed"], externalSystems: [], businessRules: [], explicitOwnerDecisions: [], constraints: [],
+      acceptanceCriteria: [], verifiedFacts: [], openQuestions: [], browserAutomations: []
+    };
+    const parsed = generationSpecificationSchema.parse(historical);
+    expect(parsed).not.toHaveProperty("capabilityDecisions");
+    expect(canonicalJson(parsed)).toBe(canonicalJson(historical));
+    expect(digest(parsed)).toBe(digest(historical));
+  });
+});
 
 describe.skipIf(!enabled)("generation discussion PostgreSQL contract", () => {
   beforeAll(async () => {
@@ -53,7 +67,7 @@ describe.skipIf(!enabled)("generation discussion PostgreSQL contract", () => {
     expect(String(stored.rows[0].content)).toBe("Změň business pravidlo.");
   });
 
-  it("allows a historical digest as a new revision while approval freezes only the current exact revision", async () => {
+  it("reuses an immutable historical digest while approval freezes the exact current revision", async () => {
     const created = await createGenerationJob(db, ownerId, `discussion revision ${randomUUID()}`, randomUUID(), randomUUID());
     jobIds.push(created.job.id);
     const turn = await db.query("select id from generation_discussion_turn where job_id=$1 order by created_at limit 1", [created.job.id]);
@@ -62,9 +76,10 @@ describe.skipIf(!enabled)("generation discussion PostgreSQL contract", () => {
     const first = await createSpecRevision(db, created.job.id, specification("A"), turnId);
     const second = await createSpecRevision(db, created.job.id, specification("B"), turnId);
     const third = await createSpecRevision(db, created.job.id, specification("A"), turnId);
-    expect([first.revision, second.revision, third.revision]).toEqual([1, 2, 3]);
+    expect([first.revision, second.revision, third.revision]).toEqual([1, 2, 1]);
     expect(third.digest).toBe(first.digest);
-    await expect(approveSpec(db, created.job.id, ownerId, second.id, second.digest)).rejects.toMatchObject({ message: "GENERATION_SPEC_STALE" });
+    const stale = await db.query("select id from generation_spec_revision where job_id=$1 and revision=2", [created.job.id]);
+    await expect(approveSpec(db, created.job.id, ownerId, String(stale.rows[0].id), second.digest)).rejects.toMatchObject({ message: "GENERATION_SPEC_STALE" });
     await expect(approveSpec(db, created.job.id, ownerId, third.id, third.digest)).resolves.toMatchObject({ idempotent: false, revisionId: third.id });
     const frozen = await db.query("select approved_spec_revision_id,approved_spec_digest,state from generation_job where id=$1", [created.job.id]);
     expect(frozen.rows[0]).toMatchObject({ approved_spec_revision_id: third.id, approved_spec_digest: third.digest, state: "ANALYZING" });
@@ -120,5 +135,37 @@ describe.skipIf(!enabled)("generation discussion PostgreSQL contract", () => {
     expect([one.revision, two.revision].sort((a, b) => a - b)).toEqual([1, 2]);
     const current = await db.query("select revision from generation_spec_revision where job_id=$1 order by revision", [created.job.id]);
     expect(current.rows.map((row) => Number(row.revision))).toEqual([1, 2]);
+  });
+
+  it("reclaims an expired discussion lease and rejects the old worker's specification write", async () => {
+    const created = await createGenerationJob(db, ownerId, `discussion lease recovery ${randomUUID()}`, randomUUID(), randomUUID());
+    jobIds.push(created.job.id);
+    const turn = await db.query("select id from generation_discussion_turn where job_id=$1 and status='QUEUED'", [created.job.id]);
+    const turnId = String(turn.rows[0].id);
+    const oldToken = randomUUID();
+    await db.query(
+      "update generation_discussion_turn set status='RUNNING',lease_owner='worker-a',lease_token=$2,lease_until=now()-interval '1 second' where id=$1",
+      [turnId, oldToken]
+    );
+    expect(await recoverExpiredDiscussionTurns(db)).toBe(1);
+    const recovered = await db.query("select status,lease_owner,lease_token,error_code from generation_discussion_turn where id=$1", [turnId]);
+    expect(recovered.rows[0]).toMatchObject({ status: "QUEUED", lease_owner: null, lease_token: null, error_code: "discussion_lease_expired" });
+    await expect(createSpecRevision(db, created.job.id, specification("late old worker"), turnId, { owner: "worker-a", token: oldToken })).rejects.toMatchObject({ message: "discussion_lease_lost" });
+  });
+
+  it("terminalizes an expired superseded turn while preserving the queued OWNER successor", async () => {
+    const created = await createGenerationJob(db, ownerId, `discussion lease successor ${randomUUID()}`, randomUUID(), randomUUID());
+    jobIds.push(created.job.id);
+    const initial = await db.query("select id from generation_discussion_turn where job_id=$1 and status='QUEUED'", [created.job.id]);
+    const oldTurnId = String(initial.rows[0].id);
+    const oldToken = randomUUID();
+    await db.query(
+      "update generation_discussion_turn set status='RUNNING',lease_owner='worker-a',lease_token=$2,lease_until=now()-interval '1 second' where id=$1",
+      [oldTurnId, oldToken]
+    );
+    await queueDiscussionTurn(db, created.job.id, ownerId, "Nový požadavek po pádu workeru", `lease-successor-${randomUUID()}`);
+    expect(await recoverExpiredDiscussionTurns(db)).toBe(1);
+    const turns = await db.query("select status,count(*)::int count from generation_discussion_turn where job_id=$1 group by status", [created.job.id]);
+    expect(Object.fromEntries(turns.rows.map((row) => [String(row.status), Number(row.count)]))).toMatchObject({ INTERRUPTED: 1, QUEUED: 1 });
   });
 });

@@ -1,10 +1,11 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { AppServerConfig } from "../config.js";
 import type { Db } from "../db.js";
 import { tx } from "../db.js";
 import type pg from "pg";
 import { streamResponse, type ResponsesStreamEvent } from "../generation/openai-responses.js";
+import { lookupCmlCapabilities, readCmlCapabilityContract, type CapabilityCandidate } from "./capability-discovery.js";
 
 type SqlExecutor = Db | pg.PoolClient;
 
@@ -33,10 +34,16 @@ const browserAutomationRequirementSchema = z.object({
   artifacts: z.object({ allowUpload: z.boolean(), allowDownload: z.boolean(), maxUploadBytes: z.number().int().positive().optional(), maxDownloadBytes: z.number().int().positive().optional(), allowedMimeTypes: textList.optional(), retentionHours: z.number().int().positive() }).strict(),
   monitoring: z.object({ driftDetection: z.boolean(), recordFailedStepEvidence: z.boolean(), repairOnContractDrift: z.boolean() }).strict(), teachingEvidenceIds: textList
 }).strict();
+const capabilityReuseReferenceSchema = z.object({ componentId: z.string().uuid(), revisionId: z.string().uuid(), toolContractId: z.string().uuid(), contractDigest: z.string().regex(/^sha256:[0-9a-f]{64}$/) }).strict();
+const capabilityDecisionSchema = z.object({
+  requirementDigest: z.string().regex(/^sha256:[0-9a-f]{64}$/), decision: z.enum(["FULL_REUSE", "PARTIAL_REUSE", "NEW_CAPABILITY_REQUIRED"]),
+  reuse: z.array(capabilityReuseReferenceSchema).max(50), reusableBehavior: textList, missingDelta: textList, permissionDelta: textList
+}).strict();
 export const generationSpecificationSchema = z.object({
   objective: z.string().trim().min(1).max(20_000), resultSummary: z.string().trim().min(1).max(20_000), behavioralRequirements: textList,
   inputsAndOutputs: textList, externalSystems: textList, businessRules: textList, explicitOwnerDecisions: textList, constraints: textList,
-  acceptanceCriteria: textList, verifiedFacts: textList, openQuestions: textList, browserAutomations: z.array(browserAutomationRequirementSchema).max(50)
+  acceptanceCriteria: textList, verifiedFacts: textList, openQuestions: textList, browserAutomations: z.array(browserAutomationRequirementSchema).max(50),
+  capabilityDecisions: z.array(capabilityDecisionSchema).max(100).optional()
 }).strict();
 export type GenerationSpec = z.infer<typeof generationSpecificationSchema>;
 
@@ -55,6 +62,7 @@ export function renderSpecificationMarkdown(spec: GenerationSpec): string {
     section("Behavioral requirements", spec.behavioralRequirements), section("Inputs and outputs", spec.inputsAndOutputs), section("External systems", spec.externalSystems),
     section("Business rules", spec.businessRules), section("Explicit OWNER decisions", spec.explicitOwnerDecisions), section("Constraints", spec.constraints),
     section("Acceptance criteria", spec.acceptanceCriteria), section("Verified facts", spec.verifiedFacts), section("Open questions", spec.openQuestions),
+    `## Capability decisions\n${(spec.capabilityDecisions ?? []).length ? (spec.capabilityDecisions ?? []).map((decision) => `- ${decision.decision}: reuse ${decision.reuse.map((item) => item.componentId).join(", ") || "—"}; missing delta ${decision.missingDelta.join("; ") || "—"}`).join("\n") : "- —"}`,
     `## Browser automations\n${spec.browserAutomations.length ? spec.browserAutomations.map((automation) => `- ${automation.name}: ${automation.purpose}`).join("\n") : "- —"}`].join("\n\n");
 }
 
@@ -84,6 +92,138 @@ export async function createDiscussionMessage(db: SqlExecutor, jobId: string, ro
   return { id: String(row.id), sequence: Number(row.sequence), role: String(row.role), status: String(row.status), content: String(row.content), turnId: row.turn_id ? String(row.turn_id) : null, createdAt: new Date(row.created_at).toISOString() };
 }
 
+export type DiscussionLease = { owner: string; token: string };
+type DiscussionMessageRecord = { id: string; sequence: number; role: string; status: string; content: string; turnId: string | null; createdAt: string };
+
+function leaseLostError(): Error & { interrupted: boolean } {
+  return Object.assign(new Error("discussion_lease_lost"), { interrupted: true });
+}
+
+async function assertDiscussionLease(db: SqlExecutor, turnId: string, lease: DiscussionLease): Promise<void> {
+  const result = await db.query(
+    `select 1 from generation_discussion_turn
+      where id=$1 and status in ('RUNNING','INTERRUPT_REQUESTED')
+        and lease_owner=$2 and lease_token=$3 and lease_until>now()`,
+    [turnId, lease.owner, lease.token]
+  );
+  if (!result.rowCount) throw leaseLostError();
+}
+
+async function createLeasedAssistantMessage(db: SqlExecutor, jobId: string, turnId: string, lease: DiscussionLease): Promise<DiscussionMessageRecord> {
+  if (typeof (db as Db).connect === "function") return tx<DiscussionMessageRecord>(db as Db, (client) => createLeasedAssistantMessage(client, jobId, turnId, lease));
+  const existing = await db.query("select id,sequence,role,status,content,turn_id,created_at from generation_job_message where job_id=$1 and idempotency_key=$2", [jobId, `assistant:${turnId}`]);
+  if (existing.rowCount) {
+    const row = existing.rows[0];
+    return { id: String(row.id), sequence: Number(row.sequence), role: String(row.role), status: String(row.status), content: String(row.content), turnId: row.turn_id ? String(row.turn_id) : null, createdAt: new Date(row.created_at).toISOString() };
+  }
+  const result = await db.query(
+    `insert into generation_job_message(job_id,role,content,turn_id,idempotency_key,status)
+     select $1,'ASSISTANT','',$2,$3,'STREAMING'
+      where exists (select 1 from generation_discussion_turn where id=$2 and job_id=$1
+                    and status in ('RUNNING','INTERRUPT_REQUESTED') and lease_owner=$4 and lease_token=$5 and lease_until>now())
+     on conflict (job_id,idempotency_key) do nothing
+     returning id,sequence,role,status,content,turn_id,created_at`,
+    [jobId, turnId, `assistant:${turnId}`, lease.owner, lease.token]
+  );
+  if (!result.rowCount) {
+    const retry = await db.query("select id,sequence,role,status,content,turn_id,created_at from generation_job_message where job_id=$1 and idempotency_key=$2", [jobId, `assistant:${turnId}`]);
+    if (!retry.rowCount) throw leaseLostError();
+    const row = retry.rows[0];
+    return { id: String(row.id), sequence: Number(row.sequence), role: String(row.role), status: String(row.status), content: String(row.content), turnId: row.turn_id ? String(row.turn_id) : null, createdAt: new Date(row.created_at).toISOString() };
+  }
+  const row = result.rows[0];
+  await appendDiscussionEvent(db, jobId, "discussion.message.created", { messageId: row.id, sequence: Number(row.sequence), role: "ASSISTANT", turnId });
+  return { id: String(row.id), sequence: Number(row.sequence), role: String(row.role), status: String(row.status), content: String(row.content), turnId: row.turn_id ? String(row.turn_id) : null, createdAt: new Date(row.created_at).toISOString() };
+}
+
+async function markLeasedAssistantStreaming(db: Db, turnId: string, messageId: string, model: string, lease: DiscussionLease): Promise<void> {
+  await tx(db, async (client) => {
+    const turn = await client.query(
+      `select 1 from generation_discussion_turn
+        where id=$1 and status in ('RUNNING','INTERRUPT_REQUESTED')
+          and lease_owner=$2 and lease_token=$3 and lease_until>now() for update`,
+      [turnId, lease.owner, lease.token]
+    );
+    if (!turn.rowCount) throw leaseLostError();
+    const message = await client.query(
+      "update generation_job_message set status='STREAMING',model=$2 where id=$1 and turn_id=$3 and role='ASSISTANT' and status in ('STREAMING','INTERRUPTED') returning id",
+      [messageId, model, turnId]
+    );
+    if (!message.rowCount) throw leaseLostError();
+  });
+}
+
+async function persistLeasedProviderResponse(db: Db, turnId: string, responseId: string, lease: DiscussionLease): Promise<void> {
+  await tx(db, async (client) => {
+    const turn = await client.query(
+      `select 1 from generation_discussion_turn
+        where id=$1 and status in ('RUNNING','INTERRUPT_REQUESTED')
+          and lease_owner=$2 and lease_token=$3 and lease_until>now() for update`,
+      [turnId, lease.owner, lease.token]
+    );
+    if (!turn.rowCount) throw leaseLostError();
+    await client.query("update generation_discussion_turn set provider_response_id=$2 where id=$1", [turnId, responseId]);
+  });
+}
+
+async function persistLeasedDelta(db: Db, jobId: string, turnId: string, messageId: string, content: string, delta: string, lease: DiscussionLease): Promise<void> {
+  await tx(db, async (client) => {
+    const turn = await client.query(
+      `select 1 from generation_discussion_turn
+        where id=$1 and status in ('RUNNING','INTERRUPT_REQUESTED')
+          and lease_owner=$2 and lease_token=$3 and lease_until>now() for update`,
+      [turnId, lease.owner, lease.token]
+    );
+    if (!turn.rowCount) throw leaseLostError();
+    const updated = await client.query("update generation_job_message set content=$2 where id=$1 and turn_id=$3 and status='STREAMING' returning id", [messageId, content, turnId]);
+    if (!updated.rowCount) throw leaseLostError();
+    await appendDiscussionEvent(client, jobId, "discussion.message.delta", { messageId, delta });
+  });
+}
+
+async function appendLeasedDiscussionEvent(db: Db, jobId: string, turnId: string, lease: DiscussionLease, type: string, payload: Record<string, unknown> = {}): Promise<number> {
+  return tx(db, async (client) => {
+    const turn = await client.query(
+      `select 1 from generation_discussion_turn
+        where id=$1 and status in ('RUNNING','INTERRUPT_REQUESTED')
+          and lease_owner=$2 and lease_token=$3 and lease_until>now() for update`,
+      [turnId, lease.owner, lease.token]
+    );
+    if (!turn.rowCount) throw leaseLostError();
+    return appendDiscussionEvent(client, jobId, type, payload);
+  });
+}
+
+async function finalizeLeasedDiscussionTurn(db: Db, input: {
+  jobId: string; turnId: string; messageId: string; lease: DiscussionLease; status: "COMPLETED" | "INTERRUPTED" | "FAILED";
+  content: string; providerResponseId?: string | null; errorCode?: string | null;
+}): Promise<boolean> {
+  return tx(db, async (client) => {
+    const turn = await client.query("select status,lease_owner,lease_token from generation_discussion_turn where id=$1 for update", [input.turnId]);
+    const row = turn.rows[0];
+    if (!row || !["RUNNING", "INTERRUPT_REQUESTED"].includes(String(row.status)) || String(row.lease_owner) !== input.lease.owner || String(row.lease_token) !== input.lease.token) return false;
+    await client.query(
+      `update generation_job_message set content=$2,status=$3,provider_response_id=$4,
+          interrupted_at=case when $3='INTERRUPTED' then now() else null end,
+          completed_at=case when $3 in ('COMPLETED','FAILED') then now() else null end
+        where id=$1 and turn_id=$5 and status in ('STREAMING','INTERRUPTED')`,
+      [input.messageId, input.content, input.status, input.providerResponseId ?? null, input.turnId]
+    );
+    await client.query(
+      `update generation_discussion_turn set status=$2,provider_response_id=$3,error_code=$4,
+          interrupted_at=case when $2='INTERRUPTED' then now() else interrupted_at end,
+          completed_at=now(),lease_owner=null,lease_token=null,lease_until=null
+        where id=$1`,
+      [input.turnId, input.status, input.providerResponseId ?? null, input.errorCode ?? null]
+    );
+    const messageEvent = input.status === "COMPLETED" ? "discussion.message.completed" : input.status === "INTERRUPTED" ? "discussion.message.interrupted" : "discussion.message.failed";
+    const turnEvent = input.status === "COMPLETED" ? "discussion.turn.completed" : input.status === "INTERRUPTED" ? "discussion.turn.interrupted" : "discussion.turn.failed";
+    await appendDiscussionEvent(client, input.jobId, messageEvent, { messageId: input.messageId, content: input.content });
+    await appendDiscussionEvent(client, input.jobId, turnEvent, { turnId: input.turnId, messageId: input.messageId, providerResponseId: input.providerResponseId ?? undefined, errorCode: input.errorCode ?? undefined });
+    return true;
+  });
+}
+
 export async function getDiscussionMessages(db: SqlExecutor, jobId: string) {
   const result = await db.query("select id,sequence,role,status,content,turn_id,created_at from generation_job_message where job_id=$1 order by sequence", [jobId]);
   return result.rows.map((row) => ({ id: String(row.id), sequence: Number(row.sequence), role: String(row.role), status: String(row.status), content: String(row.content), turnId: row.turn_id ? String(row.turn_id) : null, createdAt: new Date(row.created_at).toISOString() }));
@@ -101,20 +241,40 @@ export type GenerationSpecRevision = Readonly<{
   sourceTurnId: string | null; renderedMarkdown: string; createdAt: string; created: boolean;
 }>;
 
-export async function createSpecRevision(db: SqlExecutor, jobId: string, input: unknown, turnId: string): Promise<GenerationSpecRevision> {
-  if (typeof (db as Db).connect === "function") return tx<GenerationSpecRevision>(db as Db, (client) => createSpecRevisionLocked(client, jobId, input, turnId));
-  return createSpecRevisionLocked(db, jobId, input, turnId);
+export async function createSpecRevision(db: SqlExecutor, jobId: string, input: unknown, turnId: string, lease?: DiscussionLease): Promise<GenerationSpecRevision> {
+  if (typeof (db as Db).connect === "function") return tx<GenerationSpecRevision>(db as Db, (client) => createSpecRevisionLocked(client, jobId, input, turnId, lease));
+  return createSpecRevisionLocked(db, jobId, input, turnId, lease);
 }
 
 /** The parent job row is the per-job monotonic revision allocator. */
-async function createSpecRevisionLocked(db: SqlExecutor, jobId: string, input: unknown, turnId: string): Promise<GenerationSpecRevision> {
+async function createSpecRevisionLocked(db: SqlExecutor, jobId: string, input: unknown, turnId: string, lease?: DiscussionLease): Promise<GenerationSpecRevision> {
   const spec = generationSpecificationSchema.parse(input);
   const canonical = canonicalJson(spec); const specDigest = digest(spec); const renderedMarkdown = renderSpecificationMarkdown(spec);
   const job = await db.query("select id,state from generation_job where id=$1 for update", [jobId]);
   if (!job.rowCount) throw Object.assign(new Error("not_found"), { statusCode: 404 });
   if (String(job.rows[0].state) !== "DISCUSSING") throw Object.assign(new Error("generation_discussion_closed"), { statusCode: 409 });
+  if (lease) {
+    const turn = await db.query(
+      `select 1 from generation_discussion_turn
+        where id=$1 and job_id=$2 and status in ('RUNNING','INTERRUPT_REQUESTED')
+          and lease_owner=$3 and lease_token=$4 and lease_until>now() for update`,
+      [turnId, jobId, lease.owner, lease.token]
+    );
+    if (!turn.rowCount) throw leaseLostError();
+  }
   const current = await getCurrentSpec(db, jobId);
   if (current?.digest === specDigest) return { ...current, created: false };
+  const existing = await db.query(
+    "select id,revision,spec,canonical_json,digest,source_turn_id,rendered_markdown,created_at from generation_spec_revision where job_id=$1 and digest=$2 order by revision limit 1",
+    [jobId, specDigest]
+  );
+  if (existing.rowCount) {
+    const row = existing.rows[0];
+    const revision = { id: String(row.id), revision: Number(row.revision), spec: row.spec as GenerationSpec, canonicalJson: String(row.canonical_json), digest: String(row.digest), sourceTurnId: row.source_turn_id ? String(row.source_turn_id) : null, renderedMarkdown: String(row.rendered_markdown), createdAt: new Date(row.created_at).toISOString() };
+    await db.query("update generation_job set current_spec_revision_id=$2,current_spec_job_id=$1,updated_at=now() where id=$1 and state='DISCUSSING'", [jobId, revision.id]);
+    await appendDiscussionEvent(db, jobId, "spec.revision.reused", { revisionId: revision.id, revision: revision.revision, digest: revision.digest });
+    return { ...revision, created: false };
+  }
   const result = await db.query(
     `insert into generation_spec_revision(job_id,revision,spec,canonical_json,digest,source_turn_id,source_job_id,rendered_markdown)
      values ($1,(select coalesce(max(revision),0)+1 from generation_spec_revision where job_id=$1),$2::jsonb,$3,$4,$5,$1,$6)
@@ -166,13 +326,16 @@ const proposeGenerationSpecificationTool = {
       objective: { type: "string" }, resultSummary: { type: "string" }, behavioralRequirements: stringArray,
       inputsAndOutputs: stringArray, externalSystems: stringArray, businessRules: stringArray, explicitOwnerDecisions: stringArray,
       constraints: stringArray, acceptanceCriteria: stringArray, verifiedFacts: stringArray, openQuestions: stringArray,
-      browserAutomations: { type: "array", items: browserAutomationToolSchema }
+      browserAutomations: { type: "array", items: browserAutomationToolSchema },
+      capabilityDecisions: { type: "array", items: { type: "object", additionalProperties: false, properties: { requirementDigest: { type: "string" }, decision: { type: "string", enum: ["FULL_REUSE", "PARTIAL_REUSE", "NEW_CAPABILITY_REQUIRED"] }, reuse: { type: "array", items: { type: "object", additionalProperties: false, properties: { componentId: { type: "string" }, revisionId: { type: "string" }, toolContractId: { type: "string" }, contractDigest: { type: "string" } }, required: ["componentId", "revisionId", "toolContractId", "contractDigest"] } }, reusableBehavior: stringArray, missingDelta: stringArray, permissionDelta: stringArray }, required: ["requirementDigest", "decision", "reuse", "reusableBehavior", "missingDelta", "permissionDelta"] } }
     },
-    required: ["objective", "resultSummary", "behavioralRequirements", "inputsAndOutputs", "externalSystems", "businessRules", "explicitOwnerDecisions", "constraints", "acceptanceCriteria", "verifiedFacts", "openQuestions", "browserAutomations"]
+    required: ["objective", "resultSummary", "behavioralRequirements", "inputsAndOutputs", "externalSystems", "businessRules", "explicitOwnerDecisions", "constraints", "acceptanceCriteria", "verifiedFacts", "openQuestions", "browserAutomations", "capabilityDecisions"]
   }
 };
+const lookupCmlCapabilitiesTool = { type: "function", name: "lookup_cml_capabilities", strict: true, description: "Search the canonical active CML component/revision/tool contracts before deciding whether new capability is needed.", parameters: { type: "object", additionalProperties: false, properties: { requirement: { type: "string" }, keywords: stringArray }, required: ["requirement", "keywords"] } };
+const readCmlCapabilityContractTool = { type: "function", name: "read_cml_capability_contract", strict: true, description: "Read the exact current safe contract of a candidate returned by lookup_cml_capabilities.", parameters: { type: "object", additionalProperties: false, properties: { componentId: { type: "string" } }, required: ["componentId"] } };
 
-const discussionInstructions = `Jsi KajovoCML AI v persistentní OWNER diskusi. Odpovídej OWNERovi normálním srozumitelným českým textem po částech; nikdy nevracej JSON, JSON envelope ani markdownový blok obsahující interní strukturu. Neodhaluj chain of thought. Nejprve pracuj s ověřitelnými fakty a zeptej se jen na rozhodnutí, která nelze odvodit. Pokud je požadavek dostatečně vyřešený, zavolej serverový tool propose_generation_specification s úplnou GenerationSpecification; tool argumenty nejsou OWNER-visible text a specifikaci nikdy nevypisuj jako náhradu za odpověď. Pokud zůstávají open questions, tool nevolej a polož konkrétní další otázku. Browser automation návrhy smí používat pouze KCML_PLAYWRIGHT_PLATFORM a declarativní manifest, nikdy generovaný browser runtime source.`;
+const discussionInstructions = `Jsi KajovoCML AI v persistentní OWNER diskusi. Odpovídej OWNERovi normálním srozumitelným českým textem po částech; nikdy nevracej JSON, JSON envelope ani markdownový blok obsahující interní strukturu. Neodhaluj chain of thought. Než navrhneš novou nebo změněnou GenerationSpecification, vždy zavolej lookup_cml_capabilities pro aktuální OWNER požadavek; pokud vrátí kandidáty relevantní pro rozhodnutí, načti jejich přesný contract přes read_cml_capability_contract. Teprve potom zavolej propose_generation_specification s capabilityDecisions a přesnými canonical references. Pokud zůstávají open questions, tool nevolej a polož konkrétní další otázku. Browser automation návrhy smí používat pouze KCML_PLAYWRIGHT_PLATFORM a declarativní manifest, nikdy generovaný browser runtime source.`;
 
 export async function queueDiscussionTurn(db: Db, jobId: string, ownerId: string, content: string, idempotencyKey?: string) {
   return tx(db, async (client) => {
@@ -208,7 +371,64 @@ export async function queueDiscussionTurn(db: Db, jobId: string, ownerId: string
 export const runDiscussionTurn = queueDiscussionTurn;
 
 type PendingFunctionCall = { callId: string; itemId?: string; name: string; arguments: string };
+export type CapabilityTurnEvidence = {
+  /** Digest of the persisted OWNER message that this turn is answering. */
+  requirementDigest: string;
+  inputMessageId: string;
+  candidateIds: Set<string>;
+  inspected: Map<string, CapabilityCandidate>;
+  lookupEventSequence: number;
+  /** Digest of the model's search query; useful for audit, never authority. */
+  lookupQueryDigest?: string;
+};
 export type DiscussionTextStreamState = Readonly<{ content: string; pendingPrefix: string; rejectedStructuredOutput: boolean }>;
+
+function behaviorBackedByCandidate(candidate: CapabilityCandidate, behavior: string): boolean {
+  const stopWords = new Set(["a", "an", "and", "the", "for", "from", "into", "with", "use", "existing", "capability", "path"]);
+  const requested = behavior.toLowerCase().match(/[a-z0-9]+/g)?.filter((word) => word.length >= 3 && !stopWords.has(word)) ?? [];
+  if (!requested.length) return false;
+  const available = [candidate.code, candidate.displayName, candidate.purpose, ...candidate.capabilities, ...candidate.tools.flatMap((tool) => [tool.name, tool.title, tool.description])]
+    .join(" ").toLowerCase().match(/[a-z0-9]+/g) ?? [];
+  return requested.every((word) => available.some((item) => item.startsWith(word) || word.startsWith(item)));
+}
+
+export function validateCapabilityProposal(specInput: unknown, evidence: CapabilityTurnEvidence | null, expectedInput?: { messageId: string; requirementDigest: string }): string | null {
+  if (!evidence) return "CAPABILITY_LOOKUP_REQUIRED";
+  if (!evidence.inputMessageId || !/^sha256:[0-9a-f]{64}$/.test(evidence.requirementDigest)) return "CAPABILITY_LOOKUP_REQUIRED";
+  if (!Number.isInteger(evidence.lookupEventSequence) || evidence.lookupEventSequence < 1) return "CAPABILITY_LOOKUP_REQUIRED";
+  if (expectedInput && (evidence.inputMessageId !== expectedInput.messageId || evidence.requirementDigest !== expectedInput.requirementDigest)) return "CAPABILITY_LOOKUP_REQUIRED";
+  let spec: GenerationSpec;
+  try { spec = generationSpecificationSchema.parse(specInput); } catch { return "generation_specification_invalid"; }
+  const decisions = spec.capabilityDecisions ?? [];
+  if (!decisions.length || decisions.some((decision) => decision.requirementDigest !== evidence.requirementDigest)) return "CAPABILITY_LOOKUP_REQUIRED";
+  if (evidence.candidateIds.size && !evidence.inspected.size) return "CAPABILITY_CONTRACT_INSPECTION_REQUIRED";
+  for (const decision of decisions) {
+    if (decision.decision === "NEW_CAPABILITY_REQUIRED" && (decision.reuse.length || !decision.missingDelta.length)) return "CAPABILITY_DECISION_INVALID";
+    if (decision.decision === "FULL_REUSE" && (!decision.reuse.length || !decision.reusableBehavior.length || decision.missingDelta.length)) return "CAPABILITY_DECISION_INVALID";
+    if (decision.decision === "PARTIAL_REUSE" && (!decision.reuse.length || !decision.reusableBehavior.length || !decision.missingDelta.length)) return "CAPABILITY_DECISION_INVALID";
+    if (decision.decision === "NEW_CAPABILITY_REQUIRED" && evidence.candidateIds.size && evidence.inspected.size < evidence.candidateIds.size) return "CAPABILITY_CONTRACT_INSPECTION_REQUIRED";
+    for (const reference of decision.reuse) {
+      const candidate = evidence.inspected.get(reference.componentId);
+      const tool = candidate?.tools.find((item) => item.contractId === reference.toolContractId);
+      if (!candidate || !tool || candidate.revisionId !== reference.revisionId || tool.contractDigest !== reference.contractDigest) return "CAPABILITY_REFERENCE_INVALID";
+      if (candidate.runtimeEligibility !== "ELIGIBLE") return decision.decision === "FULL_REUSE" ? "CAPABILITY_FULL_REUSE_INELIGIBLE" : "CAPABILITY_REUSE_INELIGIBLE";
+    }
+    if (["FULL_REUSE", "PARTIAL_REUSE"].includes(decision.decision)) {
+      const reusedCandidates = decision.reuse.map((reference) => evidence.inspected.get(reference.componentId)).filter((candidate): candidate is CapabilityCandidate => Boolean(candidate));
+      if (!decision.reusableBehavior.every((behavior) => reusedCandidates.some((candidate) => behaviorBackedByCandidate(candidate, behavior)))) return "CAPABILITY_BEHAVIOR_NOT_BACKED_BY_CONTRACT";
+    }
+  }
+  return null;
+}
+
+async function capabilityReferencesStillCurrent(db: SqlExecutor, spec: GenerationSpec): Promise<boolean> {
+  for (const decision of spec.capabilityDecisions ?? []) for (const reference of decision.reuse) {
+    const current = await readCmlCapabilityContract(db, reference.componentId);
+    const tool = current?.tools.find((item) => item.contractId === reference.toolContractId);
+    if (!current || current.revisionId !== reference.revisionId || !tool || tool.contractDigest !== reference.contractDigest || current.runtimeEligibility !== "ELIGIBLE") return false;
+  }
+  return true;
+}
 
 const invalidOwnerText = "Odpověď modelu nebyla v požadovaném textovém formátu. Pokračujte prosím upřesněním požadavku.";
 
@@ -265,7 +485,69 @@ function functionCallFromItem(item: Record<string, unknown>): PendingFunctionCal
   return { callId: item.call_id, itemId: typeof item.id === "string" ? item.id : undefined, name: typeof item.name === "string" ? item.name : "", arguments: typeof item.arguments === "string" ? item.arguments : "" };
 }
 
+/**
+ * Requeue an abandoned discussion turn only after its durable lease expired.
+ * A successor created by OWNER steer wins over the abandoned turn; in that
+ * case the old turn is terminalized instead of violating the one-pending-turn
+ * index.  The old lease token is always cleared, so late provider frames from
+ * the dead worker cannot mutate messages, events, specs, or terminal state.
+ */
+export async function recoverExpiredDiscussionTurns(db: Db): Promise<number> {
+  return tx(db, async (client) => {
+    const expired = await client.query(
+      `select turn.id,turn.job_id,turn.status
+         from generation_discussion_turn turn
+         join generation_job job on job.id=turn.job_id
+        where job.state='DISCUSSING'
+          and turn.status in ('RUNNING','INTERRUPT_REQUESTED')
+          and turn.lease_until is not null
+          and turn.lease_until<now()
+        order by turn.lease_until
+        for update of turn skip locked`,
+    );
+    let recovered = 0;
+    for (const row of expired.rows) {
+      const successor = await client.query(
+        "select id from generation_discussion_turn where job_id=$1 and status='QUEUED' and id<>$2 for update",
+        [row.job_id, row.id]
+      );
+      if (successor.rowCount) {
+        const message = await client.query(
+          `update generation_job_message
+              set status='INTERRUPTED',interrupted_at=coalesce(interrupted_at,now())
+            where turn_id=$1 and role='ASSISTANT' and status='STREAMING'
+          returning id`,
+          [row.id]
+        );
+        await client.query(
+          `update generation_discussion_turn
+              set status='INTERRUPTED',error_code='discussion_lease_expired_superseded',
+                  interrupted_at=coalesce(interrupted_at,now()),completed_at=coalesce(completed_at,now()),
+                  lease_owner=null,lease_token=null,lease_until=null,heartbeat_at=null
+            where id=$1`,
+          [row.id]
+        );
+        if (message.rowCount) await appendDiscussionEvent(client, String(row.job_id), "discussion.message.interrupted", { messageId: String(message.rows[0].id), turnId: String(row.id), recovered: true });
+        await appendDiscussionEvent(client, String(row.job_id), "discussion.turn.interrupted", { turnId: String(row.id), recovered: true, successorTurnId: String(successor.rows[0].id) });
+      } else {
+        await client.query(
+          `update generation_discussion_turn
+              set status='QUEUED',error_code='discussion_lease_expired',
+                  lease_owner=null,lease_token=null,lease_until=null,heartbeat_at=null,
+                  started_at=coalesce(started_at,now())
+            where id=$1`,
+          [row.id]
+        );
+        await appendDiscussionEvent(client, String(row.job_id), "discussion.turn.requeued", { turnId: String(row.id), recovered: true });
+      }
+      recovered += 1;
+    }
+    return recovered;
+  });
+}
+
 export async function processNextDiscussionTurn(db: Db, config: AppServerConfig, workerId: string, apiKey: string): Promise<boolean> {
+  await recoverExpiredDiscussionTurns(db);
   const claimed = await tx(db, async (client) => {
     const result = await client.query(`select turn.id,turn.job_id,turn.input_message_id
       from generation_discussion_turn turn join generation_job job on job.id=turn.job_id
@@ -278,32 +560,39 @@ export async function processNextDiscussionTurn(db: Db, config: AppServerConfig,
      order by turn.created_at for update skip locked limit 1`);
     if (!result.rowCount) return null;
     const row = result.rows[0];
-    await client.query("update generation_discussion_turn set status='RUNNING',lease_owner=$2,lease_until=now()+interval '180 seconds',started_at=now(),heartbeat_at=now() where id=$1", [row.id, workerId]);
+    const leaseToken = randomUUID();
+    await client.query("update generation_discussion_turn set status='RUNNING',lease_owner=$2,lease_token=$3,lease_until=now()+interval '180 seconds',started_at=now(),heartbeat_at=now() where id=$1", [row.id, workerId, leaseToken]);
     await appendDiscussionEvent(client, String(row.job_id), "discussion.turn.started", { turnId: String(row.id) });
-    return { turnId: String(row.id), jobId: String(row.job_id), inputMessageId: String(row.input_message_id) };
+    return { turnId: String(row.id), jobId: String(row.job_id), inputMessageId: String(row.input_message_id), leaseToken };
   });
   if (!claimed) return false;
-  let assistantId: string | null = null; let textStream = createDiscussionTextStream(); let accumulated = ""; let interruptedBySteer = false;
+  let assistantId: string | null = null; let textStream = createDiscussionTextStream(); let accumulated = ""; let interruptedBySteer = false; let leaseLost = false;
+  const lease: DiscussionLease = { owner: workerId, token: claimed.leaseToken };
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 180_000);
   const heartbeat = setInterval(() => {
     void db.query(
-      "update generation_discussion_turn set heartbeat_at=now(),lease_until=now()+interval '180 seconds' where id=$1 and status='RUNNING' and lease_owner=$2 returning id",
-      [claimed.turnId, workerId]
-    ).then(async () => {
+      "update generation_discussion_turn set heartbeat_at=now(),lease_until=now()+interval '180 seconds' where id=$1 and status='RUNNING' and lease_owner=$2 and lease_token=$3 and lease_until>now() returning id",
+      [claimed.turnId, workerId, claimed.leaseToken]
+    ).then(async (renewed) => {
+      if (!renewed.rowCount) { leaseLost = true; controller.abort(); return; }
       const current = await db.query("select status from generation_discussion_turn where id=$1", [claimed.turnId]);
       if (String(current.rows[0]?.status) === "INTERRUPT_REQUESTED") { interruptedBySteer = true; controller.abort(); }
     }).catch(() => undefined);
   }, 30_000);
   try {
-    const assistant = await createDiscussionMessage(db, claimed.jobId, "ASSISTANT", "", claimed.turnId);
+    const inputMessage = await db.query("select content from generation_job_message where id=$1 and job_id=$2 and role='OWNER'", [claimed.inputMessageId, claimed.jobId]);
+    if (!inputMessage.rowCount) throw new Error("discussion_owner_input_missing");
+    const ownerRequirementDigest = digest({ requirement: String(inputMessage.rows[0].content).trim() });
+    const assistant = await createLeasedAssistantMessage(db, claimed.jobId, claimed.turnId, lease);
     assistantId = assistant.id;
-    await db.query("update generation_job_message set status='STREAMING',model=$2 where id=$1", [assistantId, config.GENERATION_OPENAI_MODEL]);
+    await markLeasedAssistantStreaming(db, claimed.turnId, assistantId, config.GENERATION_OPENAI_MODEL, lease);
     const history = (await getDiscussionMessages(db, claimed.jobId)).filter((message) => message.id !== assistantId).slice(-40).map((message) => ({ role: message.role === "OWNER" ? "user" : "assistant", content: message.content }));
     let inputPayload: unknown = history;
     let previousResponseId: string | null = null;
     let providerResponseId: string | null = null;
     let completedResponse = false;
+    let capabilityEvidence: CapabilityTurnEvidence | null = null;
     for (let modelTurn = 0; modelTurn < 8 && !completedResponse; modelTurn += 1) {
       const calls = new Map<string, PendingFunctionCall>();
       const itemToCall = new Map<string, string>();
@@ -312,20 +601,21 @@ export async function processNextDiscussionTurn(db: Db, config: AppServerConfig,
         store: true,
         instructions: discussionInstructions,
         input: inputPayload,
-        tools: [{ type: "web_search" }, proposeGenerationSpecificationTool]
+        tools: [{ type: "web_search" }, lookupCmlCapabilitiesTool, readCmlCapabilityContractTool, proposeGenerationSpecificationTool]
       };
       if (previousResponseId) requestBody.previous_response_id = previousResponseId;
       for await (const frame of streamResponse(apiKey, requestBody, controller.signal)) {
+        await assertDiscussionLease(db, claimed.turnId, lease);
         const interrupted = await db.query("select turn.status,job.state job_state from generation_discussion_turn turn join generation_job job on job.id=turn.job_id where turn.id=$1", [claimed.turnId]);
         if (String(interrupted.rows[0]?.status) === "INTERRUPT_REQUESTED" || String(interrupted.rows[0]?.job_state) === "CANCELLED") { interruptedBySteer = true; controller.abort(); throw Object.assign(new Error("discussion_interrupted"), { interrupted: true }); }
         providerResponseId = eventResponseId(frame) ?? providerResponseId;
+        if (providerResponseId) await persistLeasedProviderResponse(db, claimed.turnId, providerResponseId, lease);
         if (frame.type === "response.output_text.delta" && typeof frame.delta === "string") {
           const nextText = appendDiscussionTextDelta(textStream, frame.delta);
           textStream = nextText.state;
           if (nextText.visibleDelta) {
             accumulated = textStream.content;
-            await db.query("update generation_job_message set content=$2 where id=$1 and status='STREAMING'", [assistantId, accumulated]);
-            await appendDiscussionEvent(db, claimed.jobId, "discussion.message.delta", { messageId: assistantId, delta: nextText.visibleDelta });
+            await persistLeasedDelta(db, claimed.jobId, claimed.turnId, assistantId, accumulated, nextText.visibleDelta, lease);
           }
         } else if (frame.type === "response.output_item.added" || frame.type === "response.output_item.done") {
           const item = recordValue(frame.item);
@@ -344,19 +634,50 @@ export async function processNextDiscussionTurn(db: Db, config: AppServerConfig,
       if (!calls.size) { completedResponse = true; break; }
       const toolOutputs: Array<Record<string, unknown>> = [];
       for (const call of calls.values()) {
+        if (call.name === "lookup_cml_capabilities") {
+          await appendLeasedDiscussionEvent(db, claimed.jobId, claimed.turnId, lease, "discussion.tool.started", { turnId: claimed.turnId, toolName: call.name });
+          try {
+            const args = JSON.parse(call.arguments) as { requirement?: unknown; keywords?: unknown };
+            if (typeof args.requirement !== "string" || !args.requirement.trim() || !Array.isArray(args.keywords) || !args.keywords.every((value) => typeof value === "string")) throw new Error("capability_lookup_invalid_arguments");
+            const candidates = await lookupCmlCapabilities(db, { requirement: args.requirement, keywords: args.keywords });
+            const lookupQueryDigest = digest({ requirement: args.requirement.trim(), keywords: args.keywords.map((value) => value.trim()).filter(Boolean).sort() });
+            const sequence = await appendLeasedDiscussionEvent(db, claimed.jobId, claimed.turnId, lease, "discussion.tool.completed", { turnId: claimed.turnId, inputMessageId: claimed.inputMessageId, toolName: call.name, requirementDigest: ownerRequirementDigest, lookupQueryDigest, candidateIds: candidates.map((candidate) => candidate.componentId), candidateCount: candidates.length });
+            capabilityEvidence = { requirementDigest: ownerRequirementDigest, inputMessageId: claimed.inputMessageId, candidateIds: new Set(candidates.map((candidate) => candidate.componentId)), inspected: new Map(), lookupEventSequence: sequence, lookupQueryDigest };
+            toolOutputs.push({ type: "function_call_output", call_id: call.callId, output: JSON.stringify({ ok: true, requirementDigest: ownerRequirementDigest, candidates }) });
+          } catch (error) { const errorCode = error instanceof Error ? error.message.slice(0, 300) : "capability_lookup_failed"; toolOutputs.push({ type: "function_call_output", call_id: call.callId, output: JSON.stringify({ ok: false, error: errorCode }) }); await appendLeasedDiscussionEvent(db, claimed.jobId, claimed.turnId, lease, "discussion.tool.failed", { turnId: claimed.turnId, toolName: call.name, errorCode }); }
+          continue;
+        }
+        if (call.name === "read_cml_capability_contract") {
+          await appendLeasedDiscussionEvent(db, claimed.jobId, claimed.turnId, lease, "discussion.tool.started", { turnId: claimed.turnId, toolName: call.name });
+          try {
+            const args = JSON.parse(call.arguments) as { componentId?: unknown };
+            if (!capabilityEvidence) throw new Error("CAPABILITY_LOOKUP_REQUIRED");
+            if (typeof args.componentId !== "string" || !capabilityEvidence.candidateIds.has(args.componentId)) throw new Error("CAPABILITY_CONTRACT_NOT_A_LOOKUP_CANDIDATE");
+            const contract = await readCmlCapabilityContract(db, args.componentId);
+            if (!contract) throw new Error("CAPABILITY_CONTRACT_NOT_FOUND");
+            capabilityEvidence.inspected.set(contract.componentId, contract);
+            await appendLeasedDiscussionEvent(db, claimed.jobId, claimed.turnId, lease, "discussion.tool.completed", { turnId: claimed.turnId, inputMessageId: claimed.inputMessageId, toolName: call.name, componentId: contract.componentId, revisionId: contract.revisionId, manifestDigest: contract.manifestDigest, contractIds: contract.tools.map((tool) => tool.contractId), contractDigests: contract.tools.map((tool) => tool.contractDigest), runtimeEligibility: contract.runtimeEligibility });
+            toolOutputs.push({ type: "function_call_output", call_id: call.callId, output: JSON.stringify({ ok: true, contract }) });
+          } catch (error) { const errorCode = error instanceof Error ? error.message.slice(0, 300) : "capability_contract_read_failed"; toolOutputs.push({ type: "function_call_output", call_id: call.callId, output: JSON.stringify({ ok: false, error: errorCode }) }); await appendLeasedDiscussionEvent(db, claimed.jobId, claimed.turnId, lease, "discussion.tool.failed", { turnId: claimed.turnId, toolName: call.name, errorCode }); }
+          continue;
+        }
         if (call.name !== "propose_generation_specification") {
           toolOutputs.push({ type: "function_call_output", call_id: call.callId, output: JSON.stringify({ ok: false, error: "unsupported_discussion_tool" }) });
           continue;
         }
-        await appendDiscussionEvent(db, claimed.jobId, "discussion.tool.started", { turnId: claimed.turnId, toolName: call.name });
+        await appendLeasedDiscussionEvent(db, claimed.jobId, claimed.turnId, lease, "discussion.tool.started", { turnId: claimed.turnId, toolName: call.name });
         try {
-          const revision = await createSpecRevision(db, claimed.jobId, JSON.parse(call.arguments), claimed.turnId);
+          const parsed = JSON.parse(call.arguments) as unknown;
+          const capabilityError = validateCapabilityProposal(parsed, capabilityEvidence, { messageId: claimed.inputMessageId, requirementDigest: ownerRequirementDigest });
+          if (capabilityError) throw new Error(capabilityError);
+          await assertDiscussionLease(db, claimed.turnId, lease);
+          const revision = await createSpecRevision(db, claimed.jobId, parsed, claimed.turnId, lease);
           toolOutputs.push({ type: "function_call_output", call_id: call.callId, output: JSON.stringify({ ok: true, revisionId: revision.id, revision: revision.revision, digest: revision.digest }) });
-          await appendDiscussionEvent(db, claimed.jobId, "discussion.tool.completed", { turnId: claimed.turnId, toolName: call.name, revisionId: revision.id, revision: revision.revision, digest: revision.digest, revisionCreated: revision.created });
+          await appendLeasedDiscussionEvent(db, claimed.jobId, claimed.turnId, lease, "discussion.tool.completed", { turnId: claimed.turnId, toolName: call.name, revisionId: revision.id, revision: revision.revision, digest: revision.digest, revisionCreated: revision.created });
         } catch (error) {
           const errorCode = error instanceof Error ? error.message.slice(0, 300) : "generation_specification_invalid";
           toolOutputs.push({ type: "function_call_output", call_id: call.callId, output: JSON.stringify({ ok: false, error: errorCode }) });
-          await appendDiscussionEvent(db, claimed.jobId, "discussion.tool.failed", { turnId: claimed.turnId, toolName: call.name, errorCode });
+          await appendLeasedDiscussionEvent(db, claimed.jobId, claimed.turnId, lease, "discussion.tool.failed", { turnId: claimed.turnId, toolName: call.name, errorCode });
         }
       }
       if (!providerResponseId) throw new Error("openai_responses_missing_id");
@@ -368,17 +689,14 @@ export async function processNextDiscussionTurn(db: Db, config: AppServerConfig,
     if (String(terminal.rows[0]?.job_state) !== "DISCUSSING" || String(terminal.rows[0]?.turn_status) !== "RUNNING") throw Object.assign(new Error("discussion_interrupted"), { interrupted: true });
     const finishedText = finishDiscussionTextStream(textStream);
     accumulated = finishedText.content;
-    if (finishedText.visibleDelta) await appendDiscussionEvent(db, claimed.jobId, "discussion.message.delta", { messageId: assistantId, delta: finishedText.visibleDelta });
-    await db.query("update generation_job_message set content=$2,status='COMPLETED',provider_response_id=$3,completed_at=now() where id=$1 and status='STREAMING'", [assistantId, accumulated, providerResponseId]);
-    await db.query("update generation_discussion_turn set status='COMPLETED',provider_response_id=$2,completed_at=now(),lease_owner=null,lease_until=null where id=$1", [claimed.turnId, providerResponseId]);
-    await appendDiscussionEvent(db, claimed.jobId, "discussion.message.completed", { messageId: assistantId, content: accumulated });
-    await appendDiscussionEvent(db, claimed.jobId, "discussion.turn.completed", { turnId: claimed.turnId, providerResponseId });
+    if (finishedText.visibleDelta) await persistLeasedDelta(db, claimed.jobId, claimed.turnId, assistantId, accumulated, finishedText.visibleDelta, lease);
+    const finalized = await finalizeLeasedDiscussionTurn(db, { jobId: claimed.jobId, turnId: claimed.turnId, messageId: assistantId, lease, status: "COMPLETED", content: accumulated, providerResponseId });
+    if (!finalized) throw leaseLostError();
   } catch (error) {
     const interrupted = interruptedBySteer || Boolean((error as { interrupted?: boolean }).interrupted);
-    if (assistantId) await db.query("update generation_job_message set status=$2,content=$3,interrupted_at=case when $2='INTERRUPTED' then now() else null end,completed_at=case when $2='FAILED' then now() else null end where id=$1", [assistantId, interrupted ? "INTERRUPTED" : "FAILED", accumulated]);
-    await db.query("update generation_discussion_turn set status=$2,interrupted_at=case when $2='INTERRUPTED' then now() else null end,completed_at=now(),error_code=$3,lease_owner=null,lease_until=null where id=$1", [claimed.turnId, interrupted ? "INTERRUPTED" : "FAILED", interrupted ? null : error instanceof Error ? error.message.slice(0, 300) : "discussion_failed"]);
-    if (assistantId) await appendDiscussionEvent(db, claimed.jobId, interrupted ? "discussion.message.interrupted" : "discussion.message.failed", { messageId: assistantId, content: accumulated });
-    await appendDiscussionEvent(db, claimed.jobId, interrupted ? "discussion.turn.interrupted" : "discussion.turn.failed", { turnId: claimed.turnId, messageId: assistantId, errorCode: interrupted ? undefined : error instanceof Error ? error.message : "discussion_failed" });
+    if (assistantId && !leaseLost) {
+      await finalizeLeasedDiscussionTurn(db, { jobId: claimed.jobId, turnId: claimed.turnId, messageId: assistantId, lease, status: interrupted ? "INTERRUPTED" : "FAILED", content: accumulated, errorCode: interrupted ? null : error instanceof Error ? error.message.slice(0, 300) : "discussion_failed" }).catch(() => false);
+    }
   } finally { clearInterval(heartbeat); clearTimeout(timeout); }
   return true;
 }
@@ -395,6 +713,10 @@ export async function approveSpec(db: Db, jobId: string, ownerId: string, revisi
     if (!spec.rowCount || String(row.rows[0].current_spec_revision_id) !== revisionId) throw Object.assign(new Error("GENERATION_SPEC_STALE"), { statusCode: 409 });
     const validated = generationSpecificationSchema.parse(spec.rows[0].spec);
     if (digest(validated) !== expectedDigest || String(spec.rows[0].digest) !== expectedDigest || canonicalJson(validated) !== String(spec.rows[0].canonical_json)) throw Object.assign(new Error("GENERATION_SPEC_DIGEST_INVALID"), { statusCode: 409 });
+    if (!(await capabilityReferencesStillCurrent(client, validated))) {
+      await client.query("update generation_job set blocker_code='CAPABILITY_CONTRACT_STALE',updated_at=now() where id=$1 and state='DISCUSSING'", [jobId]);
+      throw Object.assign(new Error("CAPABILITY_CONTRACT_STALE"), { statusCode: 409 });
+    }
     if (validated.openQuestions.length) throw Object.assign(new Error("GENERATION_SPEC_OPEN_QUESTIONS"), { statusCode: 409 });
     const activeTurn = await client.query("select 1 from generation_discussion_turn where job_id=$1 and status in ('QUEUED','RUNNING','INTERRUPT_REQUESTED') limit 1", [jobId]);
     if (activeTurn.rowCount) throw Object.assign(new Error("GENERATION_TURN_ACTIVE"), { statusCode: 409 });
@@ -411,7 +733,7 @@ export async function approveSpec(db: Db, jobId: string, ownerId: string, revisi
     );
     if (unrepresentedOwnerInput.rowCount) throw Object.assign(new Error("GENERATION_OWNER_INPUT_UNREPRESENTED"), { statusCode: 409 });
     if (String(row.rows[0].state) !== "DISCUSSING") throw Object.assign(new Error("generation_spec_not_approvable"), { statusCode: 409 });
-    await client.query("update generation_job set approved_spec_revision_id=$2,approved_spec_job_id=$1,approved_spec_digest=$3,discussion_closed_at=now(),state='ANALYZING',updated_at=now() where id=$1 and state='DISCUSSING'", [jobId, revisionId, expectedDigest]);
+    await client.query("update generation_job set approved_spec_revision_id=$2,approved_spec_job_id=$1,approved_spec_digest=$3,authority_kind='OWNER_APPROVED',authority_source_job_id=$1,authority_source_spec_revision_id=$2,authority_spec_digest=$3,discussion_closed_at=now(),state='ANALYZING',updated_at=now() where id=$1 and state='DISCUSSING'", [jobId, revisionId, expectedDigest]);
     return { revisionId, digest: expectedDigest, idempotent: false };
   });
   if (!result.idempotent) {

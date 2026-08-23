@@ -268,13 +268,21 @@ async function analyzeJob(db: Db, config: AppConfig, job: GenerationJobView, sig
 }
 
 async function loadApprovedSpecification(db: Db, jobId: string): Promise<{ plannerInput: string }> {
-  const result = await db.query(`select job.approved_spec_digest,revision.spec,revision.canonical_json,revision.digest
+  const result = await db.query(`select job.approved_spec_digest,job.authority_kind,job.authority_source_job_id,job.authority_source_spec_revision_id,job.authority_spec_digest,
+      revision.spec,revision.canonical_json,revision.digest,
+      source_revision.digest source_authority_digest
     from generation_job job join generation_spec_revision revision on revision.id=job.approved_spec_revision_id and revision.job_id=job.id
+    left join generation_spec_revision source_revision on source_revision.job_id=job.authority_source_job_id and source_revision.id=job.authority_source_spec_revision_id
     where job.id=$1`, [jobId]);
   if (!result.rowCount) throw new Error("generation_approved_spec_missing");
-  const spec = generationSpecificationSchema.parse(result.rows[0].spec);
+  const row = result.rows[0];
+  if (!["OWNER_APPROVED", "INHERITED_TECHNICAL"].includes(String(row.authority_kind))
+    || !row.authority_source_job_id || !row.authority_source_spec_revision_id
+    || String(row.authority_spec_digest) !== String(row.approved_spec_digest)
+    || String(row.source_authority_digest) !== String(row.approved_spec_digest)) throw new Error("generation_execution_authority_missing");
+  const spec = generationSpecificationSchema.parse(row.spec);
   const canonical = canonicalJson(spec); const expected = digest(spec);
-  if (canonical !== String(result.rows[0].canonical_json) || expected !== String(result.rows[0].digest) || expected !== String(result.rows[0].approved_spec_digest)) throw new Error("generation_approved_spec_digest_mismatch");
+  if (canonical !== String(row.canonical_json) || expected !== String(row.digest) || expected !== String(row.approved_spec_digest)) throw new Error("generation_approved_spec_digest_mismatch");
   return { plannerInput: canonical };
 }
 

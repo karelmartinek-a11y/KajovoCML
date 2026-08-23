@@ -31,10 +31,17 @@ const generatedDomain = await text("apps/server/src/domain/generated-component.t
 for (const required of ["materializeGenerationDependencies", "verifyGenerationDependencies", "verifyGeneratedPublicMcpBeforeActivation", "verifyGeneratedWebhookPublicIngress", "probeUdsComponentRuntime"]) requireText(generatedDomain, required, "generated CML conformance");
 const generationDomain = await text("apps/server/src/domain/generation.ts");
 requireText(generationDomain, "enqueueGeneratedRepairJob", "generated repair");
+requireText(generationDomain, "authority_kind='INHERITED_TECHNICAL'", "repair execution authority");
+requireText(generationDomain, "generation_repair_spec_lineage_missing", "repair lineage blocker");
+for (const legacy of ['state = \'CREATED\'', 'state = \'NEEDS_INPUT\'', 'state = \'PLAN_READY\'', 'state=\'CREATED\'', 'state=\'NEEDS_INPUT\'', 'state=\'PLAN_READY\'']) forbidText(generationDomain, legacy, "retired generation state path");
 for (const required of ["grantGenerationSecretToElements", "resumeGenerationAfterSatisfiedInputs", "upsertGenerationSecret"]) requireText(generationDomain, required, "INTEGRATING secret grant-before-resume wiring");
 for (const required of ["createGenerationFollowUpJob", "ownerRequiredInputs", "generation.follow_up_created"]) requireText(generationDomain, required, "linked follow-up and minimal-questionnaire controls");
 const generationRoutes = await text("apps/server/src/http/generation-routes.ts");
 requireText(generationRoutes, "/api/generation/jobs/:id/runs", "linked follow-up route");
+const discussion = await text("apps/server/src/domain/generation-discussion.ts");
+for (const required of ["lookup_cml_capabilities", "read_cml_capability_contract", "CAPABILITY_LOOKUP_REQUIRED", "CAPABILITY_CONTRACT_INSPECTION_REQUIRED", "capabilityReferencesStillCurrent", "lease_token", "recoverExpiredDiscussionTurns"]) requireText(discussion, required, "persistent capability-first discussion contract");
+requireText(discussion, "createSpecRevision(db, claimed.jobId, parsed, claimed.turnId, lease)", "lease-fenced specification write");
+for (const legacy of ["assistantMessage", "specification JSON"]) forbidText(discussion, legacy, "legacy raw JSON discussion transport");
 const generationPrompt = await text("apps/server/src/generation/openai-responses.ts");
 for (const required of ["validate_candidate_artifacts", "runtime.egressGrants obsahuje POUZE", "outboundPolicies objektu"]) requireText(generationPrompt, required, "manifest preflight contract");
 const browser = await text("apps/server/src/generation/browser-session.mjs");
@@ -61,6 +68,8 @@ for (const table of ["generation_job", "generation_component", "component_runtim
 }
 const followUpMigration = await text("apps/server/src/migrations/013_generation_follow_up_runs.sql");
 for (const required of ["parent_job_id", "run_sequence", "'RETRY'", "generation_job_active_component_follow_up_idx"]) requireText(followUpMigration, required, "generation follow-up migration");
+const authorityMigration = await text("apps/server/src/migrations/022_generation_execution_authority.sql");
+for (const required of ["authority_kind", "authority_source_job_id", "authority_source_spec_revision_id", "authority_spec_digest", "lease_token", "generation_job_authority_source_spec_fk"]) requireText(authorityMigration, required, "generation execution authority migration");
 const ui = await text("apps/admin-ui/src/app-layout.tsx");
 requireText(ui, 'navigationButton("generation", "Generování"', "OWNER navigation");
 for (const file of ["deploy/systemd/kcml-generation-worker.service", "deploy/systemd/kcml-generated-component@.service", "deploy/scripts/kcml-generated-runtime-helper", "apps/server/src/http/generation-routes.ts"]) await access(file);

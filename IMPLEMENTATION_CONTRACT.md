@@ -28,22 +28,48 @@ with `INTERRUPT_REQUESTED` as its transient steer state.
 Migrations `014_generation_discussion.sql`, `015_browser_automation_runtime.sql`
 and forward-only `016_generation_discussion_browser_runtime_completion.sql`
 and `017_discussion_turn_exclusivity_and_cancellation.sql`, `018`–`020` WEDOS
-operations and `021_retire_legacy_generation_states.sql` are one ordered
+operations, `021_retire_legacy_generation_states.sql` and
+`022_generation_execution_authority.sql` are one ordered
 contract. Migration 016 adds same-job composite foreign keys,
 historical digest reuse, request idempotency, interruption/lease metadata,
 operation scopes, irreversible confirmations and teaching records without
 rewriting an already-applied migration. Migration 017 permits one queued
 successor during a steer while database-enforcing a single upstream-active
 turn; cancellation interrupts streaming assistant output and prevents a late
-provider completion from changing the terminal job state.
+provider completion from changing the terminal job state. Migration 022 adds a
+fencing token to discussion leases and explicit execution authority lineage:
+`OWNER_APPROVED` for a newly approved semantic specification and
+`INHERITED_TECHNICAL` for a retry/repair that reuses the exact functional
+specification digest. A worker that loses its lease cannot write deltas,
+terminal messages, events or specifications.
 
 Canonical serialization is UTF-8 JSON with recursively sorted object keys,
 compact separators, and no undefined values. Digests are SHA-256 over those
 bytes. `GenerationSpecification` is strict: objective, result summary,
 behavioral requirements, inputs/outputs, external systems, business rules,
 explicit OWNER decisions, constraints, acceptance criteria, verified facts,
-open questions and typed `BrowserAutomationRequirement[]`. Approved revisions
-are immutable and planner/implementation input must match both id and digest.
+open questions, typed `BrowserAutomationRequirement[]` and, for new proposals,
+machine-readable capability decisions (`FULL_REUSE`, `PARTIAL_REUSE` or
+`NEW_CAPABILITY_REQUIRED`). Historical revisions without the optional
+capability field remain byte-for-byte compatible. Approved revisions are
+immutable and planner/implementation input must match both id and digest plus
+the execution-authority lineage.
+
+Capability-first is server-enforced per discussion turn. The canonical source
+is `component -> active_revision -> component_tool_contract ->
+component_current_readiness -> principal/component eligibility`. The
+`lookup_cml_capabilities` and `read_cml_capability_contract` tools return safe
+contract metadata only. A proposal without lookup evidence, or without exact
+contract inspection for referenced candidates, returns a typed recoverable tool
+error and cannot create a revision. Approval revalidates the referenced
+component revision, tool digest and runtime eligibility.
+
+Execution authority is explicit for every creation/continuation path: CREATE
+and semantic OWNER follow-up require a fresh OWNER-approved revision;
+technical retry and same-job remediation preserve the existing frozen
+authority; automatic REPAIR clones the source approved revision as
+`INHERITED_TECHNICAL` or is created `BLOCKED` when lineage is absent. No path
+uses `original_prompt` or diagnostic prose as functional authority.
 
 ## API and realtime
 
@@ -102,8 +128,11 @@ uppercase row ID. If the provider row was already deleted before a worker
 restart, recovery may derive the value only from authoritative TXT answers
 whose SHA-256 matches the persisted digest; otherwise it fails closed. The
 value is never logged or persisted as plaintext.
-Authoritative propagation and cleanup retry for a bounded five-minute window.
-An unresolved result fails the release and leaves the prior release active.
+Authoritative propagation and cleanup retry use bounded KCML operational
+deadlines. Those deadlines are not a WEDOS propagation guarantee; each
+observation records the authoritative hostname/address, SOA serial, response
+class and digest-only TXT visibility. An unresolved result fails the release
+and leaves the prior release active.
 
 ## Concurrency, recovery, and safety
 
@@ -138,10 +167,11 @@ authorization header.
 
 The generation worker, never an HTTP request, owns OpenAI Responses streaming.
 It sends OWNER-visible prose through `response.output_text.delta` and uses the
-single shared Responses transport/function-call infrastructure. The only
-discussion function is the server-side `propose_generation_specification` tool;
-its arguments are never rendered as chat text. The worker persists assistant
-deltas and safe provider response ids, checks interruption while reading, and
+single shared Responses transport/function-call infrastructure. The discussion
+tools are the server-side `lookup_cml_capabilities`,
+`read_cml_capability_contract` and `propose_generation_specification` tools;
+their arguments and outputs are never rendered as chat text. The worker
+persists assistant deltas and safe provider response ids, checks interruption while reading, and
 rejects a raw JSON/envelope prefix rather than extracting legacy fields such as
 `assistantMessage` into OWNER-visible text. It never parses model text into a
 specification; only the validated function-tool arguments may create a revision.

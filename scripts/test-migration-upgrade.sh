@@ -31,7 +31,7 @@ run_migrations
 
 psql "$KCML_UPGRADE_DATABASE_URL" --no-psqlrc --set ON_ERROR_STOP=1 --tuples-only --no-align <<SQL | grep -Fx 'baseline-clean-install-ok'
 select case when
-  (select count(*) from schema_migration) = 21
+  (select count(*) from schema_migration) = 22
   and exists (
     select 1
       from schema_migration
@@ -95,6 +95,11 @@ select case when
   and exists (select 1 from schema_migration where version='019_wedos_dns_author_comment_compatibility.sql' and sequence_number=19 and checksum_sha256 ~ '^[0-9a-f]{64}$')
   and exists (select 1 from schema_migration where version='020_wedos_dns_ascii_author_comment.sql' and sequence_number=20 and checksum_sha256 ~ '^[0-9a-f]{64}$')
   and exists (select 1 from schema_migration where version='021_retire_legacy_generation_states.sql' and sequence_number=21 and checksum_sha256 ~ '^[0-9a-f]{64}$')
+  and exists (select 1 from schema_migration where version='022_generation_execution_authority.sql' and sequence_number=22 and checksum_sha256 ~ '^[0-9a-f]{64}$')
+  and exists (select 1 from information_schema.columns where table_schema='public' and table_name='generation_job' and column_name='authority_kind')
+  and exists (select 1 from information_schema.columns where table_schema='public' and table_name='generation_job' and column_name='authority_source_spec_revision_id')
+  and exists (select 1 from information_schema.columns where table_schema='public' and table_name='generation_discussion_turn' and column_name='lease_token')
+  and exists (select 1 from pg_constraint where conname='generation_job_authority_source_spec_fk')
   and (select count(*) from release_epoch) = 1
   and exists (
     select 1
@@ -161,7 +166,7 @@ run_migrations
 
 psql "$KCML_UPGRADE_DATABASE_URL" --no-psqlrc --set ON_ERROR_STOP=1 --tuples-only --no-align <<SQL | grep -Fx 'baseline-compaction-ok'
 select case when
-  (select count(*) from schema_migration) = 21
+  (select count(*) from schema_migration) = 22
   and exists (
     select 1
       from schema_migration
@@ -225,6 +230,11 @@ select case when
   and exists (select 1 from schema_migration where version='019_wedos_dns_author_comment_compatibility.sql' and sequence_number=19 and checksum_sha256 ~ '^[0-9a-f]{64}$')
   and exists (select 1 from schema_migration where version='020_wedos_dns_ascii_author_comment.sql' and sequence_number=20 and checksum_sha256 ~ '^[0-9a-f]{64}$')
   and exists (select 1 from schema_migration where version='021_retire_legacy_generation_states.sql' and sequence_number=21 and checksum_sha256 ~ '^[0-9a-f]{64}$')
+  and exists (select 1 from schema_migration where version='022_generation_execution_authority.sql' and sequence_number=22 and checksum_sha256 ~ '^[0-9a-f]{64}$')
+  and exists (select 1 from information_schema.columns where table_schema='public' and table_name='generation_job' and column_name='authority_kind')
+  and exists (select 1 from information_schema.columns where table_schema='public' and table_name='generation_job' and column_name='authority_source_spec_revision_id')
+  and exists (select 1 from information_schema.columns where table_schema='public' and table_name='generation_discussion_turn' and column_name='lease_token')
+  and exists (select 1 from pg_constraint where conname='generation_job_authority_source_spec_fk')
   and (select count(*) from release_epoch) = 1
   and not exists (
     select 1
@@ -251,7 +261,7 @@ run_migrations
 
 psql "$KCML_UPGRADE_DATABASE_URL" --no-psqlrc --set ON_ERROR_STOP=1 --tuples-only --no-align <<SQL | grep -Fx 'baseline-retired-dashboard-ledger-ok'
 select case when
-  (select count(*) from schema_migration) = 21
+  (select count(*) from schema_migration) = 22
   and exists (
     select 1
       from schema_migration
@@ -287,6 +297,11 @@ select case when
   and exists (select 1 from schema_migration where version='019_wedos_dns_author_comment_compatibility.sql' and sequence_number=19 and checksum_sha256 ~ '^[0-9a-f]{64}$')
   and exists (select 1 from schema_migration where version='020_wedos_dns_ascii_author_comment.sql' and sequence_number=20 and checksum_sha256 ~ '^[0-9a-f]{64}$')
   and exists (select 1 from schema_migration where version='021_retire_legacy_generation_states.sql' and sequence_number=21 and checksum_sha256 ~ '^[0-9a-f]{64}$')
+  and exists (select 1 from schema_migration where version='022_generation_execution_authority.sql' and sequence_number=22 and checksum_sha256 ~ '^[0-9a-f]{64}$')
+  and exists (select 1 from information_schema.columns where table_schema='public' and table_name='generation_job' and column_name='authority_kind')
+  and exists (select 1 from information_schema.columns where table_schema='public' and table_name='generation_job' and column_name='authority_source_spec_revision_id')
+  and exists (select 1 from information_schema.columns where table_schema='public' and table_name='generation_discussion_turn' and column_name='lease_token')
+  and exists (select 1 from pg_constraint where conname='generation_job_authority_source_spec_fk')
   and not exists (
     select 1
       from schema_migration
