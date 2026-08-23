@@ -27,7 +27,10 @@ reload or health verification fails, and opens the durable critical
 `tls.canonical_renewal_failed` alert through the existing primary/backup alert
 ledger. A later verified renewal closes that same alert. The timer and its
 failure/recovery units use the monitor's existing systemd credentials; no TLS
-or WEDOS credential is copied into a new environment file.
+or WEDOS credential is copied into a new environment file. The renewal unit
+keeps `ProtectSystem=strict`; its `ReadWritePaths` allow only the canonical TLS,
+certbot state/log, nginx log and runtime directories needed by the actual
+certbot/nginx operations.
 
 If a worker restarts after a WEDOS row deletion but before authoritative cleanup
 verification, recovery can use only an authoritative TXT answer whose digest

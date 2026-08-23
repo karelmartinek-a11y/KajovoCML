@@ -27,7 +27,11 @@ ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
-ReadWritePaths=/etc/kcml/tls /run/kcml /var/lib/letsencrypt /etc/letsencrypt
+# certbot keeps its lock/log state under /var/log/letsencrypt and nginx -t
+# opens the configured nginx error log even though it is only validating the
+# configuration. Keep ProtectSystem=strict and grant only these exact runtime
+# paths instead of weakening the service sandbox.
+ReadWritePaths=/etc/kcml/tls /run/kcml /var/lib/letsencrypt /etc/letsencrypt /var/log/letsencrypt /var/log/nginx
 TimeoutStartSec=25min
 
 [Install]
