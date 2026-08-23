@@ -451,7 +451,11 @@ async function finalizeRun(db: Db, config: AutomationConfig, run: Record<string,
       [runId, workerId, leaseToken, status, output ? JSON.stringify(output) : null, errorCode, JSON.stringify({ evidenceKey })]
     );
     if (!result.rowCount) return false;
-    for (const step of steps) await client.query("update browser_automation_run_step set status=$2,error_code=$3,output_json=$4::jsonb,completed_at=now() where run_id=$1 and step_index=$5", [runId, String(step.status), step.errorCode ? text(step.errorCode) : null, step.output ? JSON.stringify(step.output) : null, Number(step.index)]);
+    for (const step of steps) {
+      const stepIndex = typeof step.index === "number" && Number.isInteger(step.index) ? step.index : null;
+      if (stepIndex === null) continue;
+      await client.query("update browser_automation_run_step set status=$2,error_code=$3,output_json=$4::jsonb,completed_at=now() where run_id=$1 and step_index=$5", [runId, String(step.status), step.errorCode ? text(step.errorCode) : null, step.output ? JSON.stringify(step.output) : null, stepIndex]);
+    }
     await client.query("insert into browser_automation_artifact(run_id,kind,storage_key,sensitive,content_type) values ($1,'EVIDENCE',$2,false,'application/json')", [runId, evidenceKey]);
     await client.query("update browser_automation_definition set last_success_at=case when $2='SUCCEEDED' then now() else last_success_at end,last_failure_at=case when $2<>'SUCCEEDED' then now() else last_failure_at end,last_failure_code=case when $2<>'SUCCEEDED' then $3 else null end,updated_at=now() where id=$1", [String(run.definition_id), status, errorCode]);
     return true;
@@ -490,7 +494,10 @@ export async function processNextBrowserAutomationRun(db: Db, config: Automation
   } catch (error) {
     const canceled = (error instanceof Error && error.message === "automation_cancelled") || await isCancelled(db, runId, workerId, leaseToken);
     const errorCode = canceled ? "automation_cancelled" : safeErrorCode(error);
-    await finalizeRun(db, config, run, workerId, leaseToken, canceled ? "CANCELLED" : "FAILED", null, errorCode, [{ index: Number(run.current_step ?? 0), action: "RUN", status: canceled ? "SKIPPED" : "FAILED", errorCode }]);
+    const runtimeSteps = error instanceof Error && Array.isArray((error as Error & { runtimeSteps?: unknown }).runtimeSteps)
+      ? (error as Error & { runtimeSteps: Array<Record<string, unknown>> }).runtimeSteps
+      : [{ index: Number(run.current_step ?? 0), action: "RUN", status: canceled ? "SKIPPED" : "FAILED", errorCode }];
+    await finalizeRun(db, config, run, workerId, leaseToken, canceled ? "CANCELLED" : "FAILED", null, errorCode, runtimeSteps);
   } finally {
     clearInterval(timer);
   }

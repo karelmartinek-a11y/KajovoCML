@@ -111,9 +111,10 @@ async function executeAtomic({ session, step, action, input, outputs, workspace,
   if (action === "NAVIGATE") {
     const url = new URL(required(step.url, "url"));
     if (!allowLocal && (url.protocol !== "https:" || privateHost(url.hostname))) throw new Error("automation_navigation_blocked");
-    return session.open(url.toString());
+    await session.open(url.toString());
+    return { navigated: true };
   }
-  if (action === "FILL") return session.fill(requiredLocator(step.locator), String(inputValue(input, step) ?? ""));
+  if (action === "FILL") { await session.fill(requiredLocator(step.locator), String(inputValue(input, step) ?? "")); return { completed: true }; }
   if (action === "FILL_SECRET") {
     if (!resolveSecret) throw new Error("automation_secret_resolver_required");
     const stableName = String(step.stableSecretName ?? step.secretName);
@@ -121,24 +122,27 @@ async function executeAtomic({ session, step, action, input, outputs, workspace,
     await session.fillSecret(requiredLocator(step.locator), secret);
     return { secretApplied: true };
   }
-  if (action === "SELECT") return session.select(requiredLocator(step.locator), String(inputValue(input, step) ?? ""));
-  if (action === "CLICK") return session.click(requiredLocator(step.locator));
-  if (action === "CHECK") return session.check(requiredLocator(step.locator));
-  if (action === "UNCHECK") return session.uncheck(requiredLocator(step.locator));
-  if (action === "PRESS") return session.press(step.locator ?? "body", required(step.key, "key"));
+  if (action === "SELECT") { await session.select(requiredLocator(step.locator), String(inputValue(input, step) ?? "")); return { completed: true }; }
+  if (action === "CLICK") { await session.click(requiredLocator(step.locator)); return { completed: true }; }
+  if (action === "CHECK") { await session.check(requiredLocator(step.locator)); return { completed: true }; }
+  if (action === "UNCHECK") { await session.uncheck(requiredLocator(step.locator)); return { completed: true }; }
+  if (action === "PRESS") { await session.press(step.locator ?? "body", required(step.key, "key")); return { completed: true }; }
   if (action === "UPLOAD") {
     const relative = input[String(step.inputName ?? step.name ?? "file")];
-    return session.upload(requiredLocator(step.locator), workspacePath(workspace, step.path ?? relative, "upload_path"));
+    await session.upload(requiredLocator(step.locator), workspacePath(workspace, step.path ?? relative, "upload_path"));
+    return { uploaded: true };
   }
   if (action === "DOWNLOAD") {
     const destination = workspacePath(workspace, step.destination ?? `${String(step.name ?? "download")}.bin`, "download_path");
-    return session.download(requiredLocator(step.locator), destination);
+    await session.download(requiredLocator(step.locator), destination);
+    return { downloaded: true };
   }
   if (action === "WAIT" || action === "WAIT_FOR") {
     if (step.condition && !(await observePredicate(session, step.condition, outputs))) throw new Error("automation_wait_condition_not_met");
-    return session.wait({ locator: step.locator ?? null, text: step.text ?? null, urlIncludes: step.urlIncludes ?? null, timeoutMs: Number(step.timeoutMs ?? 15_000) });
+    await session.wait({ locator: step.locator ?? null, text: step.text ?? null, urlIncludes: step.urlIncludes ?? null, timeoutMs: Number(step.timeoutMs ?? 15_000) });
+    return { waited: true };
   }
-  if (action === "ASSERT_TEXT") return session.wait({ text: required(step.text, "text"), timeoutMs: Number(step.timeoutMs ?? 15_000) });
+  if (action === "ASSERT_TEXT") { await session.wait({ text: required(step.text, "text"), timeoutMs: Number(step.timeoutMs ?? 15_000) }); return { asserted: true }; }
   if (action === "ASSERT") {
     if (!(await observePredicate(session, predicateFor(step), outputs))) throw new Error("automation_assertion_failed");
     return { asserted: true };
@@ -188,7 +192,11 @@ async function executeSteps({ session, steps, input, outputs, workspace, signal,
       const code = errorCode(error);
       const status = isMutation(action, step) && code !== "automation_cancelled" ? "UNCERTAIN" : "FAILED";
       results.push({ index: indexValue, action, status, startedAt, completedAt: new Date().toISOString(), errorCode: status === "UNCERTAIN" ? "automation_uncertain_side_effect" : code });
-      if (status === "UNCERTAIN") throw new Error("automation_uncertain_side_effect");
+      if (status === "UNCERTAIN") {
+        const uncertain = new Error("automation_uncertain_side_effect");
+        uncertain.runtimeSteps = results;
+        throw uncertain;
+      }
       throw error;
     }
   }
