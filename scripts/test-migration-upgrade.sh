@@ -31,7 +31,7 @@ run_migrations
 
 psql "$KCML_UPGRADE_DATABASE_URL" --no-psqlrc --set ON_ERROR_STOP=1 --tuples-only --no-align <<SQL | grep -Fx 'baseline-clean-install-ok'
 select case when
-  (select count(*) from schema_migration) = 24
+  (select count(*) from schema_migration) = 25
   and exists (
     select 1
       from schema_migration
@@ -98,6 +98,7 @@ select case when
   and exists (select 1 from schema_migration where version='022_generation_execution_authority.sql' and sequence_number=22 and checksum_sha256 ~ '^[0-9a-f]{64}$')
   and exists (select 1 from schema_migration where version='023_browser_automation_execution_runtime.sql' and sequence_number=23 and checksum_sha256 ~ '^[0-9a-f]{64}$')
   and exists (select 1 from schema_migration where version='024_browser_automation_worker_heartbeat.sql' and sequence_number=24 and checksum_sha256 ~ '^[0-9a-f]{64}$')
+  and exists (select 1 from schema_migration where version='025_single_owner_human_role.sql' and sequence_number=25 and checksum_sha256 ~ '^[0-9a-f]{64}$')
   and exists (select 1 from information_schema.columns where table_schema='public' and table_name='generation_job' and column_name='authority_kind')
   and exists (select 1 from information_schema.columns where table_schema='public' and table_name='generation_job' and column_name='authority_source_spec_revision_id')
   and exists (select 1 from information_schema.columns where table_schema='public' and table_name='generation_discussion_turn' and column_name='lease_token')
@@ -128,9 +129,16 @@ select case when
     select 1
       from admin_account
      where username='karmar78'
-       and role='ADMIN'
+       and role='OWNER'
        and active=false
        and password_hash is null
+  )
+  and not exists (select 1 from admin_account where role <> 'OWNER')
+  and exists (
+    select 1
+      from pg_constraint
+     where conname='admin_account_role_check'
+       and pg_get_constraintdef(oid) like '%role = ''OWNER''%'
   )
   and exists (
     select 1
@@ -158,6 +166,19 @@ then 'baseline-clean-install-ok' else 'baseline-clean-install-failed' end;
 SQL
 
 psql "$KCML_UPGRADE_DATABASE_URL" --no-psqlrc --set ON_ERROR_STOP=1 <<'SQL'
+DO $$
+BEGIN
+  BEGIN
+    INSERT INTO admin_account(username, role, active)
+    VALUES ('__single_owner_constraint_probe__', 'ADMIN', false);
+  EXCEPTION WHEN check_violation THEN
+    RETURN;
+  END;
+  RAISE EXCEPTION 'single_owner_role_constraint_not_enforced';
+END $$;
+SQL
+
+psql "$KCML_UPGRADE_DATABASE_URL" --no-psqlrc --set ON_ERROR_STOP=1 <<'SQL'
 delete from schema_migration;
 insert into schema_migration(version, applied_at, sequence_number, checksum_sha256) values
   ('001_initial.sql', now(), null, null),
@@ -170,7 +191,7 @@ run_migrations
 
 psql "$KCML_UPGRADE_DATABASE_URL" --no-psqlrc --set ON_ERROR_STOP=1 --tuples-only --no-align <<SQL | grep -Fx 'baseline-compaction-ok'
 select case when
-  (select count(*) from schema_migration) = 24
+  (select count(*) from schema_migration) = 25
   and exists (
     select 1
       from schema_migration
@@ -269,7 +290,7 @@ run_migrations
 
 psql "$KCML_UPGRADE_DATABASE_URL" --no-psqlrc --set ON_ERROR_STOP=1 --tuples-only --no-align <<SQL | grep -Fx 'baseline-retired-dashboard-ledger-ok'
 select case when
-  (select count(*) from schema_migration) = 24
+  (select count(*) from schema_migration) = 25
   and exists (
     select 1
       from schema_migration

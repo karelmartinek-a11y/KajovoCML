@@ -13,7 +13,7 @@ import {
 import QRCode from "qrcode";
 import { Modal, PageHeader } from "./common.js";
 import { formatDate } from "./ui-helpers.js";
-import type { AdminAccount, AdminRole, AdminSecurity } from "./types.js";
+import type { AdminAccount, AdminSecurity } from "./types.js";
 
 type ActionNotice = { tone: "success" | "error"; text: string };
 type RecoveryCodesState = { username: string; codes: string[] } | null;
@@ -322,15 +322,14 @@ export function AdminAccountsPage({
 }: {
   accounts: AdminAccount[];
   onRefresh: () => Promise<void>;
-  onCreate: (input: { username: string; password: string; role: AdminRole }) => Promise<void>;
+  onCreate: (input: { username: string; password: string }) => Promise<void>;
   onSetPassword: (accountId: string, nextPassword: string) => Promise<void>;
   onRevokeSessions: (accountId: string) => Promise<void>;
   onRotateRecovery: (accountId: string) => Promise<string[]>;
-  onUpdate: (accountId: string, input: { role?: AdminRole; active?: boolean }) => Promise<void>;
+  onUpdate: (accountId: string, input: { active: boolean }) => Promise<void>;
 }) {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
-  const [role, setRole] = useState<AdminRole>("ADMIN");
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -353,11 +352,10 @@ export function AdminAccountsPage({
     setMessage("");
     setActionNotice(null);
     try {
-      await onCreate({ username: username.trim(), password, role });
+      await onCreate({ username: username.trim(), password });
       setUsername("");
       setPassword("");
-      setRole("ADMIN");
-      setMessage("Administrátorský účet byl založen. MFA si uživatel zapne ve svém nastavení.");
+      setMessage("OWNER účet byl založen. MFA si uživatel zapne ve svém nastavení.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Založení účtu selhalo.");
     } finally {
@@ -381,18 +379,17 @@ export function AdminAccountsPage({
   }
 
   return <>
-    <PageHeader title="Administrátoři" description="Správa administrátorských účtů, hesel, recovery kódů a aktivních relací. MFA si každý uživatel aktivuje ve svém nastavení.">
+    <PageHeader title="OWNER účty" description="Správa účtů OWNERa, hesel, recovery kódů a aktivních relací. KájovoCML používá jednu lidskou roli OWNER; technické principály mají samostatný autorizační model.">
       <button className="secondary" onClick={() => { void onRefresh(); }}><RefreshCw size={16} /> Obnovit</button>
     </PageHeader>
     <section className="security-grid">
       <article className="panel security-panel">
         <div className="panel-head">
-          <div><h2>Založit administrátora</h2><p>Vytvoření dalšího účtu včetně počátečního hesla. MFA onboarding proběhne až po prvním přihlášení uživatele.</p></div>
+          <div><h2>Založit OWNER účet</h2><p>Vytvoření dalšího OWNER účtu včetně počátečního hesla. MFA onboarding proběhne až po prvním přihlášení uživatele.</p></div>
         </div>
         <form className="security-stack security-form" onSubmit={(event) => { void submitCreate(event); }}>
           <label>Uživatelské jméno<input value={username} onChange={(event) => setUsername(event.target.value)} /></label>
           <label>Počáteční heslo<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} /></label>
-          <label>Role<select value={role} onChange={(event) => setRole(event.target.value as AdminRole)}><option value="ADMIN">Administrátor</option><option value="AUDITOR">Auditor</option><option value="OWNER">Vlastník</option></select></label>
           {error ? <p className="error">{error}</p> : null}
           {message ? <div className="notice success"><CheckCircle2 size={18} /><span>{message}</span></div> : null}
           <div className="modal-actions"><button type="submit" disabled={busy}><Plus size={16} /> Založit účet</button></div>
@@ -412,7 +409,7 @@ export function AdminAccountsPage({
                 <div><strong>{account.username}</strong><small>{account.current ? "Aktuální účet" : "Administrátor"}</small></div>
                 <div className="row-actions">
                   <span className={`badge ${account.active ? "ok" : "danger"}`}>{account.active ? "Aktivní" : "Deaktivován"}</span>
-                  <span className="badge neutral">{account.role}</span>
+                  <span className="badge neutral">OWNER</span>
                   <span className={`badge ${account.mfaEnabled ? "ok" : "warn"}`}>{account.mfaEnabled ? "MFA zapnuto" : "Bez MFA"}</span>
                   {deploymentManaged ? <span className="badge ok">Řízeno deploymentem</span> : null}
                   <span className="badge neutral">{account.activeSessionCount} relací</span>
@@ -424,7 +421,7 @@ export function AdminAccountsPage({
                 <div><dt>Heslo změněno</dt><dd>{formatDate(account.passwordChangedAt)}</dd></div>
               </dl>
               <div className="security-stack">
-                <label>Role<select value={account.role} disabled={busy} onChange={(event) => { void runAccountAction(() => onUpdate(account.id, { role: event.target.value as AdminRole }), `Role účtu ${account.username} byla změněna.`, "Změna role selhala."); }}><option value="OWNER">Vlastník</option><option value="ADMIN">Administrátor</option><option value="AUDITOR">Auditor</option></select></label>
+                <div className="notice"><ShieldCheck size={18} /><span>OWNER — jediná lidská role. Role účtu se nemění; aktivita, MFA a relace jsou samostatné vlastnosti.</span></div>
                 <div className="row-actions"><button className={`secondary ${account.active ? "danger-link" : ""}`} disabled={busy} onClick={() => { void runAccountAction(() => onUpdate(account.id, { active: !account.active }), account.active ? `Účet ${account.username} byl deaktivován.` : `Účet ${account.username} byl aktivován.`, "Změna aktivity selhala."); }}>{account.active ? "Deaktivovat účet" : "Aktivovat účet"}</button></div>
                 {deploymentManaged ? <div className="notice"><LockKeyhole size={18} /><span>Heslo a MFA spravuje deployment; v UI je nelze přepsat.</span></div> : <>
                   <label>Nové heslo účtu<input type="password" value={passwordDrafts[account.id] ?? ""} onChange={(event) => setPasswordDrafts((current) => ({ ...current, [account.id]: event.target.value }))} /></label>

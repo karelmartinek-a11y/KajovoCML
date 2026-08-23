@@ -961,7 +961,7 @@ describe("admin server actions", () => {
       }
       if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") return { rowCount: 0, rows: [] };
       if (sql.includes("insert into admin_account")) {
-        return { rowCount: 1, rows: [{ id: "new-account", username: "newadmin" }] };
+        return { rowCount: 1, rows: [{ id: "new-account", username: "newowner", role: "OWNER" }] };
       }
       return { rowCount: 0, rows: [] };
     });
@@ -987,7 +987,7 @@ describe("admin server actions", () => {
         cookie: `__Host-kcml_session=${sessionValue}; __Host-kcml_csrf=${csrfValue}`,
         "x-csrf-token": csrfValue
       },
-      payload: { username: "newadmin", password: "very-strong-password", mfaSecret: "" }
+      payload: { username: "newowner", password: "very-strong-password" }
     });
     expect(created.statusCode).toBe(200);
     expect(query.mock.calls.some(([sql]) => String(sql).includes("insert into admin_account"))).toBe(true);

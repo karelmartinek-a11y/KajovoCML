@@ -69,8 +69,12 @@ const LOGIN_CHALLENGE_MS = 10 * 60 * 1000;
 const MFA_TRUST_WINDOW_MS = 48 * 60 * 60 * 1000;
 const MFA_ENROLLMENT_MS = 10 * 60 * 1000;
 type LoginThrottleScope = "ip" | "account" | "ip_account";
-const ADMIN_ROLES = ["OWNER", "ADMIN", "AUDITOR"] as const;
-type AdminRole = typeof ADMIN_ROLES[number];
+/**
+ * Human authorization is intentionally binary: an authenticated active
+ * account is an OWNER.  The field remains in compatibility responses while
+ * the database migration removes the mutable human-role model.
+ */
+type AdminRole = "OWNER";
 const registrationManifestSchema = z.object({
   testContract: z.object({
     safeInput: z.record(z.unknown()),
@@ -80,13 +84,11 @@ const registrationManifestSchema = z.object({
 });
 const adminAccountCreateSchema = z.object({
   username: z.string().trim().min(3).max(120),
-  password: z.string().min(12),
-  role: z.enum(ADMIN_ROLES).default("ADMIN")
-});
+  password: z.string().min(12)
+}).strict();
 const adminAccountUpdateSchema = z.object({
-  role: z.enum(ADMIN_ROLES).optional(),
   active: z.boolean().optional()
-}).strict().refine((value) => value.role !== undefined || value.active !== undefined, "admin_update_empty");
+}).strict().refine((value) => value.active !== undefined, "admin_update_empty");
 const adminBootstrapSchema = z.object({
   username: z.string().trim().min(3).max(120),
   password: z.string().min(12),
@@ -355,7 +357,7 @@ async function findSessionAccount(db: Db, request: FastifyRequest, config: Admin
       accountId: String(indexed.rows[0].account_id),
       accountName: String(indexed.rows[0].username),
       sessionId: String(indexed.rows[0].id),
-      role: ADMIN_ROLES.includes(indexed.rows[0].role as AdminRole) ? indexed.rows[0].role as AdminRole : "OWNER",
+      role: "OWNER",
       reauthenticatedAt: indexed.rows[0].reauthenticated_at
         ? new Date(indexed.rows[0].reauthenticated_at as string | Date).toISOString()
         : new Date().toISOString()
@@ -949,7 +951,7 @@ async function listAdminAccounts(db: Db, currentAccountId: string): Promise<Arra
     activeSessionCount: Number(row.active_session_count),
     recoveryCodeCount: Number(row.recovery_code_count),
     current: String(row.id) === currentAccountId,
-    role: ADMIN_ROLES.includes(row.role as AdminRole) ? row.role as AdminRole : "ADMIN",
+    role: "OWNER",
     active: Boolean(row.active)
   }));
 }
@@ -967,7 +969,7 @@ async function createAdminAccount(
       `insert into admin_account(username,password_hash,password_changed_at,mfa_enabled,mfa_secret,role,active,activated_at)
        values ($1,$2,now(),$3,$4,$5,true,now())
        returning id,username,role`,
-      [parsed.username, passwordHash, false, null, parsed.role]
+      [parsed.username, passwordHash, false, null, "OWNER"]
     );
     await appendAudit(client, {
       eventType: "admin.account.created",
@@ -1137,16 +1139,15 @@ async function bootstrapAdmin(db: Db, correlationId: string, input: z.infer<type
 async function updateAdminAccount(db: Db, actorId: string, correlationId: string, accountId: string, input: unknown): Promise<void> {
   const parsed = adminAccountUpdateSchema.parse(input);
   await tx(db, async (client) => {
-    const current = await client.query("select username,role,active from admin_account where id=$1 for update", [accountId]);
+    const current = await client.query("select username,active from admin_account where id=$1 for update", [accountId]);
     if (!current.rowCount) throw Object.assign(new Error("not_found"), { statusCode: 404 });
     const before = current.rows[0];
-    const nextRole = parsed.role ?? String(before.role) as AdminRole;
-    const nextActive = parsed.active ?? Boolean(before.active);
+    const nextActive = Boolean(parsed.active);
     const updated = await client.query(
-      "update admin_account set role=$2,active=$3,updated_at=now() where id=$1 returning username,role,active",
-      [accountId, nextRole, nextActive]
+      "update admin_account set active=$2,updated_at=now() where id=$1 returning username,active",
+      [accountId, nextActive]
     );
-    if (!nextActive || nextRole !== String(before.role)) {
+    if (!nextActive) {
       await client.query("update admin_session set revoked_at=now() where account_id=$1 and revoked_at is null", [accountId]);
     }
     await appendAudit(client, {
@@ -1155,8 +1156,8 @@ async function updateAdminAccount(db: Db, actorId: string, correlationId: string
       actorId,
       objectType: "admin_account",
       objectId: accountId,
-      before: { username: before.username, role: before.role, active: before.active },
-      after: { username: updated.rows[0].username, role: updated.rows[0].role, active: updated.rows[0].active },
+      before: { username: before.username, role: "OWNER", active: before.active },
+      after: { username: updated.rows[0].username, role: "OWNER", active: updated.rows[0].active },
       correlationId
     });
   });
@@ -1168,20 +1169,9 @@ export function registerAdminRoutes(app: FastifyInstance, db: Db, config: AdminR
     if (hostOf(request.headers.host) !== config.ADMIN_HOST || !request.url.startsWith("/api/")) return;
     const path = request.url.split("?")[0] ?? request.url;
     if (["HEAD", "OPTIONS"].includes(request.method) || path === "/api/session") return;
-    if (request.method === "GET") {
-      const session = await sessionAccount(db, request, config);
-      if (!session || session.role !== "AUDITOR") return;
-      const auditorReadable = ["/api/audit", "/api/monitoring", "/api/readiness", "/api/admin-security", "/api/mcp-servers", "/api/components", "/api/external-principals", "/api/external-targets", "/api/external-permissions"];
-      if (!auditorReadable.some((prefix) => path.startsWith(prefix))) return sendError(reply, 403, "admin_role_forbidden");
-      return;
-    }
     if (["/api/login", "/api/login/mfa", "/api/logout", "/api/bootstrap", "/api/reauth", "/api/admin-password"].includes(path)) return;
     const session = await sessionAccount(db, request, config);
     if (!session) return;
-    if (session.role === "AUDITOR") return sendError(reply, 403, "admin_role_forbidden");
-    if (path.startsWith("/api/admin-accounts") && session.role !== "OWNER") {
-      return sendError(reply, 403, "owner_role_required");
-    }
     if (Date.now() - new Date(session.reauthenticatedAt).getTime() > RECENT_REAUTH_MS) {
       return sendError(reply, 428, "reauthentication_required", "Recent authentication is required");
     }
@@ -1193,7 +1183,7 @@ export function registerAdminRoutes(app: FastifyInstance, db: Db, config: AdminR
     return {
       authenticated: Boolean(session),
       account: session?.accountName ?? null,
-      role: session?.role ?? null,
+      role: session ? "OWNER" : null,
       bootstrapRequired: session ? false : await getBootstrapRequired(db)
     };
   });
@@ -1231,7 +1221,7 @@ export function registerAdminRoutes(app: FastifyInstance, db: Db, config: AdminR
     const sessions = await listAdminSessions(db, session.accountId, session.sessionId);
     return {
       username: String(account.rows[0].username),
-      role: String(account.rows[0].role),
+      role: "OWNER",
       active: Boolean(account.rows[0].active),
       deploymentManaged: isDeploymentManagedAdmin(String(account.rows[0].username), config),
       mfaEnabled: Boolean(account.rows[0].mfa_enabled),
@@ -1245,7 +1235,6 @@ export function registerAdminRoutes(app: FastifyInstance, db: Db, config: AdminR
     if (hostOf(request.headers.host) !== config.ADMIN_HOST) return sendError(reply, 404, "not_found", undefined, correlationId);
     const session = await sessionAccount(db, request, config);
     if (!session) return sendError(reply, 401, "unauthorized", undefined, correlationId);
-    if (session.role !== "OWNER") return sendError(reply, 403, "owner_role_required", undefined, correlationId);
     const accounts = await listAdminAccounts(db, session.accountId);
     return {
       accounts: accounts.map((account) => ({
@@ -1272,7 +1261,6 @@ export function registerAdminRoutes(app: FastifyInstance, db: Db, config: AdminR
     if (hostOf(request.headers.host) !== config.ADMIN_HOST) return sendError(reply, 404, "not_found", undefined, correlationId);
     const session = await sessionAccount(db, request, config);
     if (!session) return sendError(reply, 401, "unauthorized", undefined, correlationId);
-    if (session.role === "AUDITOR") return sendError(reply, 403, "admin_role_forbidden", undefined, correlationId);
     if (!requireCsrf(request)) return sendError(reply, 403, "csrf_failed", undefined, correlationId);
     try {
       const parsed = domainConfigUpdateSchema.parse(request.body);
@@ -1287,7 +1275,6 @@ export function registerAdminRoutes(app: FastifyInstance, db: Db, config: AdminR
     if (hostOf(request.headers.host) !== config.ADMIN_HOST) return sendError(reply, 404, "not_found", undefined, correlationId);
     const session = await sessionAccount(db, request, config);
     if (!session) return sendError(reply, 401, "unauthorized", undefined, correlationId);
-    if (session.role === "AUDITOR") return sendError(reply, 403, "admin_role_forbidden", undefined, correlationId);
     if (!requireCsrf(request)) return sendError(reply, 403, "csrf_failed", undefined, correlationId);
     const { key } = request.params as { key: string };
     try {
@@ -1307,7 +1294,6 @@ export function registerAdminRoutes(app: FastifyInstance, db: Db, config: AdminR
     if (hostOf(request.headers.host) !== config.ADMIN_HOST) return sendError(reply, 404, "not_found", undefined, correlationId);
     const session = await sessionAccount(db, request, config);
     if (!session) return sendError(reply, 401, "unauthorized", undefined, correlationId);
-    if (session.role === "AUDITOR") return sendError(reply, 403, "admin_role_forbidden", undefined, correlationId);
     return { secrets: await listSecrets(db) };
   });
 
@@ -1316,7 +1302,6 @@ export function registerAdminRoutes(app: FastifyInstance, db: Db, config: AdminR
     if (hostOf(request.headers.host) !== config.ADMIN_HOST) return sendError(reply, 404, "not_found", undefined, correlationId);
     const session = await sessionAccount(db, request, config);
     if (!session) return sendError(reply, 401, "unauthorized", undefined, correlationId);
-    if (session.role === "AUDITOR") return sendError(reply, 403, "admin_role_forbidden", undefined, correlationId);
     if (!requireCsrf(request)) return sendError(reply, 403, "csrf_failed", undefined, correlationId);
     try {
       const parsed = secretCreateSchema.parse(request.body);
@@ -1331,7 +1316,6 @@ export function registerAdminRoutes(app: FastifyInstance, db: Db, config: AdminR
     if (hostOf(request.headers.host) !== config.ADMIN_HOST) return sendError(reply, 404, "not_found", undefined, correlationId);
     const session = await sessionAccount(db, request, config);
     if (!session) return sendError(reply, 401, "unauthorized", undefined, correlationId);
-    if (session.role === "AUDITOR") return sendError(reply, 403, "admin_role_forbidden", undefined, correlationId);
     if (!requireCsrf(request)) return sendError(reply, 403, "csrf_failed", undefined, correlationId);
     const { id } = request.params as { id: string };
     try {
@@ -1347,7 +1331,6 @@ export function registerAdminRoutes(app: FastifyInstance, db: Db, config: AdminR
     if (hostOf(request.headers.host) !== config.ADMIN_HOST) return sendError(reply, 404, "not_found", undefined, correlationId);
     const session = await sessionAccount(db, request, config);
     if (!session) return sendError(reply, 401, "unauthorized", undefined, correlationId);
-    if (session.role === "AUDITOR") return sendError(reply, 403, "admin_role_forbidden", undefined, correlationId);
     if (!requireCsrf(request)) return sendError(reply, 403, "csrf_failed", undefined, correlationId);
     const { id } = request.params as { id: string };
     try {
@@ -1364,7 +1347,6 @@ export function registerAdminRoutes(app: FastifyInstance, db: Db, config: AdminR
     if (hostOf(request.headers.host) !== config.ADMIN_HOST) return sendError(reply, 404, "not_found", undefined, correlationId);
     const session = await sessionAccount(db, request, config);
     if (!session) return sendError(reply, 401, "unauthorized", undefined, correlationId);
-    if (session.role === "AUDITOR") return sendError(reply, 403, "admin_role_forbidden", undefined, correlationId);
     if (!requireCsrf(request)) return sendError(reply, 403, "csrf_failed", undefined, correlationId);
     const { id } = request.params as { id: string };
     try {
@@ -1380,7 +1362,6 @@ export function registerAdminRoutes(app: FastifyInstance, db: Db, config: AdminR
     if (hostOf(request.headers.host) !== config.ADMIN_HOST) return sendError(reply, 404, "not_found", undefined, correlationId);
     const session = await sessionAccount(db, request, config);
     if (!session) return sendError(reply, 401, "unauthorized", undefined, correlationId);
-    if (session.role === "AUDITOR") return sendError(reply, 403, "admin_role_forbidden", undefined, correlationId);
     if (!requireCsrf(request)) return sendError(reply, 403, "csrf_failed", undefined, correlationId);
     const { id } = request.params as { id: string };
     try {
@@ -1396,7 +1377,6 @@ export function registerAdminRoutes(app: FastifyInstance, db: Db, config: AdminR
     if (hostOf(request.headers.host) !== config.ADMIN_HOST) return sendError(reply, 404, "not_found", undefined, correlationId);
     const session = await sessionAccount(db, request, config);
     if (!session) return sendError(reply, 401, "unauthorized", undefined, correlationId);
-    if (session.role === "AUDITOR") return sendError(reply, 403, "admin_role_forbidden", undefined, correlationId);
     const { id } = request.params as { id: string };
     return { versions: await listSecretVersions(db, id) };
   });
@@ -1406,7 +1386,6 @@ export function registerAdminRoutes(app: FastifyInstance, db: Db, config: AdminR
     if (hostOf(request.headers.host) !== config.ADMIN_HOST) return sendError(reply, 404, "not_found", undefined, correlationId);
     const session = await sessionAccount(db, request, config);
     if (!session) return sendError(reply, 401, "unauthorized", undefined, correlationId);
-    if (session.role === "AUDITOR") return sendError(reply, 403, "admin_role_forbidden", undefined, correlationId);
     const { id } = request.params as { id: string };
     return { grants: await listSecretGrants(db, id) };
   });
@@ -1416,7 +1395,6 @@ export function registerAdminRoutes(app: FastifyInstance, db: Db, config: AdminR
     if (hostOf(request.headers.host) !== config.ADMIN_HOST) return sendError(reply, 404, "not_found", undefined, correlationId);
     const session = await sessionAccount(db, request, config);
     if (!session) return sendError(reply, 401, "unauthorized", undefined, correlationId);
-    if (session.role === "AUDITOR") return sendError(reply, 403, "admin_role_forbidden", undefined, correlationId);
     if (!requireCsrf(request)) return sendError(reply, 403, "csrf_failed", undefined, correlationId);
     const { id } = request.params as { id: string };
     try {
@@ -1432,7 +1410,6 @@ export function registerAdminRoutes(app: FastifyInstance, db: Db, config: AdminR
     if (hostOf(request.headers.host) !== config.ADMIN_HOST) return sendError(reply, 404, "not_found", undefined, correlationId);
     const session = await sessionAccount(db, request, config);
     if (!session) return sendError(reply, 401, "unauthorized", undefined, correlationId);
-    if (session.role === "AUDITOR") return sendError(reply, 403, "admin_role_forbidden", undefined, correlationId);
     if (!requireCsrf(request)) return sendError(reply, 403, "csrf_failed", undefined, correlationId);
     const { id } = request.params as { id: string };
     try {
@@ -1450,7 +1427,6 @@ export function registerAdminRoutes(app: FastifyInstance, db: Db, config: AdminR
     if (hostOf(request.headers.host) !== config.ADMIN_HOST) return sendError(reply, 404, "not_found", undefined, correlationId);
     const session = await sessionAccount(db, request, config);
     if (!session) return sendError(reply, 401, "unauthorized", undefined, correlationId);
-    if (session.role === "AUDITOR") return sendError(reply, 403, "admin_role_forbidden", undefined, correlationId);
     if (!requireCsrf(request)) return sendError(reply, 403, "csrf_failed", undefined, correlationId);
     const { id } = request.params as { id: string };
     try {
@@ -1468,7 +1444,6 @@ export function registerAdminRoutes(app: FastifyInstance, db: Db, config: AdminR
     if (hostOf(request.headers.host) !== config.ADMIN_HOST) return sendError(reply, 404, "not_found", undefined, correlationId);
     const session = await sessionAccount(db, request, config);
     if (!session) return sendError(reply, 401, "unauthorized", undefined, correlationId);
-    if (session.role === "AUDITOR") return sendError(reply, 403, "admin_role_forbidden", undefined, correlationId);
     if (!requireCsrf(request)) return sendError(reply, 403, "csrf_failed", undefined, correlationId);
     const { id } = request.params as { id: string };
     try {
@@ -1485,7 +1460,6 @@ export function registerAdminRoutes(app: FastifyInstance, db: Db, config: AdminR
     if (hostOf(request.headers.host) !== config.ADMIN_HOST) return sendError(reply, 404, "not_found", undefined, correlationId);
     const session = await sessionAccount(db, request, config);
     if (!session) return sendError(reply, 401, "unauthorized", undefined, correlationId);
-    if (session.role === "AUDITOR") return sendError(reply, 403, "admin_role_forbidden", undefined, correlationId);
     if (!requireCsrf(request)) return sendError(reply, 403, "csrf_failed", undefined, correlationId);
     const { id } = request.params as { id: string };
     try {
@@ -1781,7 +1755,8 @@ export function registerAdminRoutes(app: FastifyInstance, db: Db, config: AdminR
       await createAdminAccount(db, session.accountId, correlationId, request.body);
       return { ok: true };
     } catch (error) {
-      return sendError(reply, Number((error as { statusCode?: number }).statusCode ?? 500), error instanceof Error ? error.message : "operation_failed", undefined, correlationId);
+      const validation = error instanceof z.ZodError;
+      return sendError(reply, validation ? 400 : Number((error as { statusCode?: number }).statusCode ?? 500), validation ? "admin_account_input_invalid" : error instanceof Error ? error.message : "operation_failed", undefined, correlationId);
     }
   });
 
@@ -1797,7 +1772,8 @@ export function registerAdminRoutes(app: FastifyInstance, db: Db, config: AdminR
       return { ok: true };
     } catch (error) {
       const lastOwner = error instanceof Error && error.message.includes("last_owner_required");
-      return sendError(reply, lastOwner ? 409 : Number((error as { statusCode?: number }).statusCode ?? 500), lastOwner ? "last_owner_required" : error instanceof Error ? error.message : "operation_failed", undefined, correlationId);
+      const validation = error instanceof z.ZodError;
+      return sendError(reply, lastOwner ? 409 : validation ? 400 : Number((error as { statusCode?: number }).statusCode ?? 500), lastOwner ? "last_owner_required" : validation ? "admin_account_input_invalid" : error instanceof Error ? error.message : "operation_failed", undefined, correlationId);
     }
   });
 

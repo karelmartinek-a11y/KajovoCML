@@ -74,6 +74,8 @@ const browserRuntimeMigration = await text("apps/server/src/migrations/023_brows
 for (const required of ["browser_automation_run", "lease_token", "CANCEL_REQUESTED", "side_effect_class"]) requireText(browserRuntimeMigration, required, "browser automation execution runtime migration");
 const browserHeartbeatMigration = await text("apps/server/src/migrations/024_browser_automation_worker_heartbeat.sql");
 for (const required of ["BROWSER_AUTOMATION", "platform_worker_heartbeat_worker_kind_check"]) requireText(browserHeartbeatMigration, required, "browser automation worker heartbeat migration");
+const singleOwnerMigration = await text("apps/server/src/migrations/025_single_owner_human_role.sql");
+for (const required of ["UPDATE public.admin_account", "SET role = 'OWNER'", "DROP CONSTRAINT IF EXISTS admin_account_role_check", "CHECK (role = 'OWNER')"]) requireText(singleOwnerMigration, required, "single OWNER human-role migration");
 const ui = await text("apps/admin-ui/src/app-layout.tsx");
 requireText(ui, 'navigationButton("generation", "Generování"', "OWNER navigation");
 for (const file of ["deploy/systemd/kcml-generation-worker.service", "deploy/systemd/kcml-browser-automation-worker.service", "deploy/systemd/kcml-generated-component@.service", "deploy/scripts/kcml-generated-runtime-helper", "apps/server/src/http/generation-routes.ts", "apps/server/src/http/browser-automation-routes.ts", "apps/server/src/domain/browser-automation.ts"]) await access(file);

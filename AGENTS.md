@@ -8,6 +8,8 @@
 
 KajovoCML is `PRE_PRODUCTION_TESTING`. Generation discussion is persistent and starts in `DISCUSSING`; browser work is Playwright-owned and routine automation runs are deterministic/no-AI. Breaking cleanup approved by the OWNER may replace obsolete test-only product flows.
 
+Human authorization is single-level across the product: every active authenticated human is `OWNER`. `ADMIN`, `AUDITOR` and other human roles are retired from active source/API/UI paths by forward-only migration `025_single_owner_human_role.sql`; machine/service principals retain their independent principal and permission model. Account identity, sessions, MFA, recovery and audit attribution must be preserved.
+
 ## Internal generation invariants
 - New capabilities are created only through the OWNER `Generování` flow and persistent generation jobs.
 - Do not create or restore an integration-token/programmer handoff, GitHub PR/CI/GHCR/OCI completion gate, or external onboarding worker for internally generated components.

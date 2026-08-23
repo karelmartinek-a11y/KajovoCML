@@ -55,7 +55,7 @@ describe.skipIf(!enabled)("authenticated generation HTTP/SSE contract", () => {
     if (!db) return;
     if (jobIds.length) await db.query("delete from generation_job where id=any($1::uuid[])", [jobIds]);
     if (accountId) await db.query("delete from admin_session where account_id=$1", [accountId]);
-    if (accountId) await db.query("update admin_account set role='ADMIN',active=false where id=$1", [accountId]);
+    if (accountId) await db.query("update admin_account set role='OWNER',active=false where id=$1", [accountId]);
     if (accountId) await db.query("delete from admin_account where id=$1", [accountId]);
     await app?.close();
     await db.end();

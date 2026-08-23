@@ -1,5 +1,6 @@
 export type Page = "dashboard" | "generation" | "automations" | "registered" | "identities" | "components" | "external" | "monitoring" | "secrets" | "tokens" | "permissions" | "audit" | "config" | "security" | "admins";
-export type AdminRole = "OWNER" | "ADMIN" | "AUDITOR";
+/** Compatibility response value; human authorization has no mutable sub-roles. */
+export type AdminRole = "OWNER";
 export type Session = { authenticated: boolean; account: string | null; role: AdminRole | null; bootstrapRequired?: boolean };
 export type ReleaseInfo = {
   applicationVersion: string;

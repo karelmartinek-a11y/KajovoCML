@@ -17,7 +17,7 @@ import {
   rotateManagedSecret,
   setManagedSecretStatus
 } from "./server-api.js";
-import type { AdminRole, DashboardIdentityCard, ManagedSecret, SecretGrant, SecretVersion } from "./types.js";
+import type { DashboardIdentityCard, ManagedSecret, SecretGrant, SecretVersion } from "./types.js";
 import { formatDate } from "./ui-helpers.js";
 
 function SecretFormModal({ onClose, onSaved }: {
@@ -305,10 +305,9 @@ function SecretDetailModal({ secret, accountName, identityCards, onClose, onChan
   </>;
 }
 
-export function SecretsPage({ secrets, accountName, role, onRefresh }: {
+export function SecretsPage({ secrets, accountName, onRefresh }: {
   secrets: ManagedSecret[];
   accountName: string | null;
-  role: AdminRole;
   onRefresh: () => void;
 }) {
   const [query, setQuery] = useState("");
@@ -316,9 +315,8 @@ export function SecretsPage({ secrets, accountName, role, onRefresh }: {
   const [selected, setSelected] = useState<ManagedSecret | null>(null);
   const [identityCards, setIdentityCards] = useState<DashboardIdentityCard[]>([]);
   useEffect(() => {
-    if (role !== "OWNER") return;
     void listDashboardIdentityCards().then(setIdentityCards).catch(() => setIdentityCards([]));
-  }, [role, secrets]);
+  }, [secrets]);
   const filtered = useMemo(() => secrets.filter((secret) => `${secret.stableName} ${secret.displayName} ${secret.description}`.toLowerCase().includes(query.toLowerCase())), [secrets, query]);
   return <>
     <PageHeader title="Secrets" description="Centrální správa stabilních secret názvů, verzí a grantů pro komponenty a přístupové tokeny.">

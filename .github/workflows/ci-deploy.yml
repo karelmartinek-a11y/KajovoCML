@@ -73,6 +73,8 @@ jobs:
           bash scripts/test-deploy-cancellation-guard.sh
           bash scripts/test-split-service-config.sh
           bash scripts/test-portable-negative-pattern-guards.sh
+          node scripts/test-single-owner-human-role.mjs
+          node scripts/test-ssot-compliance-ledger.mjs
           bash scripts/test-render-nginx-config.sh
           bash scripts/test-restore-test-permissions.sh
           node --check deploy/alert-sink/receiver.mjs

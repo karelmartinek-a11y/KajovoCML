@@ -1,7 +1,13 @@
 project: KajovoCML
 phase: PRE_PRODUCTION_TESTING
 normative_contract: docs/SSOT_CURRENT.md
-as_of: 2026-08-09
+as_of: 2026-08-23
+human_authorization:
+  role: OWNER
+  other_human_roles: retired
+  role_selector: absent
+  migration: 025_single_owner_human_role.sql
+  machine_principals: independent
 creation_flow:
   authority: generation_job
   owner_ui: Generování

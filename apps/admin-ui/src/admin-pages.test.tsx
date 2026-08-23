@@ -45,7 +45,7 @@ describe("admin pages", () => {
     const user = userEvent.setup();
     const account: AdminAccount = {
       id: "account-1",
-      username: "auditor",
+      username: "owner-two",
       deploymentManaged: false,
       passwordChangedAt: "2026-07-16T10:00:00.000Z",
       mfaEnabled: false,
@@ -53,7 +53,7 @@ describe("admin pages", () => {
       activeSessionCount: 1,
       recoveryCodeCount: 8,
       current: false,
-      role: "AUDITOR",
+      role: "OWNER",
       active: true
     };
     render(
@@ -75,8 +75,30 @@ describe("admin pages", () => {
 
     await user.click(screen.getByRole("button", { name: "Rotovat recovery kódy" }));
 
-    await waitFor(() => expect(screen.getByRole("dialog", { name: /Recovery kódy: auditor/i })).toBeTruthy());
-    expect(screen.getByText(/Recovery kódy účtu auditor byly rotovány\./i)).toBeTruthy();
+    await waitFor(() => expect(screen.getByRole("dialog", { name: /Recovery kódy: owner-two/i })).toBeTruthy());
+    expect(screen.getByText(/Recovery kódy účtu owner-two byly rotovány\./i)).toBeTruthy();
     expect(screen.getByText(/AAA-BBB-CCC/)).toBeTruthy();
+  });
+
+  it("creates an OWNER account without exposing a human role selector", async () => {
+    const user = userEvent.setup();
+    const onCreate = vi.fn(async () => undefined);
+    render(
+      <AdminAccountsPage
+        accounts={[]}
+        onRefresh={vi.fn(async () => undefined)}
+        onCreate={onCreate}
+        onSetPassword={vi.fn(async () => undefined)}
+        onRevokeSessions={vi.fn(async () => undefined)}
+        onRotateRecovery={vi.fn(async () => [])}
+        onUpdate={vi.fn(async () => undefined)}
+      />
+    );
+
+    expect(screen.queryByRole("combobox", { name: /role|úroveň|oprávnění/i })).toBeNull();
+    await user.type(screen.getByLabelText("Uživatelské jméno"), "new-owner");
+    await user.type(screen.getByLabelText("Počáteční heslo"), "a-long-safe-password");
+    await user.click(screen.getByRole("button", { name: "Založit účet" }));
+    await waitFor(() => expect(onCreate).toHaveBeenCalledWith({ username: "new-owner", password: "a-long-safe-password" }));
   });
 });

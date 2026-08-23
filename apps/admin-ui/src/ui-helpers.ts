@@ -54,8 +54,6 @@ export function describeApiError(code: string, correlationId: string | null = nu
     admin_mfa_deployment_managed: "MFA tohoto účtu spravuje produkční deployment a nelze ji měnit v UI.",
     reauthentication_required: "Pro tuto změnu je nutné znovu potvrdit heslo a MFA.",
     reauthentication_failed: "Opětovné ověření se nezdařilo.",
-    owner_role_required: "Tuto operaci může provést pouze vlastník systému.",
-    admin_role_forbidden: "Role auditora nepovoluje změny systému.",
     last_owner_required: "Posledního aktivního vlastníka nelze deaktivovat ani převést na jinou roli.",
     bootstrap_access_denied: "První nastavení je povoleno pouze z důvěryhodného rozhraní nebo s bootstrap secretem.",
     bootstrap_input_invalid: "Vyplňte uživatelské jméno a heslo alespoň o 12 znacích.",

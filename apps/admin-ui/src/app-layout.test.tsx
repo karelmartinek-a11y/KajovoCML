@@ -8,13 +8,13 @@ import { AppLayout, PageRouter } from "./app-layout.js";
 afterEach(() => cleanup());
 
 describe("application layout and router", () => {
-  it("keeps auditor navigation read-only and routes the selected page", async () => {
+  it("exposes the complete owner navigation and routes the selected page", async () => {
     const onPageChange = vi.fn();
     render(
       <AppLayout
         page="audit"
-        role="AUDITOR"
-        accountName="auditor"
+        role="OWNER"
+        accountName="owner"
         error=""
         onPageChange={onPageChange}
         onLogout={vi.fn()}
@@ -25,8 +25,8 @@ describe("application layout and router", () => {
       </AppLayout>
     );
     expect(screen.getByRole("heading", { name: "Auditní události" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /Přístupové tokeny/ })).toBeNull();
-    expect(screen.queryByRole("button", { name: /Konfigurace/ })).toBeNull();
+    expect(screen.getByRole("button", { name: /Tokeny a identity/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /Konfigurace/ })).toBeTruthy();
     await userEvent.click(screen.getByRole("button", { name: /Monitoring komponent/ }));
     expect(onPageChange).toHaveBeenCalledWith("monitoring");
   });

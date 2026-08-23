@@ -847,7 +847,7 @@ function AlertSuppressionModal({ alert, onClose, onSubmit }: { alert: Operationa
 }
 
 function Dashboard({ accountName, role, releaseInfo, onLogout }: { accountName: string | null; role: AdminRole; releaseInfo: ReleaseInfo | null; onLogout: () => void }) {
-  const [page, setPage] = useState<Page>(role === "OWNER" ? "dashboard" : "components");
+  const [page, setPage] = useState<Page>("dashboard");
   const [components, setComponents] = useState<Component[]>([]);
   const [externalPrincipals, setExternalPrincipals] = useState<ExternalPrincipal[]>([]);
   const [externalTargets, setExternalTargets] = useState<ExternalTarget[]>([]);
@@ -891,9 +891,9 @@ function Dashboard({ accountName, role, releaseInfo, onLogout }: { accountName: 
         api<MonitoringOverview>("/api/monitoring-overview"),
         api<AdminSecurity>("/api/admin-security"),
         api<AuditIntegrity>("/api/audit/integrity"),
-        role === "OWNER" ? api<{ accounts: AdminAccount[] }>("/api/admin-accounts") : Promise.resolve({ accounts: [] }),
+        api<{ accounts: AdminAccount[] }>("/api/admin-accounts"),
         api<{ settings: OperationalConfigSetting[] }>("/api/operational-config"),
-        role !== "AUDITOR" ? api<{ secrets: ManagedSecret[] }>("/api/secrets") : Promise.resolve({ secrets: [] })
+        api<{ secrets: ManagedSecret[] }>("/api/secrets")
       ]);
       setComponents(componentRes.components);
       setExternalPrincipals(externalPrincipalRes.principals);
@@ -1150,7 +1150,7 @@ function Dashboard({ accountName, role, releaseInfo, onLogout }: { accountName: 
     await refreshOperationalConfig();
   }
 
-  async function createAdminAccount(input: { username: string; password: string; role: AdminRole }) {
+  async function createAdminAccount(input: { username: string; password: string }) {
     await api("/api/admin-accounts", {
       method: "POST",
       headers: { "x-csrf-token": csrf() },
@@ -1159,7 +1159,7 @@ function Dashboard({ accountName, role, releaseInfo, onLogout }: { accountName: 
     await refreshAdminAccounts();
   }
 
-  async function updateAdminAccount(accountId: string, input: { role?: AdminRole; active?: boolean }) {
+  async function updateAdminAccount(accountId: string, input: { active: boolean }) {
     await api(`/api/admin-accounts/${accountId}`, {
       method: "PATCH",
       headers: { "x-csrf-token": csrf() },
@@ -1246,12 +1246,12 @@ function Dashboard({ accountName, role, releaseInfo, onLogout }: { accountName: 
       </>}
     >
       <PageRouter page={page} routes={{
-        dashboard: role === "OWNER" ? <DashboardPage releaseInfo={releaseInfo} onOpenStandardPage={(target) => setPage(target === "tokens" ? "identities" : target)} /> : null,
-        generation: role === "OWNER" ? <GenerationPage /> : null,
-        automations: role === "OWNER" ? <BrowserAutomationsPage /> : null,
-        registered: role === "OWNER" ? <RegisteredElementsPage onOpenPage={setPage} /> : null,
-        identities: role !== "AUDITOR" ? <section className="identity-center-page"><CredentialsPage credentials={credentials} components={components} onOpenCreate={() => setCreateOpen(true)} onEditPermissions={openPermissions} onRename={setRenameCredential} onConfirm={(credential, action) => setConfirm({ credential, action })} onComponentTokenRevoke={async (component, token) => { await updateComponent(component, () => revokeComponentAccessTokenRequest(component, token.id), "Revokace přístupového tokenu selhala"); }} onComponentTokenRotate={async (component, token) => { const result = await rotateComponentAccessTokenRequest(component, token.id); setComponents((current) => current.map((entry) => entry.id === result.component.id ? result.component : entry)); return result.accessToken; }} onRefresh={() => { void load(); }} /></section> : null,
-        components: <ComponentCatalogPage components={components} platformWorkerAccess={platformWorkerAccess} role={role} onRefresh={() => { void load(); }} onLoadDetail={loadComponentDetail} onToggle={toggleComponent}
+        dashboard: <DashboardPage releaseInfo={releaseInfo} onOpenStandardPage={(target) => setPage(target === "tokens" ? "identities" : target)} />,
+        generation: <GenerationPage />,
+        automations: <BrowserAutomationsPage />,
+        registered: <RegisteredElementsPage onOpenPage={setPage} />,
+        identities: <section className="identity-center-page"><CredentialsPage credentials={credentials} components={components} onOpenCreate={() => setCreateOpen(true)} onEditPermissions={openPermissions} onRename={setRenameCredential} onConfirm={(credential, action) => setConfirm({ credential, action })} onComponentTokenRevoke={async (component, token) => { await updateComponent(component, () => revokeComponentAccessTokenRequest(component, token.id), "Revokace přístupového tokenu selhala"); }} onComponentTokenRotate={async (component, token) => { const result = await rotateComponentAccessTokenRequest(component, token.id); setComponents((current) => current.map((entry) => entry.id === result.component.id ? result.component : entry)); return result.accessToken; }} onRefresh={() => { void load(); }} /></section>,
+        components: <ComponentCatalogPage components={components} platformWorkerAccess={platformWorkerAccess} onRefresh={() => { void load(); }} onLoadDetail={loadComponentDetail} onToggle={toggleComponent}
           onRotatePlatformWorkerAccess={async () => { const result = await api<{ status: PlatformWorkerAccessStatus; accessToken: { token: string; fingerprint: string } }>("/api/platform-worker-access/rotate", { method: "POST", headers: { "x-csrf-token": csrf() }, body: "{}" }); setPlatformWorkerAccess(result.status); return result.accessToken; }}
           onLifecycle={(component, action) => updateComponent(component, () => setComponentLifecycleRequest(component, action), "Změna lifecycle komponenty selhala")}
           onPermission={(component, permissionId, enabled) => updateComponent(component, () => setComponentPermissionRequest(component, permissionId, enabled), "Změna oprávnění selhala")}
@@ -1264,7 +1264,7 @@ function Dashboard({ accountName, role, releaseInfo, onLogout }: { accountName: 
           onRunE2E={runComponentE2E}
           onRunStateQuery={runComponentStateQuery}
           onRunHeartbeatChallenge={runComponentHeartbeatChallenge} />,
-        external: <ExternalComponentsPage principals={externalPrincipals} targets={externalTargets} permissions={externalPermissions} inboundPermissions={externalInboundPermissions} components={components} role={role} onRefresh={() => { void load(); }}
+        external: <ExternalComponentsPage principals={externalPrincipals} targets={externalTargets} permissions={externalPermissions} inboundPermissions={externalInboundPermissions} components={components} onRefresh={() => { void load(); }}
           onCreatePrincipal={async (input) => { await api("/api/external-principals", { method: "POST", headers: { "x-csrf-token": csrf() }, body: JSON.stringify(input) }); await load(); }}
           onCreateTarget={async (input) => { await api("/api/external-targets", { method: "POST", headers: { "x-csrf-token": csrf() }, body: JSON.stringify(input) }); await load(); }}
           onRotatePrincipal={async (principal) => { const result = await api<{ accessToken: { token: string; fingerprint: string } }>(`/api/external-principals/${principal.id}/access-tokens/rotate`, { method: "POST", headers: { "x-csrf-token": csrf() }, body: "{}" }); await load(); return result.accessToken; }}
@@ -1273,13 +1273,13 @@ function Dashboard({ accountName, role, releaseInfo, onLogout }: { accountName: 
           onSetPermission={async (input) => { await api("/api/external-permissions", { method: "PUT", headers: { "x-csrf-token": csrf() }, body: JSON.stringify(input) }); await load(); }}
           onSetInboundPermission={async (input) => { await api("/api/external-inbound-permissions", { method: "POST", headers: { "x-csrf-token": csrf() }, body: JSON.stringify(input) }); await load(); }} />,
         monitoring: <MonitoringPage servers={servers} accountName={accountName} catalogVersion={catalogVersion} probes={probes} overview={monitoringOverview} onRefresh={() => { void load(); }} onGenerate={() => setPage("generation")} onToggleEnabled={toggleServerEnabled} onRunTest={runServerTest} onLoadMonitoringProfile={loadMonitoringProfile} onSaveMonitoringProfile={saveMonitoringProfile} onStartRevision={startServerRevision} onDeleteServer={deleteServerRegistration} onTestWebhook={testAlertWebhooks} onAcknowledgeAlert={acknowledgeAlert} onSuppressAlert={suppressAlert} onRetryDelivery={retryAlertDelivery} />,
-        secrets: role !== "AUDITOR" ? <SecretsPage secrets={managedSecrets} accountName={accountName} role={role} onRefresh={() => { void refreshSecrets(); }} /> : null,
-        tokens: <section className="identity-center-page"><CredentialsPage credentials={credentials} components={components} onOpenCreate={() => setCreateOpen(true)} onEditPermissions={openPermissions} onRename={setRenameCredential} onConfirm={(credential, action) => setConfirm({ credential, action })} onComponentTokenRevoke={role === "AUDITOR" ? undefined : async (component, token) => { await updateComponent(component, () => revokeComponentAccessTokenRequest(component, token.id), "Revokace přístupového tokenu selhala"); }} onComponentTokenRotate={role === "AUDITOR" ? undefined : async (component, token) => { const result = await rotateComponentAccessTokenRequest(component, token.id); setComponents((current) => current.map((entry) => entry.id === result.component.id ? result.component : entry)); return result.accessToken; }} onRefresh={() => { void load(); }} /></section>,
+        secrets: <SecretsPage secrets={managedSecrets} accountName={accountName} onRefresh={() => { void refreshSecrets(); }} />,
+        tokens: <section className="identity-center-page"><CredentialsPage credentials={credentials} components={components} onOpenCreate={() => setCreateOpen(true)} onEditPermissions={openPermissions} onRename={setRenameCredential} onConfirm={(credential, action) => setConfirm({ credential, action })} onComponentTokenRevoke={async (component, token) => { await updateComponent(component, () => revokeComponentAccessTokenRequest(component, token.id), "Revokace přístupového tokenu selhala"); }} onComponentTokenRotate={async (component, token) => { const result = await rotateComponentAccessTokenRequest(component, token.id); setComponents((current) => current.map((entry) => entry.id === result.component.id ? result.component : entry)); return result.accessToken; }} onRefresh={() => { void load(); }} /></section>,
         permissions: <PermissionsPage credentials={credentials} servers={servers} selectedId={selectedCredentialId} permissions={permissions} saving={savingPermissions} onSelect={setSelectedCredentialId} onChange={setPermissions} onSave={() => { void savePermissions(); }} />,
         audit: <AuditPage events={events} nextCursor={auditNextCursor} integrity={auditIntegrity} onLoadMore={loadMoreAudit} onLoadDetail={loadAuditDetail} onRefresh={refreshAudit} onRefreshIntegrity={refreshAuditIntegrity} />,
         config: <OperationalConfigPage settings={operationalConfig} onRefresh={refreshOperationalConfig} onSave={saveOperationalConfig} />,
         security: <SecurityPage security={security} onRefresh={refreshSecurity} onChangePassword={changeAdminPassword} onRevokeOtherSessions={revokeOtherSessions} onRevokeSession={revokeSession} onRevokeAllSessions={revokeAllSessions} onStartMfaEnrollment={startMfaEnrollment} onVerifyMfaEnrollment={verifyMfaEnrollment} />,
-        admins: role === "OWNER" ? <AdminAccountsPage accounts={adminAccounts} onRefresh={refreshAdminAccounts} onCreate={createAdminAccount} onSetPassword={setAdminAccountPassword} onRevokeSessions={revokeAdminAccountSessions} onRotateRecovery={rotateAdminRecoveryCodes} onUpdate={updateAdminAccount} /> : null
+        admins: <AdminAccountsPage accounts={adminAccounts} onRefresh={refreshAdminAccounts} onCreate={createAdminAccount} onSetPassword={setAdminAccountPassword} onRevokeSessions={revokeAdminAccountSessions} onRotateRecovery={rotateAdminRecoveryCodes} onUpdate={updateAdminAccount} />
       }} />
     </AppLayout>
   );

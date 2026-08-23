@@ -30,8 +30,9 @@ and forward-only `016_generation_discussion_browser_runtime_completion.sql`
 and `017_discussion_turn_exclusivity_and_cancellation.sql`, `018`–`020` WEDOS
 operations, `021_retire_legacy_generation_states.sql`,
 `022_generation_execution_authority.sql` and
-`023_browser_automation_execution_runtime.sql` and
-`024_browser_automation_worker_heartbeat.sql` are one ordered
+`023_browser_automation_execution_runtime.sql`,
+`024_browser_automation_worker_heartbeat.sql` and
+`025_single_owner_human_role.sql` are one ordered
 contract. Migration 016 adds same-job composite foreign keys,
 historical digest reuse, request idempotency, interruption/lease metadata,
 operation scopes, irreversible confirmations and teaching records without
@@ -101,6 +102,16 @@ validation; the `revisions/:revisionId/verify` route runs the same Playwright
 interpreter and can produce `PASS` only for a manifest whose every step is
 explicitly `READ_ONLY`. No static check is promoted to runtime PASS.
 
+Human authorization is deliberately binary across the whole product: an
+authenticated active human account is `OWNER`. `ADMIN`, `AUDITOR` and any
+other human role are retired from active source, API and UI paths. Migration
+025 normalizes legacy stored values and replaces the account-role constraint
+with `CHECK (role = 'OWNER')`; it is forward-only and preserves account IDs,
+sessions, MFA/recovery data and audit attribution. Machine/service principals
+and their permission model remain independent. The admin-account API and UI do
+not accept or offer a human role selector; active status, MFA, sessions and
+last-owner protection remain separate controls.
+
 SSE envelopes are `{eventId, type, jobId, emittedAt, payload}`. Persistent ids
 are monotonic; heartbeat and resync notices do not reuse them. Canonical names
 are `generation.state.changed`,
@@ -169,7 +180,8 @@ retried. Failed candidate activation rolls back to the last functional release.
 
 ## Security and permissions
 
-All OWNER mutations use the existing session, OWNER role and CSRF contract.
+All OWNER mutations use the existing session, single-OWNER human role and CSRF
+contract. There is no additional human role or login/security gate.
 Automation callers require canonical CML component/principal permission for the
 specific automation definition and active revision. No new role, login gate,
 security approval, deployment approval, or credential-transfer workflow is

@@ -24,6 +24,8 @@ OWNER uses **Generování** in the admin UI. A persistent generation job analyse
 
 The discussion and implementation worker reuse the same canonical `OPENAI_API_KEY` record in Secret Manager. An existing active record with a missing platform grant is repaired by granting that record to the canonical platform worker; the dashboard does not request, create or rotate another key for that condition.
 
+Human authorization is intentionally single-level: every authenticated active human account is `OWNER`. Legacy `ADMIN`/`AUDITOR` values are normalized by forward-only migration `025_single_owner_human_role.sql`; machine principals remain governed by their separate principal and permission contracts. The admin-account API and UI expose activity, MFA and sessions, but no human role selector.
+
 Internally generated components do **not** use integration-token/programmer handoff, GitHub PR/CI, GHCR or OCI as runtime dependencies or completion gates. Each result is a normal canonical CML `component`/`principal` with one managed runtime access identity, direct secret grants, HTTPS hostname, control/state/heartbeat, monitoring, audit and local rollback.
 Abandoned candidate releases use the same local rollback path: a first CREATE is stopped/removed when no previous release exists, while UPDATE/REPAIR restores the prior release; terminal REPAIR also restores its captured base component state. When INTEGRATING resumes after OWNER secret input, deterministic component grants are committed before provider/browser/API work continues.
 

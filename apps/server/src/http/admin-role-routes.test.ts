@@ -10,7 +10,7 @@ const secret = (byte: number) => Buffer.alloc(32, byte).toString("base64");
 const sessionToken = "role-test-session-token";
 const csrfToken = "role-test-csrf-token";
 
-describe("admin role and bootstrap enforcement", () => {
+describe("single OWNER human role and bootstrap enforcement", () => {
   let app: FastifyInstance;
   let config: AppConfig;
 
@@ -28,11 +28,11 @@ describe("admin role and bootstrap enforcement", () => {
 
   afterEach(async () => app?.close());
 
-  async function appForSession(role: "OWNER" | "ADMIN" | "AUDITOR", reauthenticatedAt = new Date().toISOString()) {
+  async function appForSession(storedRole: "OWNER" | "ADMIN" | "AUDITOR", reauthenticatedAt = new Date().toISOString()) {
     const sessionHash = await argon2.hash(sessionToken, { type: argon2.argon2id, memoryCost: 4096, timeCost: 2, parallelism: 1 });
     const query = vi.fn(async (sql: string) => {
       if (sql.includes("from admin_session s")) {
-        return { rowCount: 1, rows: [{ id: "session-id", account_id: "account-id", session_hash: sessionHash, username: "operator", role, reauthenticated_at: reauthenticatedAt }] };
+        return { rowCount: 1, rows: [{ id: "session-id", account_id: "account-id", session_hash: sessionHash, username: "operator", role: storedRole, reauthenticated_at: reauthenticatedAt }] };
       }
       return { rowCount: 0, rows: [] };
     });
@@ -44,26 +44,35 @@ describe("admin role and bootstrap enforcement", () => {
     return query;
   }
 
-  it("blocks auditor writes and credential registry reads", async () => {
+  it("normalizes every authenticated human session to OWNER", async () => {
     await appForSession("AUDITOR");
     const headers = { host: config.ADMIN_HOST, cookie: `__Host-kcml_session=${sessionToken}; __Host-kcml_csrf=${csrfToken}`, "x-csrf-token": csrfToken };
-    const write = await app.inject({ method: "POST", url: "/api/mcp-servers/server-id/enabled", headers, payload: { enabled: false } });
-    expect(write.statusCode).toBe(403);
-    expect(write.json()).toMatchObject({ error: "admin_role_forbidden" });
-    const read = await app.inject({ method: "GET", url: "/api/kaja", headers });
-    expect(read.statusCode).toBe(403);
+    const session = await app.inject({ method: "GET", url: "/api/session", headers });
+    expect(session.statusCode).toBe(200);
+    expect(session.json()).toMatchObject({ authenticated: true, account: "operator", role: "OWNER" });
+    const accounts = await app.inject({ method: "GET", url: "/api/admin-accounts", headers });
+    expect(accounts.statusCode).toBe(200);
   });
 
-  it("reserves account management for owners", async () => {
+  it("rejects human role creation and mutation fields", async () => {
     await appForSession("ADMIN");
+    const headers = { host: config.ADMIN_HOST, cookie: `__Host-kcml_session=${sessionToken}; __Host-kcml_csrf=${csrfToken}`, "x-csrf-token": csrfToken };
     const response = await app.inject({
       method: "POST",
       url: "/api/admin-accounts",
-      headers: { host: config.ADMIN_HOST, cookie: `__Host-kcml_session=${sessionToken}; __Host-kcml_csrf=${csrfToken}`, "x-csrf-token": csrfToken },
-      payload: { username: "another-admin", password: "a-long-safe-password", role: "ADMIN" }
+      headers,
+      payload: { username: "another-owner", password: "a-long-safe-password", role: "ADMIN" }
     });
-    expect(response.statusCode).toBe(403);
-    expect(response.json()).toMatchObject({ error: "owner_role_required" });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ error: "admin_account_input_invalid" });
+    const update = await app.inject({
+      method: "PATCH",
+      url: "/api/admin-accounts/account-id",
+      headers,
+      payload: { role: "AUDITOR" }
+    });
+    expect(update.statusCode).toBe(400);
+    expect(update.json()).toMatchObject({ error: "admin_account_input_invalid" });
   });
 
   it("requires a fresh authentication for risky changes", async () => {

@@ -33,6 +33,7 @@ Tento dokument nahrazuje předchozí obsah `docs/SSOT_CURRENT.md`. Je jedinou c�
 - Dosavadní zákaz povinného GitHub/PR/CI/GHCR toku pro interní generation runtime zůstává. Branch/merge strategie popsaná v části C je implementační strategie vývojového týmu, nikoli runtime dependency generation produktu.
 - Hlasový chat zůstává odloženým vstupním rozhraním a není podmínkou této implementace; budoucí hlas musí používat stejnou serverovou generation business logiku.
 - Dosavadní generic monitoring/watchdog repair pro `INTERNAL_GENERATED` zůstává. Browser automation drift/repair jej rozšiřuje, nikoli nahrazuje.
+- Nový celoproduktový invariant zavádí jedinou lidskou roli `OWNER`; historické lidské role `ADMIN` a `AUDITOR` se nesmějí objevit v aktivním authorization/runtime/UI path. Tuto změnu provádí forward-only migration `025_single_owner_human_role.sql` a zachovává ID účtů, session/MFA/recovery/attribution data i oddělený machine-principal model.
 - Dosavadní lokální source snapshot/workspace/release/rollback model zůstává autoritou realizační části po approval freeze.
 - Provider-side konfigurace vyžadující skutečnou callback URL generované komponenty se provádí až v `INTEGRATING` po candidate deploymentu a readiness; browserová konfigurace v `DISCUSSING` smí provádět přípravné a OWNERem autorizované externí kroky, které nejsou závislé na ještě neexistujícím finálním candidate callbacku.
 
@@ -223,6 +224,29 @@ Realizační pipeline se spouští až po explicitním schválení konkrétní r
 `OWNER` je autorizovaný uživatel oprávněný zakládat generation joby, psát zprávy do diskuse, sledovat browser preview, číst revize specifikace, schvalovat specifikaci, rušit job a řešit explicitně vyžádaný vstup.
 
 OWNER je jediná uživatelská role, která provádí mutace popsané v tomto dokumentu. Všechny mutační routes musí používat stejný autentizační a CSRF model jako ostatní chráněné OWNER operace aplikace.
+
+## 2.1A Jediná lidská role v celém produktu
+
+`OWNER` je jediná povolená lidská authorization role v celém KajovoCML. Neexistuje
+lidský `ADMIN`, `AUDITOR` ani jiná hierarchie lidských rolí. Historické hodnoty
+jsou pouze migrační/forenzní evidence a nesmějí být vytvářeny, mutovány,
+vraceny jako aktivní authorization rozhodnutí ani nabízeny v UI.
+
+Tento invariant platí pro login/session, API, admin-account routes, UI,
+generation discussion, Secret Manager, permissions, monitoring, audit,
+automation, settings a všechny ostatní produktové pohledy. `admin_account.role`
+má po migraci `025_single_owner_human_role.sql` databázový default i CHECK pouze
+na `OWNER`; migrace normalizuje existující uložené účty bez změny jejich account
+ID, username, session epoch, MFA, recovery nebo audit attribution hodnot.
+
+Lidská oprávnění se neodvozují z historického role textu: aktivní autentizovaná
+session je OWNER session a současně podléhá stejným active-account, MFA,
+reauthentication, CSRF a last-owner safety pravidlům. Machine/service
+principals, jejich `principal_kind`, lifecycle, granty a permission scopes jsou
+samostatný autorizační model a tímto invariantem se nepřevádějí na lidské role.
+API create/update i OWNER UI proto nepřijímají ani nenabízejí volbu lidské
+role; aktivita, MFA, relace a account attribution zůstávají samostatnými
+vlastnostmi.
 
 ## 2.2 Generation job
 

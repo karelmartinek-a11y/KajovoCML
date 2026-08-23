@@ -32,7 +32,6 @@ export async function ownerSession(db: Db, config: AppServerConfig, request: Fas
   }
   const session = await sessionAccount(db, request, config);
   if (!session) { sendError(reply, 401, "unauthorized", undefined, correlationId); return null; }
-  if (session.role !== "OWNER") { sendError(reply, 403, "owner_role_required", undefined, correlationId); return null; }
   if (mutation && !requireCsrf(request)) { sendError(reply, 403, "csrf_failed", undefined, correlationId); return null; }
   return session;
 }

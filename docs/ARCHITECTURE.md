@@ -1,5 +1,17 @@
 # Architecture — internal generation
 
+## Human authorization invariant
+
+KajovoCML has exactly one human authorization role: `OWNER`. The active
+authorization path does not distinguish `ADMIN`, `AUDITOR` or another human
+role. Forward-only migration `025_single_owner_human_role.sql` normalizes
+legacy account rows and enforces `admin_account.role = 'OWNER'` without
+changing account identity, session/MFA/recovery data or audit attribution.
+The API and admin UI do not accept or offer role selection; active status,
+MFA, sessions, reauthentication, CSRF and last-owner safety remain separate
+controls. Machine/service principals and their permissions are not human roles
+and retain their canonical principal-kind/grant model.
+
 OWNER submits free text to `/api/generation/jobs`. The persistent generation worker leases the job, produces/accepts a plan, reserves final component identities, creates a local revision point/workspace, runs the focused OpenAI Responses orchestration, validates generated handlers/manifests, installs a versioned local release and starts the real UDS runtime.
 
 The result is registered directly into the existing canonical `component`/`principal` model. Secret Manager grants bind directly to that identity. Planner dependencies materialize as the existing component/principal permissions and are verified by real cross-component calls through the canonical HTTPS `/mcp` boundary. Existing control queue, state/heartbeat, monitoring, readiness/E2E evidence and audit remain the only control plane.
@@ -12,7 +24,7 @@ Generation owns one persistent Playwright BrowserContext per job. `playwright-se
 
 The canonical `browser-automation-runtime.mjs` interprets an immutable declarative manifest (`NAVIGATE`, `CLICK`, `FILL`, `FILL_SECRET`, `SELECT`, `CHECK`, `UNCHECK`, `PRESS`, `UPLOAD`, `DOWNLOAD`, `WAIT_FOR`, `ASSERT`, `EXTRACT`, `BRANCH`, and bounded `REPEAT_BOUNDED`) through the same Playwright platform boundary. It accepts semantic locators and explicit observed-state predicates only; it has no arbitrary JavaScript, `page.evaluate`, shell, direct fetch, or generated runtime source path. The DB-backed `domain/browser-automation.ts` and `kcml-browser-automation-worker.service` persist definitions, immutable revisions, fenced leases, idempotent runs, step checkpoints, cancellation and protected evidence without calling OpenAI. The worker records a fresh `BROWSER_AUTOMATION` heartbeat in the existing platform-worker heartbeat table, and readiness requires that heartbeat together with generation and canonical component worker heartbeats. Static preflight remains distinct from runtime verification: the owner-facing runtime verification route executes the same interpreter only for explicitly `READ_ONLY` manifests, and only that measured result can produce `verification_status=PASS` for activation. Auth binding creation is metadata-only and runtime resolution goes through the existing Secret Manager/platform principal boundary. An OWNER repair request now records an audit event and enqueues the existing inherited-spec generation repair authority for the owning component; missing ownership or approved functional lineage fails closed as a blocked repair. Uncertain side effects are finalized as `MANUAL_REVIEW`, never as a blind retry. Full human challenge, drift reconciliation and component-release activation ordering remain separate acceptance items. Generated handlers cannot import or access this runtime directly; they must call the canonical CML component boundary.
 
-Generation discussion persistence is defined by migrations `014_generation_discussion.sql` and `015_browser_automation_runtime.sql`, with forward completion through `024_browser_automation_worker_heartbeat.sql`. Messages, turns, spec revisions and event sequences are durable, approval freezes revision+digest, and `/api/generation/jobs/:id/events` provides replayable SSE. Discussion leases carry a fencing token; every streaming delta, tool event, spec write and terminal update is guarded by the current token, so a worker that loses its lease cannot publish late output.
+Generation discussion persistence is defined by migrations `014_generation_discussion.sql` and `015_browser_automation_runtime.sql`, with forward completion through `025_single_owner_human_role.sql`. Messages, turns, spec revisions and event sequences are durable, approval freezes revision+digest, and `/api/generation/jobs/:id/events` provides replayable SSE. Discussion leases carry a fencing token; every streaming delta, tool event, spec write and terminal update is guarded by the current token, so a worker that loses its lease cannot publish late output.
 
 Before a new capability is proposed, the discussion worker performs canonical capability-first discovery through the existing component, active revision, tool contract, readiness and principal data. It records only safe per-turn evidence. New specification decisions are machine-readable `FULL_REUSE`, `PARTIAL_REUSE` or `NEW_CAPABILITY_REQUIRED`; exact component/revision/tool digests are revalidated immediately before approval. A historical specification without this optional field remains valid without rewriting its canonical JSON or digest.
 
