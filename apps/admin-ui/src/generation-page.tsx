@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from "react";
-import { AlertTriangle, CheckCircle2, KeyRound, LoaderCircle, Play, RefreshCw, Sparkles, Square } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Eye, KeyRound, LoaderCircle, Play, RefreshCw, ShieldCheck, Sparkles, Square } from "lucide-react";
 import { PageHeader } from "./common.js";
 import { api, csrf, formatDate, prettyJson } from "./ui-helpers.js";
 
@@ -57,6 +57,7 @@ type GenerationJob = {
 type DiscussionMessage = { id: string; sequence: number; role: string; status: string; content: string; createdAt: string };
 type SpecRevision = { id: string; revision: number; digest: string; spec: { objective: string; resultSummary: string; behavioralRequirements: string[]; openQuestions: string[]; capabilityDecisions?: Array<{ requirementDigest: string; decision: string; reuse: Array<{ componentId: string; revisionId: string; toolContractId: string; contractDigest: string }>; reusableBehavior: string[]; missingDelta: string[]; permissionDelta: string[] }> }; renderedMarkdown?: string; createdAt: string };
 type DiscussionSseEnvelope = { eventId: number | null; type: string; jobId: string; emittedAt: string; payload: Record<string, unknown> };
+type BrowserPreview = { status: "NO_PREVIEW" | "NORMAL" | "SENSITIVE"; revision?: number; url?: string; title?: string; imageUrl?: string };
 
 const TERMINAL = new Set(["COMPLETED", "FAILED", "BLOCKED", "CANCELLED"]);
 
@@ -108,6 +109,9 @@ export function GenerationPage() {
   const [spec, setSpec] = useState<SpecRevision | null>(null);
   const [messageDraft, setMessageDraft] = useState("");
   const [streamStatus, setStreamStatus] = useState("offline");
+  const [browserUrl, setBrowserUrl] = useState("");
+  const [browserPreview, setBrowserPreview] = useState<BrowserPreview | null>(null);
+  const [teachingStatus, setTeachingStatus] = useState("");
 
   const load = useCallback(async () => {
     const [setupResponse, jobsResponse] = await Promise.all([
@@ -124,6 +128,14 @@ export function GenerationPage() {
   }, [load]);
 
   const selected = jobs.find((job) => job.id === selectedId) ?? null;
+
+  useEffect(() => {
+    setBrowserPreview((current) => {
+      if (current?.imageUrl) URL.revokeObjectURL(current.imageUrl);
+      return null;
+    });
+    setTeachingStatus("");
+  }, [selectedId]);
 
   useEffect(() => {
     if (!selectedId) return;
@@ -248,6 +260,56 @@ export function GenerationPage() {
     });
   }
 
+  async function loadBrowserPreview() {
+    if (!selected || !browserUrl.trim()) return;
+    setBusy(true); setError("");
+    try {
+      const response = await fetch(`/api/generation/jobs/${selected.id}/browser/preview`, { credentials: "include", headers: { accept: "image/png, application/json" } });
+      if (response.status === 423) {
+        const body = await response.json() as { status?: string; revision?: number; url?: string; title?: string };
+        setBrowserPreview({ status: "SENSITIVE", revision: body.revision, url: body.url, title: body.title });
+        return;
+      }
+      if (!response.ok) throw new Error(`browser_preview_http_${response.status}`);
+      const type = response.headers.get("content-type") ?? "";
+      if (type.includes("image/png")) {
+        const previous = browserPreview?.imageUrl;
+        if (previous) URL.revokeObjectURL(previous);
+        setBrowserPreview({ status: "NORMAL", imageUrl: URL.createObjectURL(await response.blob()) });
+      } else {
+        const body = await response.json() as { status?: string };
+        setBrowserPreview({ status: body.status === "SENSITIVE" ? "SENSITIVE" : "NO_PREVIEW" });
+      }
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Preview nelze načíst"); }
+    finally { setBusy(false); }
+  }
+
+  async function openBrowserPreview(sensitive = false) {
+    if (!selected || !browserUrl.trim()) return;
+    try { new URL(browserUrl.trim()); } catch { setError("Preview vyžaduje platný HTTPS URL."); return; }
+    setBusy(true); setError("");
+    try {
+      const response = await fetch(`/api/generation/jobs/${selected.id}/browser/preview`, { method: "POST", credentials: "include", headers: { "content-type": "application/json", "x-csrf-token": csrf() }, body: JSON.stringify({ url: browserUrl.trim(), sensitive }) });
+      if (!response.ok) { const body = await response.json().catch(() => ({})) as { error?: string }; throw new Error(body.error ?? `browser_preview_http_${response.status}`); }
+      await loadBrowserPreview();
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Browser preview selhal"); setBusy(false); }
+  }
+
+  async function runTeaching(mode: "preflight" | "replay") {
+    if (!selected || !browserUrl.trim()) return;
+    try { new URL(browserUrl.trim()); } catch { setError("Teaching vyžaduje platný HTTPS URL."); return; }
+    setBusy(true); setError(""); setTeachingStatus(`${mode === "preflight" ? "Preflight" : "Replay"} běží…`);
+    try {
+      const manifest = { schemaVersion: "kcml.browser-automation.v1", steps: [{ action: "NAVIGATE", url: browserUrl.trim(), sideEffectClass: "READ_ONLY" }, { action: "ASSERT", predicate: { urlIncludes: new URL(browserUrl.trim()).hostname }, sideEffectClass: "READ_ONLY" }] };
+      const response = await fetch(`/api/generation/jobs/${selected.id}/browser/teaching/${mode}`, { method: "POST", credentials: "include", headers: { "content-type": "application/json", "x-csrf-token": csrf() }, body: JSON.stringify({ manifest, purpose: `OWNER ${mode} browser preparation` }) });
+      const body = await response.json().catch(() => ({})) as { preflight?: { status?: string; stepCount?: number }; replay?: { status?: string; stepCount?: number }; error?: string };
+      if (!response.ok) throw new Error(body.error ?? `teaching_${mode}_http_${response.status}`);
+      const result = mode === "preflight" ? body.preflight : body.replay;
+      setTeachingStatus(`${mode === "preflight" ? "Preflight" : "Replay"}: ${result?.status ?? "PASS"} · ${result?.stepCount ?? 0} kroky · model calls 0`);
+    } catch (reason) { setTeachingStatus(""); setError(reason instanceof Error ? reason.message : "Teaching selhal"); }
+    finally { setBusy(false); }
+  }
+
   return <>
     <PageHeader title="Generování" description="Popište výsledek lidsky. KajovoCML navrhne, vytvoří, ověří a začlení nové MCP schopnosti nebo AI agenty do CML standardu.">
       <button className="secondary" onClick={() => { void load(); }} disabled={busy}><RefreshCw size={17} /> Obnovit</button>
@@ -272,6 +334,15 @@ export function GenerationPage() {
             <div className="generation-messages">{messages.map((message) => <article key={message.id} className={`generation-message ${message.role.toLowerCase()}`}><strong>{message.role}</strong><p>{message.content}</p><small>{formatDate(message.createdAt)}</small></article>)}</div>
             {selected.state === "DISCUSSING" ? <div className="generation-composer"><textarea rows={3} value={messageDraft} onChange={(event) => setMessageDraft(event.target.value)} placeholder="Doplňte cíl, omezení nebo rozhodnutí…" aria-label="Zpráva do diskuse" /><button disabled={busy || !messageDraft.trim()} onClick={() => { void sendMessage(); }}><Sparkles size={16} /> Odeslat do diskuse</button></div> : null}
             {spec ? <div className="generation-spec"><h4>Aktuální GenerationSpecification</h4><p>{spec.spec.objective}</p><small>{spec.spec.resultSummary}</small>{spec.spec.openQuestions.length ? <p><strong>Otevřené otázky:</strong> {spec.spec.openQuestions.join(" · ")}</p> : null}{spec.spec.capabilityDecisions?.length ? <div className="generation-capability-decisions"><strong>Capability-first rozhodnutí</strong>{spec.spec.capabilityDecisions.map((decision, index) => <article key={`${decision.requirementDigest}-${index}`}><span className="badge neutral">{decision.decision}</span>{decision.reuse.length ? <small>Reuse: {decision.reuse.map((reference) => reference.componentId).join(", ")}</small> : null}{decision.reusableBehavior.length ? <small>Pokryto: {decision.reusableBehavior.join(" · ")}</small> : null}{decision.missingDelta.length ? <small>Chybějící delta: {decision.missingDelta.join(" · ")}</small> : null}{decision.permissionDelta.length ? <small>Permission delta: {decision.permissionDelta.join(" · ")}</small> : null}</article>)}</div> : null}<button disabled={busy || selected.state !== "DISCUSSING" || spec.spec.openQuestions.length > 0} onClick={() => { void approveSpec(); }}><CheckCircle2 size={16} /> Schválit tuto revizi a realizovat</button></div> : null}
+          </section>
+          <section className="generation-browser-preparation" aria-label="Generation browser preview a teaching">
+            <div className="panel-head"><div><h3><Eye size={17} /> Browser preview a teaching</h3><p>Job-scoped Playwright session; citlivý stav vrací pouze metadata a nikdy obrazový artefakt.</p></div>{browserPreview?.revision ? <span className="badge neutral">Frame v{browserPreview.revision}</span> : null}</div>
+            <label>Bezpečný HTTPS target<input value={browserUrl} onChange={(event) => setBrowserUrl(event.target.value)} placeholder="https://reference-api.example/ready" inputMode="url" /></label>
+            <div className="row-actions"><button className="secondary" disabled={busy || !browserUrl.trim()} onClick={() => { void openBrowserPreview(false); }}><Eye size={16} /> Otevřít preview</button><button className="secondary" disabled={busy || !browserUrl.trim()} onClick={() => { void openBrowserPreview(true); }}><ShieldCheck size={16} /> Označit citlivý stav</button><button className="secondary" disabled={busy || !browserPreview} onClick={() => { void loadBrowserPreview(); }}><RefreshCw size={16} /> Načíst frame</button></div>
+            {browserPreview?.status === "NORMAL" && browserPreview.imageUrl ? <figure className="generation-browser-frame"><img src={browserPreview.imageUrl} alt="Bezpečný browser preview frame" /><figcaption>Obrazový evidence frame je pouze job-scoped a cache-control: no-store.</figcaption></figure> : null}
+            {browserPreview?.status === "SENSITIVE" ? <div className="notice"><ShieldCheck size={17} /> Citlivý stav je aktivní. UI zobrazuje pouze bezpečná metadata; obraz ani hodnoty formulářů se neposílají do evidence.</div> : null}
+            {browserPreview?.status === "NO_PREVIEW" ? <div className="notice">Pro tento job zatím není uložený preview frame.</div> : null}
+            <div className="row-actions"><button className="secondary" disabled={busy || !browserUrl.trim()} onClick={() => { void runTeaching("preflight"); }}><CheckCircle2 size={16} /> Teaching preflight</button><button className="secondary" disabled={busy || !browserUrl.trim()} onClick={() => { void runTeaching("replay"); }}><Play size={16} /> Deterministic replay</button>{teachingStatus ? <span className="field-hint">{teachingStatus}</span> : null}</div>
           </section>
           {selected.plan ? <section className="generation-plan"><h3>Návrh</h3><p>{selected.plan.understoodIntent}</p><div className="generation-elements">{selected.plan.elements.map((element) => <article key={element.key}><strong>{element.displayName}</strong><span className="badge neutral">{element.kind}</span><p>{element.businessPurpose}</p><small>{element.responsibilities.join(" · ")}</small></article>)}</div>{selected.plan.dependencies.length ? <p><strong>Vazby:</strong> {selected.plan.dependencies.map((dependency) => `${dependency.from} → ${dependency.to}: ${dependency.purpose}`).join("; ")}</p> : null}</section> : <div className="generation-running"><LoaderCircle className="spin" size={20} /> KajovoCML připravuje technický návrh…</div>}
           {selected.state === "BLOCKED" && selected.inputs.some((input) => !input.supplied) ? <section className="generation-inputs"><h3>Potřebuji doplnit</h3><p>Požadovány jsou pouze informace, které KajovoCML nemůže zjistit samo. Pole jsou v tomto zabezpečeném prostoru zobrazená jako běžný text; citlivé hodnoty se po odeslání ukládají pouze do Secret Manageru.</p>{selected.inputs.filter((input) => !input.supplied).map((input) => <label key={input.key}>{input.label}<small>{input.description}</small><input type="text" value={inputs[input.key] ?? ""} onChange={(event) => setInputs((current) => ({ ...current, [input.key]: event.target.value }))} /></label>)}<button disabled={busy} onClick={() => { void submitInputs(); }}>Uložit vstupy</button></section> : null}

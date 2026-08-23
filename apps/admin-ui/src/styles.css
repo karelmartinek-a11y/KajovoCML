@@ -1177,4 +1177,11 @@ input[type="checkbox"] { width: 17px; height: 17px; min-height: 17px; padding: 0
 .generation-capability-decisions { display: grid; gap: 8px; border-top: 1px solid var(--border); padding-top: 10px; }
 .generation-capability-decisions article { display: grid; gap: 3px; padding: 9px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); }
 .generation-capability-decisions small { overflow-wrap: anywhere; }
+.generation-browser-preparation { display: grid; gap: 12px; margin-top: 16px; padding: 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-muted); }
+.generation-browser-preparation h3 { display: flex; align-items: center; gap: 7px; margin: 0; }
+.generation-browser-preparation label { display: grid; gap: 5px; min-width: 0; }
+.generation-browser-preparation input { min-width: 0; width: 100%; }
+.generation-browser-frame { display: grid; gap: 7px; margin: 0; min-width: 0; }
+.generation-browser-frame img { display: block; width: 100%; max-height: 420px; object-fit: contain; object-position: top center; border: 1px solid var(--border); border-radius: 9px; background: #101820; }
+.generation-browser-frame figcaption { color: var(--muted); font-size: 0.78rem; }
 @media (max-width: 900px) { .generation-grid { grid-template-columns: 1fr; } .generation-key-row { grid-template-columns: 1fr; } }
