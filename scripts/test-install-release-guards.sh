@@ -21,6 +21,8 @@ for file in "$install_script" "$preflight_script" "$generation_unit" "$component
 done
 
 grep -Fq 'kcml-generation-worker.service' "$install_script"
+grep -Fq 'kcml-browser-automation-worker.service' "$install_script"
+test -f deploy/systemd/kcml-browser-automation-worker.service
 grep -Fq 'kcml-generated-component@.service' "$install_script"
 grep -Fq 'kcml-generated-runtime-helper' "$install_script"
 grep -Fq 'dist/cli/ensure-platform-worker-access.js' "$install_script"
@@ -42,11 +44,12 @@ grep -Fq "where version='019_wedos_dns_author_comment_compatibility.sql'" "$inst
 grep -Fq "where version='020_wedos_dns_ascii_author_comment.sql'" "$install_script"
 grep -Fq "where version='021_retire_legacy_generation_states.sql'" "$install_script"
 grep -Fq "where version='022_generation_execution_authority.sql'" "$install_script"
+grep -Fq "where version='023_browser_automation_execution_runtime.sql'" "$install_script"
 grep -Fq 'step verify-wedos-runtime' "$install_script"
 grep -Fq 'step openai-secret-preflight' "$install_script"
 grep -Fq 'dist/cli/openai-secret-preflight.js' "$install_script"
 grep -Fq 'replaceAll("-", "")' "$install_script"
-grep -Fq 'wait_for_sql_equals "schema_migration_count" "22" "select count(*) from schema_migration"' "$install_script"
+grep -Fq 'wait_for_sql_equals "schema_migration_count" "23" "select count(*) from schema_migration"' "$install_script"
 grep -Fq 'curl -fsS "https://${canonical_component_hostname}/.well-known/oauth-protected-resource/mcp"' "$install_script"
 grep -Fq 'deploy/scripts/ensure-canonical-tls.sh' "$install_script"
 grep -Fq 'deploy/scripts/renew-canonical-tls.sh' "$renewal_service"

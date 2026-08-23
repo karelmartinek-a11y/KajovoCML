@@ -28,8 +28,9 @@ with `INTERRUPT_REQUESTED` as its transient steer state.
 Migrations `014_generation_discussion.sql`, `015_browser_automation_runtime.sql`
 and forward-only `016_generation_discussion_browser_runtime_completion.sql`
 and `017_discussion_turn_exclusivity_and_cancellation.sql`, `018`–`020` WEDOS
-operations, `021_retire_legacy_generation_states.sql` and
-`022_generation_execution_authority.sql` are one ordered
+operations, `021_retire_legacy_generation_states.sql`,
+`022_generation_execution_authority.sql` and
+`023_browser_automation_execution_runtime.sql` are one ordered
 contract. Migration 016 adds same-job composite foreign keys,
 historical digest reuse, request idempotency, interruption/lease metadata,
 operation scopes, irreversible confirmations and teaching records without
@@ -41,7 +42,10 @@ fencing token to discussion leases and explicit execution authority lineage:
 `OWNER_APPROVED` for a newly approved semantic specification and
 `INHERITED_TECHNICAL` for a retry/repair that reuses the exact functional
 specification digest. A worker that loses its lease cannot write deltas,
-terminal messages, events or specifications.
+terminal messages, events or specifications. Migration 023 adds browser-run
+lease fencing, retry attempts, cancellation/checkpoint state, safe progress
+evidence and an administrative idempotency index. It does not turn static
+preflight into a runtime verification PASS.
 
 Canonical serialization is UTF-8 JSON with recursively sorted object keys,
 compact separators, and no undefined values. Digests are SHA-256 over those
@@ -83,6 +87,13 @@ Generation resources use `/api/generation/jobs/:id`. The discussion API is:
 - `POST /api/generation/jobs/:id/approve-spec` — exact revision/digest freeze.
 - `POST /api/generation/jobs/:id/cancel` — authoritative cancellation.
 
+Browser automation resources use `/api/browser-automations` and are
+OWNER/CSRF-protected. They provide definition/revision creation and listing,
+static preflight, queued run creation, history/detail, cancellation,
+reauthentication, enable/disable, repair and protected evidence download.
+`preflight` returns `STATIC_VALIDATED` after manifest/digest validation; only a
+separately measured runtime verification may produce an activation PASS.
+
 SSE envelopes are `{eventId, type, jobId, emittedAt, payload}`. Persistent ids
 are monotonic; heartbeat and resync notices do not reuse them. Canonical names
 are `generation.state.changed`,
@@ -98,9 +109,11 @@ are `generation.state.changed`,
 All browser code is platform-owned and uses Playwright. Generated handlers have
 no Playwright, process, direct network, filesystem, shell, or arbitrary import
 authority. They call the canonical Browser Automation Runtime only through
-`context.callComponent`. Runtime manifests are declarative and limited to
-navigation, semantic locators, input, click, wait, assert, extract, bounded
-branch/repeat, upload/download handles, and typed outputs.
+`context.callComponent`. Runtime manifests are declarative and currently
+limited to the implemented `NAVIGATE`, `FILL`, `SELECT`, `CLICK`, `WAIT`,
+`ASSERT_TEXT` and `EXTRACT_TEXT` actions with typed extraction. Future
+branch/repeat or upload/download behavior requires an explicit versioned
+contract extension.
 
 Navigation is HTTPS-only, allowlist/operation-scope constrained, and blocks
 private/link-local targets. Credentials are resolved only through Secret

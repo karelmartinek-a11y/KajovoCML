@@ -97,6 +97,7 @@ restart_core_services() {
   systemctl restart kcml-egress-proxy
   systemctl restart kcml-secret-broker
   systemctl restart kcml-generation-worker
+  systemctl restart kcml-browser-automation-worker
   systemctl restart kcml-component-control-worker
   systemctl restart kcml-component-e2e-worker
   systemctl restart kcml-monitor
@@ -134,6 +135,7 @@ wait_for_runtime_health() {
       && systemctl is-active --quiet kcml-egress-proxy \
       && systemctl is-active --quiet kcml-secret-broker \
       && systemctl is-active --quiet kcml-generation-worker \
+      && systemctl is-active --quiet kcml-browser-automation-worker \
       && systemctl is-active --quiet kcml-component-control-worker \
       && systemctl is-active --quiet kcml-component-e2e-worker \
       && systemctl is-active --quiet kcml-monitor \
@@ -150,8 +152,8 @@ wait_for_runtime_health() {
   done
 
   if [ "$healthy" != "true" ]; then
-    systemctl status kcml kcml-egress-proxy kcml-secret-broker kcml-generation-worker kcml-component-control-worker kcml-component-e2e-worker kcml-monitor kcml-alert-primary kcml-alert-backup --no-pager -l || true
-    for service in kcml kcml-egress-proxy kcml-secret-broker kcml-generation-worker kcml-component-control-worker kcml-component-e2e-worker kcml-monitor; do
+    systemctl status kcml kcml-egress-proxy kcml-secret-broker kcml-generation-worker kcml-browser-automation-worker kcml-component-control-worker kcml-component-e2e-worker kcml-monitor kcml-alert-primary kcml-alert-backup --no-pager -l || true
+    for service in kcml kcml-egress-proxy kcml-secret-broker kcml-generation-worker kcml-browser-automation-worker kcml-component-control-worker kcml-component-e2e-worker kcml-monitor; do
       echo "==== journal:$service ====" >&2
       journalctl -u "$service" --no-pager -n 80 || true
     done
@@ -254,7 +256,7 @@ kcml ALL=(root) NOPASSWD: /usr/local/sbin/kcml-generated-runtime-helper *
 EOF
 chmod 0440 /etc/sudoers.d/kcml-generated-runtime
 visudo -cf /etc/sudoers.d/kcml-generated-runtime
-for unit in kcml.service kcml-generation-worker.service kcml-generated-component@.service kcml-component-control-worker.service kcml-component-e2e-worker.service kcml-monitor.service kcml-egress-proxy.service kcml-alert-primary.service kcml-alert-backup.service kcml-secret-broker.service kcml-canonical-tls-renew.service kcml-canonical-tls-renew-failure.service kcml-canonical-tls-renew-recovered.service kcml-canonical-tls-renew.timer; do
+for unit in kcml.service kcml-generation-worker.service kcml-browser-automation-worker.service kcml-generated-component@.service kcml-component-control-worker.service kcml-component-e2e-worker.service kcml-monitor.service kcml-egress-proxy.service kcml-alert-primary.service kcml-alert-backup.service kcml-secret-broker.service kcml-canonical-tls-renew.service kcml-canonical-tls-renew-failure.service kcml-canonical-tls-renew-recovered.service kcml-canonical-tls-renew.timer; do
   install -m 0644 "$source_dir/deploy/systemd/$unit" "/etc/systemd/system/$unit"
 done
 install -d -m 0755 /opt/kcml/alert-sink
@@ -334,7 +336,7 @@ switched=true
 step activate-services
 systemctl daemon-reload
 systemctl enable --now kcml-canonical-tls-renew.timer
-systemctl enable kcml kcml-generation-worker kcml-component-control-worker kcml-component-e2e-worker kcml-monitor kcml-egress-proxy kcml-secret-broker kcml-alert-primary kcml-alert-backup
+systemctl enable kcml kcml-generation-worker kcml-browser-automation-worker kcml-component-control-worker kcml-component-e2e-worker kcml-monitor kcml-egress-proxy kcml-secret-broker kcml-alert-primary kcml-alert-backup
 systemctl restart kcml-alert-primary
 systemctl restart kcml-alert-backup
 nginx -t
@@ -512,7 +514,8 @@ wait_for_sql_equals "wedos_dns_ascii_author_comment_migration_row" "1" "select c
 wait_for_sql_equals "retire_legacy_generation_states_migration_row" "1" "select count(*) from schema_migration where version='021_retire_legacy_generation_states.sql'"
 wait_for_sql_equals "generation_execution_authority_migration_row" "1" "select count(*) from schema_migration where version='022_generation_execution_authority.sql'"
 wait_for_sql_equals "readiness_gate_evidence_idempotency_migration_row" "1" "select count(*) from schema_migration where version='012_readiness_gate_evidence_idempotency.sql'"
-wait_for_sql_equals "schema_migration_count" "22" "select count(*) from schema_migration"
+wait_for_sql_equals "browser_automation_execution_runtime_migration_row" "1" "select count(*) from schema_migration where version='023_browser_automation_execution_runtime.sql'"
+wait_for_sql_equals "schema_migration_count" "23" "select count(*) from schema_migration"
 
 step verify-stable-runtime-health
 require_stable_runtime_health "$admin_host"

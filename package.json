@@ -24,6 +24,7 @@
     "generation:runtime:check": "node scripts/test-generated-component-runtime.mjs",
     "generation:browser:check": "node scripts/test-generation-browser.mjs",
     "generation:browser-automation:check": "node scripts/test-generation-browser-automation.mjs",
+    "generation:automation:check": "node scripts/test-generation-browser-automation.mjs && pnpm exec vitest run apps/server/src/domain/browser-automation.test.ts",
     "generation:automation-sandbox-boundary:check": "node scripts/test-generated-handler-capabilities.mjs",
     "generation:automation-runtime-no-ai:check": "node scripts/test-generation-automation-runtime-no-ai.mjs",
     "generation:automation-recovery:check": "node scripts/test-generation-automation-recovery.mjs",

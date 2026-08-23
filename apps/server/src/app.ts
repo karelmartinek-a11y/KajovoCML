@@ -18,6 +18,7 @@ import { registerComponentWebhookRoutes } from "./http/component-webhook-runtime
 import { registerDashboardRoutes } from "./http/dashboard-routes.js";
 import { registerMcpRoutes } from "./http/mcp.js";
 import { registerGenerationRoutes } from "./http/generation-routes.js";
+import { registerBrowserAutomationRoutes } from "./http/browser-automation-routes.js";
 import { registerReferenceExternalApiRoutes } from "./http/reference-external-api-routes.js";
 import { isSecretApiHostname, registerSecretApiRoutes } from "./http/secret-api-routes.js";
 import { hostOf, sendError } from "./http/errors.js";
@@ -86,6 +87,7 @@ export async function buildApp(config: AppServerConfig, db: Db) {
   registerReferenceExternalApiRoutes(app, config);
   registerExternalApiRoutes(app, db, config);
   registerGenerationRoutes(app, db, config);
+  registerBrowserAutomationRoutes(app, db, config);
   registerComponentRoutes(app, db, config);
   registerComponentWebhookRoutes(app, db, config);
   registerDashboardRoutes(app, db, config);

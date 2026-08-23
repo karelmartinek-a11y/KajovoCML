@@ -60,6 +60,7 @@ require_file "$tmpdir/release/docs/external-api-1.0.json"
 jq -e '.sourceCommit == "test-source" and .repository == "test-owner/test-repository" and .workflow == "test-owner/test-repository/.github/workflows/ci-deploy.yml@refs/heads/main"' "$tmpdir/release/release-manifest.json" >/dev/null
 require_file "$tmpdir/release/apps/server/dist/cli/generation-worker.js"
 require_file "$tmpdir/release/apps/server/dist/cli/component-control-worker.js"
+require_file "$tmpdir/release/apps/server/dist/cli/browser-automation-worker.js"
 require_file "$tmpdir/release/apps/server/dist/cli/component-e2e-worker.js"
 require_file "$tmpdir/release/apps/server/dist/cli/ensure-platform-worker-access.js"
 require_file "$tmpdir/release/apps/server/dist/cli/openai-secret-preflight.js"
@@ -78,6 +79,7 @@ require_file "$tmpdir/release/apps/server/dist/onboarding/generated-repair-enque
 require_file "$tmpdir/release/apps/server/src/generation/runtime-host.mjs"
 require_file "$tmpdir/release/apps/server/src/contracts/component-manifest-${release}.schema.json"
 require_file "$tmpdir/release/deploy/systemd/kcml-generation-worker.service"
+require_file "$tmpdir/release/deploy/systemd/kcml-browser-automation-worker.service"
 require_file "$tmpdir/release/deploy/systemd/kcml-generated-component@.service"
 require_executable "$tmpdir/release/deploy/scripts/kcml-generated-runtime-helper"
 

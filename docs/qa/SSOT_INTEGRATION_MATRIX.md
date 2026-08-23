@@ -134,7 +134,7 @@ static symbol check is not upgraded to runtime PASS.
 | 125 | Production run does not create generation job | NOT VERIFIED | Production Browser Runtime E2E pending. |
 | 126 | Production run calls no LLM | NOT VERIFIED | Ubuntu no-AI runtime E2E pending. |
 | 127 | Run lease and step checkpoints | NOT VERIFIED | Browser Runtime persistence pending. |
-| 128 | `clientRunId` is idempotent | NOT VERIFIED | Browser Runtime persistence pending. |
+| 128 | `clientRunId` is idempotent | PASS | `browser-automation-db.test.ts` replays the same definition/idempotency key and receives the original durable run without a duplicate. |
 | 129 | Disable blocks new runs | NOT VERIFIED | Browser Runtime API E2E pending. |
 | 130 | Preflight/status/cancel/history/reauth | NOT VERIFIED | Browser Runtime API E2E pending. |
 | 131 | Isolated BrowserContext per run | NOT VERIFIED | Playwright runtime E2E pending. |

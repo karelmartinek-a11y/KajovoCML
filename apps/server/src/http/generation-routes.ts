@@ -26,7 +26,7 @@ const messageSchema = z.object({ content: z.string().trim().min(1).max(50_000), 
 const approvalSchema = z.object({ revisionId: z.string().uuid(), digest: z.string().regex(/^sha256:[0-9a-f]{64}$/) }).strict();
 const idParams = z.object({ id: z.string().uuid() }).strict();
 
-async function ownerSession(db: Db, config: AppServerConfig, request: FastifyRequest, reply: FastifyReply, correlationId: string, mutation = false) {
+export async function ownerSession(db: Db, config: AppServerConfig, request: FastifyRequest, reply: FastifyReply, correlationId: string, mutation = false) {
   if (hostOf(request.headers.host) !== config.ADMIN_HOST) {
     sendError(reply, 404, "not_found", undefined, correlationId); return null;
   }
@@ -37,7 +37,7 @@ async function ownerSession(db: Db, config: AppServerConfig, request: FastifyReq
   return session;
 }
 
-function routeError(reply: FastifyReply, error: unknown, correlationId: string) {
+export function routeError(reply: FastifyReply, error: unknown, correlationId: string) {
   if (error instanceof z.ZodError) return sendError(reply, 400, "validation_failed", error.issues.map((issue) => issue.message).join("; "), correlationId);
   const statusCode = Number((error as { statusCode?: number }).statusCode ?? 500);
   return sendError(reply, statusCode, error instanceof Error ? error.message : "generation_operation_failed", undefined, correlationId);

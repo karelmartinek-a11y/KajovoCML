@@ -70,7 +70,9 @@ const followUpMigration = await text("apps/server/src/migrations/013_generation_
 for (const required of ["parent_job_id", "run_sequence", "'RETRY'", "generation_job_active_component_follow_up_idx"]) requireText(followUpMigration, required, "generation follow-up migration");
 const authorityMigration = await text("apps/server/src/migrations/022_generation_execution_authority.sql");
 for (const required of ["authority_kind", "authority_source_job_id", "authority_source_spec_revision_id", "authority_spec_digest", "lease_token", "generation_job_authority_source_spec_fk"]) requireText(authorityMigration, required, "generation execution authority migration");
+const browserRuntimeMigration = await text("apps/server/src/migrations/023_browser_automation_execution_runtime.sql");
+for (const required of ["browser_automation_run", "lease_token", "CANCEL_REQUESTED", "side_effect_class"]) requireText(browserRuntimeMigration, required, "browser automation execution runtime migration");
 const ui = await text("apps/admin-ui/src/app-layout.tsx");
 requireText(ui, 'navigationButton("generation", "Generování"', "OWNER navigation");
-for (const file of ["deploy/systemd/kcml-generation-worker.service", "deploy/systemd/kcml-generated-component@.service", "deploy/scripts/kcml-generated-runtime-helper", "apps/server/src/http/generation-routes.ts"]) await access(file);
+for (const file of ["deploy/systemd/kcml-generation-worker.service", "deploy/systemd/kcml-browser-automation-worker.service", "deploy/systemd/kcml-generated-component@.service", "deploy/scripts/kcml-generated-runtime-helper", "apps/server/src/http/generation-routes.ts", "apps/server/src/http/browser-automation-routes.ts", "apps/server/src/domain/browser-automation.ts"]) await access(file);
 process.stdout.write("internal-generation-contract:PASS\n");

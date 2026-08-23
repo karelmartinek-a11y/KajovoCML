@@ -103,6 +103,7 @@ jobs:
             apps/server/src/domain/component-db.test.ts \
             apps/server/src/domain/external-api-db.test.ts \
             apps/server/src/domain/generation-discussion-db.test.ts \
+            apps/server/src/domain/browser-automation-db.test.ts \
             apps/server/src/http/generation-routes-db.test.ts \
             apps/server/src/domain/generation-openai-readiness-db.test.ts \
             apps/server/src/tls/wedos-dns-operation-db.test.ts \
@@ -122,6 +123,7 @@ jobs:
           pnpm generation:contract:check
           pnpm generation:browser:check
           pnpm generation:browser-automation:check
+          pnpm generation:automation:check
           pnpm generation:automation-sandbox-boundary:check
           pnpm generation:automation-runtime-no-ai:check
           pnpm generation:automation-recovery:check
