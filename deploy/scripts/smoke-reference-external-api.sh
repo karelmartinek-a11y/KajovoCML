@@ -62,7 +62,6 @@ trap report_error ERR
 trap cleanup EXIT
 
 login_headers="$tmpdir/login-headers.txt"
-login_body="$tmpdir/login-body.json"
 
 curl_json() {
   curl -fsS "$@"
@@ -83,12 +82,12 @@ login_json="$(
   DATABASE_URL_FILE=/etc/kcml/credentials/admin-sync/database_url \
   CONFIG_VAULT_MASTER_KEY_BASE64_FILE=/etc/kcml/credentials/config_vault_master_key \
   NODE_ENV=production \
+  KCML_LOGIN_SMOKE_OUTPUT=internal-credentials \
   KCML_LOGIN_SMOKE_BASE_URL="$base_url" \
   KCML_LOGIN_SMOKE_HOST="$admin_host" \
   ADMIN_BOOTSTRAP_USERNAME="$admin_username" \
     node "$release_dir/apps/server/dist/cli/admin-login-smoke.js"
 )"
-printf '%s\n' "$login_json" > "$login_body"
 admin_username="$(jq -r '.username' <<<"$login_json")"
 csrf_token="$(jq -r '.csrfToken' <<<"$login_json")"
 session_cookie="$(jq -r '.sessionCookie' <<<"$login_json")"

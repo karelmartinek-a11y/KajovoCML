@@ -5,6 +5,7 @@ import { loadBootstrapConfig } from "../config.js";
 import { createDb } from "../db.js";
 import { requireDeploymentManagedAdminPassword } from "../domain/deployment-managed-admin.js";
 import { loadConfigFromDb } from "../domain/operational-config.js";
+import { serializeAdminLoginSmokeOutput } from "./admin-login-smoke-output.js";
 
 const SESSION_COOKIE = "__Host-kcml_session";
 const CSRF_COOKIE = "__Host-kcml_csrf";
@@ -115,14 +116,13 @@ try {
     throw new Error("admin_login_smoke_cookie_contract_failed");
   }
 
-  process.stdout.write(`${JSON.stringify({
-    ok: true,
+  process.stdout.write(serializeAdminLoginSmokeOutput({
     username,
     mfaUsed: loginBody.mfaRequired === true,
-    csrfToken: finalBody.csrfToken,
+    csrfToken: String(finalBody.csrfToken),
     sessionCookie,
     csrfCookie
-  })}\n`);
+  }, process.env.KCML_LOGIN_SMOKE_OUTPUT === "internal-credentials"));
 } finally {
   await db.end();
 }
