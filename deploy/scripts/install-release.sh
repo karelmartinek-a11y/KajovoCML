@@ -24,6 +24,13 @@ export BUILD_ID="$release_id"
 component_hostname_suffix="${KCML_COMPONENT_HOST_SUFFIX:-$PUBLIC_BASE_DOMAIN}"
 [[ "$component_hostname_suffix" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]]
 
+# systemd validates every ReadWritePaths entry while creating the renewal
+# service mount namespace.  A valid existing certificate can make the ACME
+# deploy hook skip its materialisation path, so the default canonical runtime
+# directory must exist before the timer/service is installed even when the
+# configured certificate lives under /etc/letsencrypt.
+install -d -m 0700 /etc/kcml/tls
+
 release_dir="/opt/kcml/releases/$release_id"
 previous_release="$(readlink -f /opt/kcml/current 2>/dev/null || true)"
 test ! -e "$release_dir"
