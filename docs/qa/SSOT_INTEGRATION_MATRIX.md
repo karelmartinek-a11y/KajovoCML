@@ -150,8 +150,8 @@ static symbol check is not upgraded to runtime PASS.
 | 141 | Cancel prevents further side effects | NOT VERIFIED | Browser Runtime cancellation E2E pending. |
 | 142 | Auth expiry deterministic relogin/reauth | NOT VERIFIED | Browser Runtime auth E2E pending. |
 | 143 | Contract drift is `DEGRADED` | NOT VERIFIED | Browser Runtime monitoring E2E pending. |
-| 144 | Drift enqueues deduplicated repair | NOT VERIFIED | Browser Runtime monitoring E2E pending. |
-| 145 | Repair preserves identities | NOT VERIFIED | Production repair E2E pending. |
+| 144 | Drift enqueues deduplicated repair | NOT VERIFIED | The repair route and existing monitoring enqueue boundary are implemented; production drift/revision E2E is pending. |
+| 145 | Repair preserves identities | NOT VERIFIED | Inherited repair authority preserves the owning component path in source; production repair E2E is pending. |
 | 146 | Repair failure preserves last good revision | NOT VERIFIED | Production repair E2E pending. |
 | 147 | Upload rejects arbitrary host path | NOT VERIFIED | Browser Runtime API E2E pending. |
 | 148 | Download is scoped and checks digest/MIME/size | NOT VERIFIED | Browser Runtime artifact E2E pending. |

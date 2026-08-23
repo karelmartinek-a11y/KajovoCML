@@ -5,6 +5,7 @@ import type { AppServerConfig } from "../config.js";
 import type { Db } from "../db.js";
 import { tx } from "../db.js";
 import { appendAudit } from "./audit.js";
+import { enqueueGeneratedRepairJob } from "./generation.js";
 import { runBrowserAutomation, validateManifest } from "../generation/browser-automation-runtime.mjs";
 import { platformWorkerSecretPrincipal, resolveSecret } from "./secret-manager.js";
 
@@ -77,6 +78,17 @@ function safeErrorCode(error: unknown): string {
   if (value.startsWith("automation_")) return value.split(":", 1)[0] ?? "automation_run_failed";
   if (value.startsWith("browser_")) return value.split(":", 1)[0] ?? "browser_action_failed";
   return "automation_run_failed";
+}
+
+type BrowserAutomationFinalStatus = "SUCCEEDED" | "FAILED" | "CANCELLED" | "CHALLENGE_REQUIRED" | "MANUAL_REVIEW" | "DRIFT" | "REAUTH_REQUIRED";
+
+export function finalStatusForAutomationError(errorCode: string | null, cancelled: boolean): BrowserAutomationFinalStatus {
+  if (cancelled || errorCode === "automation_cancelled") return "CANCELLED";
+  if (errorCode === "automation_uncertain_side_effect") return "MANUAL_REVIEW";
+  if (errorCode === "automation_human_challenge_required") return "CHALLENGE_REQUIRED";
+  if (errorCode === "automation_contract_drift") return "DRIFT";
+  if (errorCode === "automation_reauthentication_required") return "REAUTH_REQUIRED";
+  return errorCode ? "FAILED" : "SUCCEEDED";
 }
 
 function safeManifest(value: unknown): BrowserAutomationManifest {
@@ -439,7 +451,7 @@ async function writeEvidence(config: AutomationConfig, runId: string, evidence: 
   return relativeKey;
 }
 
-async function finalizeRun(db: Db, config: AutomationConfig, run: Record<string, unknown>, workerId: string, leaseToken: string, status: "SUCCEEDED" | "FAILED" | "CANCELLED", output: JsonRecord | null, errorCode: string | null, steps: Array<Record<string, unknown>>): Promise<boolean> {
+async function finalizeRun(db: Db, config: AutomationConfig, run: Record<string, unknown>, workerId: string, leaseToken: string, status: BrowserAutomationFinalStatus, output: JsonRecord | null, errorCode: string | null, steps: Array<Record<string, unknown>>): Promise<boolean> {
   const runId = String(run.id);
   const evidenceKey = await writeEvidence(config, runId, { runId, revisionId: String(run.revision_id), status, attempt: Number(run.attempt ?? 0), errorCode, steps: steps.map((step) => ({ index: Number(step.index), action: String(step.action), status: String(step.status), errorCode: step.errorCode ? text(step.errorCode) : null })) });
   return tx(db, async (client) => {
@@ -490,14 +502,15 @@ export async function processNextBrowserAutomationRun(db: Db, config: Automation
       }
     });
     const canceled = await isCancelled(db, runId, workerId, leaseToken);
-    await finalizeRun(db, config, run, workerId, leaseToken, canceled ? "CANCELLED" : "SUCCEEDED", object(result.output), canceled ? "automation_cancelled" : null, result.steps.map((step: Record<string, unknown>) => ({ index: step.index, action: step.action, status: step.status, output: step.output })));
+    const errorCode = canceled ? "automation_cancelled" : null;
+    await finalizeRun(db, config, run, workerId, leaseToken, finalStatusForAutomationError(errorCode, canceled), object(result.output), errorCode, result.steps.map((step: Record<string, unknown>) => ({ index: step.index, action: step.action, status: step.status, output: step.output })));
   } catch (error) {
     const canceled = (error instanceof Error && error.message === "automation_cancelled") || await isCancelled(db, runId, workerId, leaseToken);
     const errorCode = canceled ? "automation_cancelled" : safeErrorCode(error);
     const runtimeSteps = error instanceof Error && Array.isArray((error as Error & { runtimeSteps?: unknown }).runtimeSteps)
       ? (error as Error & { runtimeSteps: Array<Record<string, unknown>> }).runtimeSteps
       : [{ index: Number(run.current_step ?? 0), action: "RUN", status: canceled ? "SKIPPED" : "FAILED", errorCode }];
-    await finalizeRun(db, config, run, workerId, leaseToken, canceled ? "CANCELLED" : "FAILED", null, errorCode, runtimeSteps);
+    await finalizeRun(db, config, run, workerId, leaseToken, finalStatusForAutomationError(errorCode, canceled), null, errorCode, runtimeSteps);
   } finally {
     clearInterval(timer);
   }
@@ -515,11 +528,57 @@ export async function reauthenticateBrowserAutomation(db: Db, definitionId: stri
 }
 
 export async function repairBrowserAutomation(db: Db, definitionId: string, actorId: string, correlationId: string): Promise<Record<string, unknown>> {
-  const result = await db.query("select active_revision_id,status from browser_automation_definition where id=$1", [definitionId]);
+  const result = await db.query("select active_revision_id,status,owner_component_id,last_failure_code from browser_automation_definition where id=$1", [definitionId]);
   if (!result.rowCount) fail("not_found", 404);
   const preflight = await preflightBrowserAutomation(db, definitionId, actorId, correlationId);
-  await db.query("update browser_automation_definition set status='REPAIR_REQUIRED',updated_at=now() where id=$1", [definitionId]);
-  return { ...preflight, repair: "STATIC_REVALIDATION_ONLY", activationRequired: true, previousStatus: String(result.rows[0].status) };
+  const ownerComponentId = result.rows[0].owner_component_id ? String(result.rows[0].owner_component_id) : null;
+  const repairJob = ownerComponentId
+    ? await enqueueGeneratedRepairJob(db, ownerComponentId, {
+      source: "browser_automation_repair",
+      probe: "browser_automation_runtime",
+      status: "REPAIR_REQUESTED",
+      definitionId,
+      activeRevisionId: preflight.revisionId,
+      activeDigest: preflight.digest,
+      lastFailureCode: result.rows[0].last_failure_code ? String(result.rows[0].last_failure_code) : null
+    }, correlationId)
+    : null;
+  const repairState = repairJob?.state ?? null;
+  const repairAction = repairJob?.state === "IMPLEMENTING" ? "ENQUEUED" : "BLOCKED";
+  const blockerCode = repairJob
+    ? (repairJob.state === "BLOCKED" ? "generation_repair_spec_lineage_missing" : null)
+    : ownerComponentId ? "automation_repair_enqueue_blocked" : "automation_owner_component_required";
+  await tx(db, async (client) => {
+    await client.query("update browser_automation_definition set status='REPAIR_REQUIRED',updated_at=now() where id=$1", [definitionId]);
+    await appendAudit(client, {
+      eventType: "browser_automation.repair.requested",
+      actorType: "admin",
+      actorId,
+      objectType: "browser_automation_definition",
+      objectId: definitionId,
+      after: {
+        ownerComponentId,
+        repairAction,
+        repairJobId: repairJob?.id ?? null,
+        repairState,
+        blockerCode,
+        revisionId: preflight.revisionId,
+        digest: preflight.digest
+      },
+      correlationId
+    });
+  });
+  return {
+    ...preflight,
+    repair: repairAction,
+    repairJobId: repairJob?.id ?? null,
+    repairJobState: repairState,
+    repairAuthorityKind: repairJob?.authorityKind ?? null,
+    ownerComponentId,
+    blockerCode,
+    activationRequired: repairAction === "ENQUEUED",
+    previousStatus: String(result.rows[0].status)
+  };
 }
 
 export async function readBrowserAutomationArtifact(db: Queryable, config: AutomationConfig, runId: string, artifactId: string): Promise<{ contentType: string; body: Buffer }> {

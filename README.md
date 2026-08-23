@@ -16,7 +16,9 @@ boundaries.
 Browser automation administration is available under **Browser automatizace**:
 the page shows immutable manifest digests, static preflight versus measured
 read-only runtime verification, Secret Manager stable-name bindings, run
-history, cancellation, repair and enable/disable controls. Routine runs use
+history, cancellation, repair and enable/disable controls. Repair requests are
+handed to the existing inherited-spec generation authority and fail closed when
+the owner component or approved lineage is unavailable. Routine runs use
 Playwright only and never call an LLM.
 OWNER uses **Generování** in the admin UI. A persistent generation job analyses the human request, asks only for genuinely missing and non-derivable inputs, creates a local job workspace/revision point, uses the OpenAI Responses API for focused implementation/research, stores durable credentials in the existing Secret Manager, validates the generated source, installs a versioned local release, proves CML conformance and only then activates the component. A failed or blocked run can be continued as a new linked, auditable run with a plain-text correction instruction while preserving the existing CML component identity.
 

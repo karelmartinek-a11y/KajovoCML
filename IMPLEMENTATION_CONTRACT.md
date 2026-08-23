@@ -92,7 +92,10 @@ OWNER/CSRF-protected. They provide definition/revision creation and listing,
 static preflight, read-only runtime verification, explicit revision
 activation, auth-binding metadata, queued run creation, history/detail,
 cancellation, reauthentication, enable/disable, repair and protected evidence
-download. `preflight` returns `STATIC_VALIDATED` after manifest/digest
+download. `repair` records an audit event and delegates to the existing
+inherited-spec generation repair authority for the owning generated component;
+missing ownership or functional lineage returns a blocked result. `preflight`
+returns `STATIC_VALIDATED` after manifest/digest
 validation; the `revisions/:revisionId/verify` route runs the same Playwright
 interpreter and can produce `PASS` only for a manifest whose every step is
 explicitly `READ_ONLY`. No static check is promoted to runtime PASS.
@@ -198,7 +201,9 @@ teaching, operation scope and irreversible confirmation are job-scoped records;
 they do not create another approval gate. The manifest DSL has no arbitrary
 source: only declarative locators, navigation, form interaction, waits,
 assertions, extraction, bounded branch/repeat, upload/download handles and
-typed output. Activation follows deterministic automation preflight. Automatic
+typed output. Activation follows deterministic automation preflight. An
+uncertain non-idempotent runtime step is finalized as `MANUAL_REVIEW` and is
+never blindly retried. Automatic
 REPAIR may enter `IMPLEMENTING` only when the source functional lineage has an
 approved specification; the worker clones that exact canonical digest into the
 new job as inherited technical authority. If lineage is absent, the repair is
