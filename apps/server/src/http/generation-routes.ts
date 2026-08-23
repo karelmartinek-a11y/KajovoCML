@@ -14,6 +14,18 @@ import {
   reconcileGenerationOpenAiReadiness,
   submitGenerationInputs
 } from "../domain/generation.js";
+import {
+  cleanupGenerationBrowserSession,
+  createGenerationOperationScope,
+  createIrreversibleConfirmation,
+  getGenerationBrowserPreview,
+  listGenerationTeaching,
+  openGenerationBrowserPreview,
+  recordGenerationTeachingRun,
+  runGenerationTeachingPreflight,
+  runGenerationTeachingReplay,
+  storeGenerationBrowserCredential
+} from "../domain/generation-browser-session.js";
 import { approveSpec, getCurrentSpec, runDiscussionTurn } from "../domain/generation-discussion.js";
 import { requireCsrf, sessionAccount } from "./admin-routes.js";
 import { hostOf, sendError } from "./errors.js";
@@ -25,6 +37,12 @@ const followUpSchema = z.object({ instruction: z.string().trim().min(3).max(50_0
 const messageSchema = z.object({ content: z.string().trim().min(1).max(50_000), idempotencyKey: z.string().trim().min(1).max(200).optional() }).strict();
 const approvalSchema = z.object({ revisionId: z.string().uuid(), digest: z.string().regex(/^sha256:[0-9a-f]{64}$/) }).strict();
 const idParams = z.object({ id: z.string().uuid() }).strict();
+const browserPreviewSchema = z.object({ url: z.string().url(), sensitive: z.boolean().default(false) }).strict();
+const browserCredentialSchema = z.object({ stableName: z.string().trim().regex(/^[A-Za-z][A-Za-z0-9_]{2,127}$/), value: z.string().min(1).max(64_000), displayName: z.string().trim().max(160).optional(), description: z.string().trim().max(2_000).optional() }).strict();
+const browserScopeSchema = z.object({ sourceMessageId: z.string().uuid(), purpose: z.string().trim().min(3).max(2_000), targetAccountLabel: z.string().trim().max(300).optional(), allowedOrigins: z.array(z.string().url()).min(1).max(20), allowedActionClasses: z.array(z.enum(["READ_ONLY", "LOCAL_INPUT", "AUTHENTICATION", "MUTATION_IDEMPOTENT", "MUTATION_NON_IDEMPOTENT", "DESTRUCTIVE"])).min(1).max(20), browserSessionId: z.string().uuid().nullable().optional(), expiresAt: z.string().datetime().nullable().optional() }).strict();
+const irreversibleConfirmationSchema = z.object({ scopeId: z.string().uuid(), sourceMessageId: z.string().uuid(), actionDigest: z.string().regex(/^sha256:[0-9a-f]{64}$/), actionSummary: z.string().trim().min(3).max(2_000), targetOrigin: z.string().url(), browserSessionId: z.string().uuid().nullable().optional(), expiresAt: z.string().datetime().nullable().optional() }).strict();
+const teachingManifestSchema = z.object({ manifest: z.record(z.unknown()), values: z.record(z.unknown()).optional(), purpose: z.string().trim().max(2_000).optional() }).strict();
+const teachingRecordSchema = z.object({ purpose: z.string().trim().min(3).max(2_000), startUrl: z.string().url().optional(), allowedOrigins: z.array(z.string().url()).max(20).default([]), sourceTurnId: z.string().uuid().nullable().optional(), steps: z.array(z.record(z.unknown())).min(1).max(200) }).strict();
 
 export async function ownerSession(db: Db, config: AppServerConfig, request: FastifyRequest, reply: FastifyReply, correlationId: string, mutation = false) {
   if (hostOf(request.headers.host) !== config.ADMIN_HOST) {
@@ -167,7 +185,66 @@ export function registerGenerationRoutes(app: FastifyInstance, db: Db, config: A
 
   app.post("/api/generation/jobs/:id/cancel", async (request, reply) => {
     const correlationId = randomUUID(); const session = await ownerSession(db, config, request, reply, correlationId, true); if (!session) return;
-    try { const { id } = idParams.parse(request.params); await cancelGenerationJob(db, id, session.accountId, correlationId); return { ok: true, correlationId }; }
+    try { const { id } = idParams.parse(request.params); await cancelGenerationJob(db, id, session.accountId, correlationId); await cleanupGenerationBrowserSession(db, config, id, session.accountId); return { ok: true, correlationId }; }
+    catch (error) { return routeError(reply, error, correlationId); }
+  });
+
+  app.get("/api/generation/jobs/:id/browser/preview", async (request, reply) => {
+    const correlationId = randomUUID(); const session = await ownerSession(db, config, request, reply, correlationId); if (!session) return;
+    try {
+      const { id } = idParams.parse(request.params); const preview = await getGenerationBrowserPreview(db, config, id, session.accountId);
+      reply.header("cache-control", "no-store");
+      if (preview.status === "NORMAL" && preview.body) return reply.type(preview.contentType ?? "image/png").send(preview.body);
+      if (preview.status === "SENSITIVE") return reply.code(423).send({ status: "SENSITIVE", sessionId: preview.sessionId, frameId: preview.frameId, revision: preview.revision, url: preview.url, title: preview.title, correlationId });
+      return reply.send({ status: "NO_PREVIEW", correlationId });
+    } catch (error) { return routeError(reply, error, correlationId); }
+  });
+
+  app.post("/api/generation/jobs/:id/browser/preview", async (request, reply) => {
+    const correlationId = randomUUID(); const session = await ownerSession(db, config, request, reply, correlationId, true); if (!session) return;
+    try { const { id } = idParams.parse(request.params); const body = browserPreviewSchema.parse(request.body); return reply.header("cache-control", "no-store").send({ preview: await openGenerationBrowserPreview(db, config, id, session.accountId, body), correlationId }); }
+    catch (error) { return routeError(reply, error, correlationId); }
+  });
+
+  app.post("/api/generation/jobs/:id/browser/credentials", async (request, reply) => {
+    const correlationId = randomUUID(); const session = await ownerSession(db, config, request, reply, correlationId, true); if (!session) return;
+    try { const { id } = idParams.parse(request.params); const body = browserCredentialSchema.parse(request.body); return reply.code(201).send({ credential: await storeGenerationBrowserCredential(db, config, id, session.accountId, body, correlationId), correlationId }); }
+    catch (error) { return routeError(reply, error, correlationId); }
+  });
+
+  app.post("/api/generation/jobs/:id/browser/operation-scope", async (request, reply) => {
+    const correlationId = randomUUID(); const session = await ownerSession(db, config, request, reply, correlationId, true); if (!session) return;
+    try { const { id } = idParams.parse(request.params); const body = browserScopeSchema.parse(request.body); return reply.code(201).send({ scope: await createGenerationOperationScope(db, id, session.accountId, body, correlationId), correlationId }); }
+    catch (error) { return routeError(reply, error, correlationId); }
+  });
+
+  app.post("/api/generation/jobs/:id/browser/irreversible-confirmations", async (request, reply) => {
+    const correlationId = randomUUID(); const session = await ownerSession(db, config, request, reply, correlationId, true); if (!session) return;
+    try { const { id } = idParams.parse(request.params); const body = irreversibleConfirmationSchema.parse(request.body); return reply.code(201).send({ confirmation: await createIrreversibleConfirmation(db, id, session.accountId, body, correlationId), correlationId }); }
+    catch (error) { return routeError(reply, error, correlationId); }
+  });
+
+  app.get("/api/generation/jobs/:id/browser/teaching", async (request, reply) => {
+    const correlationId = randomUUID(); const session = await ownerSession(db, config, request, reply, correlationId); if (!session) return;
+    try { const { id } = idParams.parse(request.params); return reply.header("cache-control", "no-store").send({ teaching: await listGenerationTeaching(db, id, session.accountId), correlationId }); }
+    catch (error) { return routeError(reply, error, correlationId); }
+  });
+
+  app.post("/api/generation/jobs/:id/browser/teaching", async (request, reply) => {
+    const correlationId = randomUUID(); const session = await ownerSession(db, config, request, reply, correlationId, true); if (!session) return;
+    try { const { id } = idParams.parse(request.params); const body = teachingRecordSchema.parse(request.body); return reply.code(201).send({ teaching: await recordGenerationTeachingRun(db, id, session.accountId, body), correlationId }); }
+    catch (error) { return routeError(reply, error, correlationId); }
+  });
+
+  app.post("/api/generation/jobs/:id/browser/teaching/preflight", async (request, reply) => {
+    const correlationId = randomUUID(); const session = await ownerSession(db, config, request, reply, correlationId, true); if (!session) return;
+    try { const { id } = idParams.parse(request.params); const body = teachingManifestSchema.parse(request.body); return { preflight: await runGenerationTeachingPreflight(db, config, id, session.accountId, body), correlationId }; }
+    catch (error) { return routeError(reply, error, correlationId); }
+  });
+
+  app.post("/api/generation/jobs/:id/browser/teaching/replay", async (request, reply) => {
+    const correlationId = randomUUID(); const session = await ownerSession(db, config, request, reply, correlationId, true); if (!session) return;
+    try { const { id } = idParams.parse(request.params); const body = teachingManifestSchema.parse(request.body); return { replay: await runGenerationTeachingReplay(db, config, id, session.accountId, body), correlationId }; }
     catch (error) { return routeError(reply, error, correlationId); }
   });
 }

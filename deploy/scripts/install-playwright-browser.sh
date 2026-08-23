@@ -23,16 +23,19 @@ esac
 install -d -m 0755 "$browser_root"
 test -w "$browser_root"
 echo "playwright-browser:root=ready" >&2
-echo "playwright-browser:install=chromium" >&2
-PLAYWRIGHT_BROWSERS_PATH="$browser_root" node "$playwright_cli" install --with-deps chromium >&2
-echo "playwright-browser:install=complete" >&2
-
 chromium_binary="$(
   cd "$source_dir"
   PLAYWRIGHT_BROWSERS_PATH="$browser_root" node --input-type=module -e \
     'import { chromium } from "./apps/server/node_modules/playwright/index.mjs"; process.stdout.write(chromium.executablePath())'
 )"
 test -n "$chromium_binary"
+if test -x "$chromium_binary"; then
+  echo "playwright-browser:reuse=existing" >&2
+else
+  echo "playwright-browser:install=chromium" >&2
+  PLAYWRIGHT_BROWSERS_PATH="$browser_root" node "$playwright_cli" install --with-deps chromium >&2
+  echo "playwright-browser:install=complete" >&2
+fi
 test -x "$chromium_binary"
 echo "playwright-browser:binary=executable" >&2
 

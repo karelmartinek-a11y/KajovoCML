@@ -31,8 +31,8 @@ and `017_discussion_turn_exclusivity_and_cancellation.sql`, `018`–`020` WEDOS
 operations, `021_retire_legacy_generation_states.sql`,
 `022_generation_execution_authority.sql` and
 `023_browser_automation_execution_runtime.sql`,
-`024_browser_automation_worker_heartbeat.sql` and
-`025_single_owner_human_role.sql` are one ordered
+`024_browser_automation_worker_heartbeat.sql`, `025_single_owner_human_role.sql`
+and `026_generation_browser_session_contract.sql` are one ordered
 contract. Migration 016 adds same-job composite foreign keys,
 historical digest reuse, request idempotency, interruption/lease metadata,
 operation scopes, irreversible confirmations and teaching records without
@@ -88,6 +88,18 @@ Generation resources use `/api/generation/jobs/:id`. The discussion API is:
 - `GET /api/generation/jobs/:id/spec` and `/spec/revisions` — current/revisioned spec.
 - `POST /api/generation/jobs/:id/approve-spec` — exact revision/digest freeze.
 - `POST /api/generation/jobs/:id/cancel` — authoritative cancellation.
+- `GET|POST /api/generation/jobs/:id/browser/preview` — job-scoped safe frame
+  metadata/image with explicit `NO_PREVIEW` and `SENSITIVE` states; preview
+  bytes never expose a storage path.
+- `POST /api/generation/jobs/:id/browser/credentials` — named Secret Manager
+  binding with a direct platform grant; the value never enters a response or
+  event payload.
+- `POST /api/generation/jobs/:id/browser/operation-scope` and
+  `/browser/irreversible-confirmations` — OWNER-message-bounded scope and
+  exact mutation-capable action confirmation.
+- `GET|POST /api/generation/jobs/:id/browser/teaching` plus
+  `/teaching/preflight` and `/teaching/replay` — semantic teaching evidence
+  and deterministic read-only candidate execution without an LLM.
 
 Browser automation resources use `/api/browser-automations` and are
 OWNER/CSRF-protected. They provide definition/revision creation and listing,

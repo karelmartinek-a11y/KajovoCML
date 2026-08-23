@@ -7,10 +7,20 @@ const toolContractId = "33333333-3333-4333-8333-333333333333";
 const requirementDigest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const contractDigest = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
-const candidate = (eligible: boolean) => ({
+type CandidateOverrides = Partial<{
+  enabled: boolean;
+  lifecycleState: string;
+  activationState: string;
+  operationalState: string;
+  ready: boolean;
+  principalStatus: string;
+  validationState: string | null;
+}>;
+
+const candidate = (eligible: boolean, overrides: CandidateOverrides = {}) => ({
   componentId, code: "KCML9001", displayName: "Catalog", purpose: "Catalog lookup", revisionId, revision: "r1", manifestDigest: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", capabilities: ["catalogue.read"],
   tools: [{ contractId: toolContractId, name: "lookup", title: "Lookup", description: "Reads catalog", inputSchema: { type: "object" }, outputSchema: { type: "object" }, requiredScope: "component.read", contractDigest }],
-  contractMatch: "CANDIDATE" as const, runtimeEligibility: eligible ? "ELIGIBLE" as const : "INELIGIBLE" as const, eligibilityReasons: eligible ? [] : ["disabled"], enabled: eligible, lifecycleState: "ACTIVE", activationState: "ACTIVE", operationalState: "HEALTHY", ready: eligible, principalStatus: "ACTIVE", validationState: "APPROVED"
+  contractMatch: "CANDIDATE" as const, runtimeEligibility: eligible ? "ELIGIBLE" as const : "INELIGIBLE" as const, eligibilityReasons: eligible ? [] : ["disabled"], enabled: overrides.enabled ?? eligible, lifecycleState: overrides.lifecycleState ?? "ACTIVE", activationState: overrides.activationState ?? "ACTIVE", operationalState: overrides.operationalState ?? "HEALTHY", ready: overrides.ready ?? eligible, principalStatus: overrides.principalStatus ?? "ACTIVE", validationState: overrides.validationState === undefined ? "APPROVED" : overrides.validationState
 });
 
 type CapabilityDecision = NonNullable<GenerationSpec["capabilityDecisions"]>[number];
@@ -42,6 +52,23 @@ describe("server capability-first proposal guard", () => {
     expect(validateCapabilityProposal(unknown, evidence(new Map([[componentId, candidate(true)]]), new Set([componentId])))).toBe("CAPABILITY_REFERENCE_INVALID");
     const wrongTool = { ...spec("FULL_REUSE"), capabilityDecisions: [{ ...spec("FULL_REUSE").capabilityDecisions![0], reuse: [{ componentId, revisionId, toolContractId: "77777777-7777-4777-8777-777777777777", contractDigest }] }] };
     expect(validateCapabilityProposal(wrongTool, evidence(new Map([[componentId, candidate(true)]])))).toBe("CAPABILITY_REFERENCE_INVALID");
+  });
+
+  it("rejects every canonical runtime eligibility blocker independently", () => {
+    const blockers: Array<[string, CandidateOverrides]> = [
+      ["readiness", { ready: false }],
+      ["component-disabled", { enabled: false }],
+      ["lifecycle", { lifecycleState: "QUARANTINED" }],
+      ["activation", { activationState: "INACTIVE" }],
+      ["operational", { operationalState: "DEGRADED" }],
+      ["principal", { principalStatus: "REVOKED" }],
+      ["revision-validation", { validationState: "FAILED" }]
+    ];
+    for (const [name, overrides] of blockers) {
+      const blocked = candidate(false, overrides);
+      expect(validateCapabilityProposal(spec("FULL_REUSE"), evidence(new Map([[componentId, blocked]])))).toBe("CAPABILITY_FULL_REUSE_INELIGIBLE");
+      expect(name).toBeTruthy();
+    }
   });
 
   it("permits a no-candidate NEW decision after lookup evidence", () => {

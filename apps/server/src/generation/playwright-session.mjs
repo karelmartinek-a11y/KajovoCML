@@ -1,21 +1,63 @@
+import { lookup } from "node:dns/promises";
+import { isIP } from "node:net";
 import { chromium } from "playwright";
 
-function privateHost(host) {
-  const value = String(host).toLowerCase().replace(/\.$/, "");
-  if (["localhost", "::1"].includes(value) || value.endsWith(".local")) return true;
-  if (/^(10|127)\./.test(value) || /^192\.168\./.test(value)) return true;
-  const match = value.match(/^172\.(\d{1,3})\./);
-  return Boolean(match && Number(match[1]) >= 16 && Number(match[1]) <= 31);
+function ipv4Parts(value) {
+  const parts = value.split(".").map(Number);
+  return parts.length === 4 && parts.every((part) => Number.isInteger(part) && part >= 0 && part <= 255) ? parts : null;
 }
 
-function safeUrl(value, allowLocal = false) {
+export function isPrivateAddress(address) {
+  let value = String(address).trim().toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
+  if (value.startsWith("::ffff:")) value = value.slice("::ffff:".length);
+  const ipv4 = ipv4Parts(value);
+  if (ipv4) {
+    const [first, second, third] = ipv4;
+    return first === 0 || first === 10 || first === 127 ||
+      (first === 100 && second >= 64 && second <= 127) ||
+      (first === 169 && second === 254) ||
+      (first === 172 && second >= 16 && second <= 31) ||
+      (first === 192 && second === 0 && third === 0) ||
+      (first === 192 && second === 168) ||
+      (first === 198 && (second === 18 || second === 19 || second === 51)) ||
+      (first === 203 && second === 0 && third === 113) ||
+      first >= 224;
+  }
+  if (isIP(value) !== 6) return false;
+  const firstHextet = Number.parseInt(value.split(":")[0] || "0", 16);
+  return value === "::" || value === "::1" ||
+    (firstHextet >= 0xfc00 && firstHextet <= 0xfdff) ||
+    (firstHextet >= 0xfe80 && firstHextet <= 0xfebf) ||
+    (firstHextet >= 0xff00 && firstHextet <= 0xffff);
+}
+
+function privateHost(host) {
+  const value = String(host).toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
+  return value === "localhost" || value.endsWith(".local") || isPrivateAddress(value);
+}
+
+export async function assertPublicBrowserUrl(value) {
+  const url = new URL(value);
+  if (url.protocol !== "https:") throw new Error("browser_https_required");
+  if (!url.hostname || privateHost(url.hostname)) throw new Error("browser_public_host_required");
+  let addresses;
+  try {
+    addresses = await lookup(url.hostname, { all: true, verbatim: true });
+  } catch {
+    throw new Error("browser_host_resolution_failed");
+  }
+  if (!addresses.length || addresses.some((entry) => isPrivateAddress(entry.address))) {
+    throw new Error("browser_private_network_blocked");
+  }
+  return url;
+}
+
+async function safeUrl(value, allowLocal = false) {
   const url = new URL(value);
   if (allowLocal && ["http:", "https:", "data:"].includes(url.protocol)) {
     if (url.protocol === "data:" || ["localhost", "127.0.0.1", "::1"].includes(url.hostname)) return url;
   }
-  if (url.protocol !== "https:") throw new Error("browser_https_required");
-  if (!url.hostname || privateHost(url.hostname)) throw new Error("browser_public_host_required");
-  return url;
+  return assertPublicBrowserUrl(url.toString());
 }
 
 function locatorFor(page, value) {
@@ -51,21 +93,32 @@ export class PlaywrightBrowserSession {
       await this.context.route("**/*", async (route) => {
         try {
           const url = new URL(route.request().url());
-          if (["http:", "https:"].includes(url.protocol) && privateHost(url.hostname)) return route.abort("blockedbyclient");
-        } catch { /* non-HTTP resources are handled by Chromium */ }
+          if (["http:", "https:"].includes(url.protocol)) await assertPublicBrowserUrl(url.toString());
+        } catch (error) {
+          if (error instanceof Error && ["browser_https_required", "browser_public_host_required", "browser_private_network_blocked", "browser_host_resolution_failed"].includes(error.message)) return route.abort("blockedbyclient");
+          return route.abort("failed");
+        }
         return route.continue();
       });
     }
   }
 
-  async open(value) { await this.start(); await this.page.goto(safeUrl(value, this.allowLocal).toString(), { waitUntil: "domcontentloaded", timeout: 30_000 }); return this.state(); }
+  async open(value) { await this.start(); await this.page.goto((await safeUrl(value, this.allowLocal)).toString(), { waitUntil: "domcontentloaded", timeout: 30_000 }); return this.state(); }
   async loadHtmlForTest(html) { await this.start(); await this.page.setContent(String(html), { waitUntil: "domcontentloaded" }); return this.state(); }
 
   async state() {
     await this.start();
     const locatorData = await this.page.locator("button, input, textarea, select, [role='button'], [role='link']").evaluateAll((nodes) => nodes.slice(0, 200).map((node, index) => ({ locator: `[data-kcml-index="${index}"]`, tag: node.tagName.toLowerCase(), text: (node.getAttribute("aria-label") || node.getAttribute("placeholder") || node.textContent || "").trim().slice(0, 200), type: node.getAttribute("type") })), { timeout: 5000 }).catch(() => []);
     await this.page.locator("button, input, textarea, select, [role='button'], [role='link']").evaluateAll((nodes) => nodes.slice(0, 200).forEach((node, index) => node.setAttribute("data-kcml-index", String(index))));
-    return { url: this.page.url(), title: await this.page.title(), text: (await this.page.locator("body").innerText()).slice(0, 50_000), targetId: "current", targets: [{ id: "current", url: this.page.url() }], pages: [{ targetId: "current", url: this.page.url() }], locators: locatorData, elements: locatorData.map((item) => ({ locator: item.locator, accessibleName: item.text, text: item.text, value: "" })) };
+    const viewport = this.page.viewportSize();
+    return { url: this.page.url(), title: await this.page.title(), text: (await this.page.locator("body").innerText()).slice(0, 50_000), targetId: "current", targets: [{ id: "current", url: this.page.url() }], pages: [{ targetId: "current", url: this.page.url() }], viewport, locators: locatorData, elements: locatorData.map((item) => ({ locator: item.locator, accessibleName: item.text, text: item.text, value: "" })) };
+  }
+
+  async screenshot() {
+    await this.start();
+    const body = await this.page.screenshot({ type: "png" });
+    const viewport = this.page.viewportSize();
+    return { body, url: this.page.url(), title: await this.page.title(), width: viewport?.width ?? null, height: viewport?.height ?? null };
   }
 
   async click(locator) { await this.start(); await locatorFor(this.page, locator).click({ timeout: 30_000 }); return this.state(); }
