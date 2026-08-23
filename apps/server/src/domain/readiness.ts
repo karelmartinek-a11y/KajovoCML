@@ -111,7 +111,7 @@ export async function buildReadinessReport(db: Db, config: ReadinessConfig): Pro
     lastHeartbeatAt: new Date(row.last_heartbeat_at).toISOString(), lastError: row.last_error ? String(row.last_error) : null,
     fresh: Date.now() - new Date(row.last_heartbeat_at).getTime() <= 180_000
   }));
-  const requiredWorkers = new Set(["COMPONENT_CONTROL", "COMPONENT_E2E"]);
+  const requiredWorkers = new Set(["COMPONENT_CONTROL", "COMPONENT_E2E", "GENERATION", "BROWSER_AUTOMATION"]);
   const workersOk = workerEntries.every((entry) => entry.fresh && !entry.lastError && entry.buildId === config.BUILD_ID)
     && workerEntries.filter((entry) => requiredWorkers.has(entry.kind)).length === requiredWorkers.size;
   const operationResult = await db.query(

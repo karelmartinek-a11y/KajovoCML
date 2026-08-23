@@ -522,7 +522,8 @@ wait_for_sql_equals "retire_legacy_generation_states_migration_row" "1" "select 
 wait_for_sql_equals "generation_execution_authority_migration_row" "1" "select count(*) from schema_migration where version='022_generation_execution_authority.sql'"
 wait_for_sql_equals "readiness_gate_evidence_idempotency_migration_row" "1" "select count(*) from schema_migration where version='012_readiness_gate_evidence_idempotency.sql'"
 wait_for_sql_equals "browser_automation_execution_runtime_migration_row" "1" "select count(*) from schema_migration where version='023_browser_automation_execution_runtime.sql'"
-wait_for_sql_equals "schema_migration_count" "23" "select count(*) from schema_migration"
+wait_for_sql_equals "browser_automation_worker_heartbeat_migration_row" "1" "select count(*) from schema_migration where version='024_browser_automation_worker_heartbeat.sql'"
+wait_for_sql_equals "schema_migration_count" "24" "select count(*) from schema_migration"
 
 step verify-stable-runtime-health
 require_stable_runtime_health "$admin_host"

@@ -31,7 +31,7 @@ run_migrations
 
 psql "$KCML_UPGRADE_DATABASE_URL" --no-psqlrc --set ON_ERROR_STOP=1 --tuples-only --no-align <<SQL | grep -Fx 'baseline-clean-install-ok'
 select case when
-  (select count(*) from schema_migration) = 23
+  (select count(*) from schema_migration) = 24
   and exists (
     select 1
       from schema_migration
@@ -97,6 +97,7 @@ select case when
   and exists (select 1 from schema_migration where version='021_retire_legacy_generation_states.sql' and sequence_number=21 and checksum_sha256 ~ '^[0-9a-f]{64}$')
   and exists (select 1 from schema_migration where version='022_generation_execution_authority.sql' and sequence_number=22 and checksum_sha256 ~ '^[0-9a-f]{64}$')
   and exists (select 1 from schema_migration where version='023_browser_automation_execution_runtime.sql' and sequence_number=23 and checksum_sha256 ~ '^[0-9a-f]{64}$')
+  and exists (select 1 from schema_migration where version='024_browser_automation_worker_heartbeat.sql' and sequence_number=24 and checksum_sha256 ~ '^[0-9a-f]{64}$')
   and exists (select 1 from information_schema.columns where table_schema='public' and table_name='generation_job' and column_name='authority_kind')
   and exists (select 1 from information_schema.columns where table_schema='public' and table_name='generation_job' and column_name='authority_source_spec_revision_id')
   and exists (select 1 from information_schema.columns where table_schema='public' and table_name='generation_discussion_turn' and column_name='lease_token')
@@ -169,7 +170,7 @@ run_migrations
 
 psql "$KCML_UPGRADE_DATABASE_URL" --no-psqlrc --set ON_ERROR_STOP=1 --tuples-only --no-align <<SQL | grep -Fx 'baseline-compaction-ok'
 select case when
-  (select count(*) from schema_migration) = 23
+  (select count(*) from schema_migration) = 24
   and exists (
     select 1
       from schema_migration
@@ -235,6 +236,7 @@ select case when
   and exists (select 1 from schema_migration where version='021_retire_legacy_generation_states.sql' and sequence_number=21 and checksum_sha256 ~ '^[0-9a-f]{64}$')
   and exists (select 1 from schema_migration where version='022_generation_execution_authority.sql' and sequence_number=22 and checksum_sha256 ~ '^[0-9a-f]{64}$')
   and exists (select 1 from schema_migration where version='023_browser_automation_execution_runtime.sql' and sequence_number=23 and checksum_sha256 ~ '^[0-9a-f]{64}$')
+  and exists (select 1 from schema_migration where version='024_browser_automation_worker_heartbeat.sql' and sequence_number=24 and checksum_sha256 ~ '^[0-9a-f]{64}$')
   and exists (select 1 from information_schema.columns where table_schema='public' and table_name='generation_job' and column_name='authority_kind')
   and exists (select 1 from information_schema.columns where table_schema='public' and table_name='generation_job' and column_name='authority_source_spec_revision_id')
   and exists (select 1 from information_schema.columns where table_schema='public' and table_name='generation_discussion_turn' and column_name='lease_token')
@@ -267,7 +269,7 @@ run_migrations
 
 psql "$KCML_UPGRADE_DATABASE_URL" --no-psqlrc --set ON_ERROR_STOP=1 --tuples-only --no-align <<SQL | grep -Fx 'baseline-retired-dashboard-ledger-ok'
 select case when
-  (select count(*) from schema_migration) = 23
+  (select count(*) from schema_migration) = 24
   and exists (
     select 1
       from schema_migration
@@ -305,6 +307,7 @@ select case when
   and exists (select 1 from schema_migration where version='021_retire_legacy_generation_states.sql' and sequence_number=21 and checksum_sha256 ~ '^[0-9a-f]{64}$')
   and exists (select 1 from schema_migration where version='022_generation_execution_authority.sql' and sequence_number=22 and checksum_sha256 ~ '^[0-9a-f]{64}$')
   and exists (select 1 from schema_migration where version='023_browser_automation_execution_runtime.sql' and sequence_number=23 and checksum_sha256 ~ '^[0-9a-f]{64}$')
+  and exists (select 1 from schema_migration where version='024_browser_automation_worker_heartbeat.sql' and sequence_number=24 and checksum_sha256 ~ '^[0-9a-f]{64}$')
   and exists (select 1 from information_schema.columns where table_schema='public' and table_name='generation_job' and column_name='authority_kind')
   and exists (select 1 from information_schema.columns where table_schema='public' and table_name='generation_job' and column_name='authority_source_spec_revision_id')
   and exists (select 1 from information_schema.columns where table_schema='public' and table_name='generation_discussion_turn' and column_name='lease_token')

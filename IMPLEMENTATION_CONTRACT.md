@@ -30,7 +30,8 @@ and forward-only `016_generation_discussion_browser_runtime_completion.sql`
 and `017_discussion_turn_exclusivity_and_cancellation.sql`, `018`–`020` WEDOS
 operations, `021_retire_legacy_generation_states.sql`,
 `022_generation_execution_authority.sql` and
-`023_browser_automation_execution_runtime.sql` are one ordered
+`023_browser_automation_execution_runtime.sql` and
+`024_browser_automation_worker_heartbeat.sql` are one ordered
 contract. Migration 016 adds same-job composite foreign keys,
 historical digest reuse, request idempotency, interruption/lease metadata,
 operation scopes, irreversible confirmations and teaching records without
@@ -187,6 +188,11 @@ authorization header.
 ## Runtime interfaces
 
 The generation worker, never an HTTP request, owns OpenAI Responses streaming.
+The Browser Automation worker records a `BROWSER_AUTOMATION` entry in the
+existing `platform_worker_heartbeat` table. Readiness requires fresh
+generation and Browser Automation heartbeats in addition to the canonical
+component worker heartbeats; this is operational evidence for the existing
+services, not a second queue or component registry.
 It sends OWNER-visible prose through `response.output_text.delta` and uses the
 single shared Responses transport/function-call infrastructure. The discussion
 tools are the server-side `lookup_cml_capabilities`,

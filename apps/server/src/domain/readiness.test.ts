@@ -33,9 +33,11 @@ describe("readiness report", () => {
       }
       if (sql.includes("from component c") && sql.includes("gates_valid")) return { rowCount: 0, rows: [] };
       if (sql === "select worker_kind,worker_id,build_id,last_heartbeat_at,last_error from platform_worker_heartbeat order by worker_kind") {
-        return { rowCount: 2, rows: [
+        return { rowCount: 4, rows: [
           { worker_kind: "COMPONENT_CONTROL", worker_id: "control-test", build_id: "test-build", last_heartbeat_at: new Date(), last_error: null },
-          { worker_kind: "COMPONENT_E2E", worker_id: "e2e-test", build_id: "test-build", last_heartbeat_at: new Date(), last_error: null }
+          { worker_kind: "COMPONENT_E2E", worker_id: "e2e-test", build_id: "test-build", last_heartbeat_at: new Date(), last_error: null },
+          { worker_kind: "GENERATION", worker_id: "generation-test", build_id: "test-build", last_heartbeat_at: new Date(), last_error: null },
+          { worker_kind: "BROWSER_AUTOMATION", worker_id: "browser-automation-test", build_id: "test-build", last_heartbeat_at: new Date(), last_error: null }
         ] };
       }
       if (sql.includes("expired_dispatches") && sql.includes("invalid_token_bindings")) {

@@ -72,6 +72,8 @@ const authorityMigration = await text("apps/server/src/migrations/022_generation
 for (const required of ["authority_kind", "authority_source_job_id", "authority_source_spec_revision_id", "authority_spec_digest", "lease_token", "generation_job_authority_source_spec_fk"]) requireText(authorityMigration, required, "generation execution authority migration");
 const browserRuntimeMigration = await text("apps/server/src/migrations/023_browser_automation_execution_runtime.sql");
 for (const required of ["browser_automation_run", "lease_token", "CANCEL_REQUESTED", "side_effect_class"]) requireText(browserRuntimeMigration, required, "browser automation execution runtime migration");
+const browserHeartbeatMigration = await text("apps/server/src/migrations/024_browser_automation_worker_heartbeat.sql");
+for (const required of ["BROWSER_AUTOMATION", "platform_worker_heartbeat_worker_kind_check"]) requireText(browserHeartbeatMigration, required, "browser automation worker heartbeat migration");
 const ui = await text("apps/admin-ui/src/app-layout.tsx");
 requireText(ui, 'navigationButton("generation", "Generování"', "OWNER navigation");
 for (const file of ["deploy/systemd/kcml-generation-worker.service", "deploy/systemd/kcml-browser-automation-worker.service", "deploy/systemd/kcml-generated-component@.service", "deploy/scripts/kcml-generated-runtime-helper", "apps/server/src/http/generation-routes.ts", "apps/server/src/http/browser-automation-routes.ts", "apps/server/src/domain/browser-automation.ts"]) await access(file);
