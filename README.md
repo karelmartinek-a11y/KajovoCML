@@ -32,6 +32,12 @@ viewport paths on `admin.hcasc.cz`, using the deployment-managed credential only
 in memory and emitting safe evidence. Its temporary fixtures are correlated and
 cleaned after the run. Ordinary CI and deploy runs leave this expensive gate
 disabled.
+The explicit acceptance deploy also installs the exact Playwright-managed
+Chromium under `/opt/kcml/playwright-browsers` and configures workers with its
+resolved executable path. If the preserved OWNER password differs from the
+already supplied deployment `PASS`, that explicit dispatch reconciles the
+existing OWNER account to the same PASS; ordinary deploys preserve the existing
+password and no new account or secret is created.
 
 Human authorization is intentionally single-level: every authenticated active human account is `OWNER`. Legacy `ADMIN`/`AUDITOR` values are normalized by forward-only migration `025_single_owner_human_role.sql`; machine principals remain governed by their separate principal and permission contracts. The admin-account API and UI expose activity, MFA and sessions, but no human role selector.
 

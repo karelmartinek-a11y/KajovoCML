@@ -34,7 +34,12 @@ test -x /usr/sbin/chroot
 test -x /usr/bin/setpriv
 test -x /usr/bin/env
 command -v "${SYSTEMCTL_BINARY:-systemctl}" >/dev/null
-command -v "${CHROMIUM_BINARY:-chromium}" >/dev/null
+chromium_binary="${CHROMIUM_BINARY:-chromium}"
+if [[ "$chromium_binary" == */* ]]; then
+  test -x "$chromium_binary"
+else
+  command -v "$chromium_binary" >/dev/null
+fi
 command -v age >/dev/null
 test -r "${AGE_RECIPIENT_FILE:-/etc/kcml/backup.age.recipient}"
 install -d -m 0750 -o kcml -g kcml "${GENERATION_ROOT:-/var/lib/kcml/generation}" "${GENERATED_COMPONENT_ROOT:-/var/lib/kcml/generated-components}"

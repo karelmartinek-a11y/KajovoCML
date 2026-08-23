@@ -84,6 +84,7 @@ require_file "$tmpdir/release/deploy/systemd/kcml-browser-automation-worker.serv
 require_file "$tmpdir/release/deploy/systemd/kcml-generated-component@.service"
 require_executable "$tmpdir/release/deploy/scripts/kcml-generated-runtime-helper"
 require_file "$tmpdir/release/deploy/scripts/certbot-lineage.sh"
+require_file "$tmpdir/release/deploy/scripts/install-playwright-browser.sh"
 
 forbid_file "$tmpdir/release/deploy/systemd/kcml-onboarding-worker.service"
 forbid_file "$tmpdir/release/deploy/scripts/kcml-handler-preload-wrapper.sh"
@@ -99,3 +100,5 @@ require_text 'kcml-generated-component@.service' "$tmpdir/release/deploy/scripts
 require_text 'kcml-generated-runtime-helper' "$tmpdir/release/deploy/scripts/install-release.sh"
 require_text 'certbot-lineage.sh' "$tmpdir/release/deploy/scripts/renew-canonical-tls.sh"
 require_text 'dist/cli/ssot-production-acceptance.js' "$tmpdir/release/deploy/scripts/install-release.sh"
+require_text 'install-playwright-browser.sh' "$tmpdir/release/deploy/scripts/install-release.sh"
+require_text 'install --with-deps chromium' "$tmpdir/release/deploy/scripts/install-playwright-browser.sh"

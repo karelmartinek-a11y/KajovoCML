@@ -6,6 +6,7 @@ import { loadBootstrapConfig } from "../config.js";
 import { createDb } from "../db.js";
 import { loadConfigFromDb } from "../domain/operational-config.js";
 import { requireDeploymentManagedAdminPassword } from "../domain/deployment-managed-admin.js";
+import { decryptMfaSecret } from "../security/secrets.js";
 
 /**
  * The production acceptance runner is deliberately a release-time CLI.  It is
@@ -280,6 +281,21 @@ async function cleanupDiscussion(db: ReturnType<typeof createDb>, jobId: string)
   ).catch(() => undefined);
 }
 
+async function resolveAcceptanceTotpSecret(db: ReturnType<typeof createDb>, config: AppConfig): Promise<string | undefined> {
+  if (config.ADMIN_TOTP_SECRET?.trim()) return config.ADMIN_TOTP_SECRET.trim();
+  const result = await db.query(
+    "select id,mfa_enabled,mfa_secret from admin_account where username=$1 and active=true",
+    [config.ADMIN_BOOTSTRAP_USERNAME]
+  );
+  const row = result.rows[0] as { id?: unknown; mfa_enabled?: unknown; mfa_secret?: unknown } | undefined;
+  if (!row || row.mfa_enabled !== true || typeof row.mfa_secret !== "string" || !row.mfa_secret) return undefined;
+  return decryptMfaSecret(row.mfa_secret, config.MFA_ENCRYPTION_KEY_BASE64, {
+    allowLegacyPlaintext: config.MFA_ALLOW_PLAINTEXT_LEGACY,
+    subjectId: String(row.id),
+    purpose: "admin_totp"
+  });
+}
+
 async function main(): Promise<void> {
   const baseUrl = process.env.KCML_ACCEPTANCE_BASE_URL ?? "";
   if (!/^https:\/\//u.test(baseUrl)) throw new Error("KCML_ACCEPTANCE_BASE_URL_must_be_https");
@@ -289,6 +305,7 @@ async function main(): Promise<void> {
   try {
     config = await loadConfigFromDb(db, bootstrap);
     const password = requireDeploymentManagedAdminPassword(process.env.PASS);
+    const totpSecret = await resolveAcceptanceTotpSecret(db, config);
     const client = new ProductionHttpClient(baseUrl, config.ADMIN_HOST);
     const evidence: AcceptanceEvidence[] = [];
     let sequence = 0;
@@ -318,7 +335,7 @@ async function main(): Promise<void> {
       return "authenticated=false";
     });
     await check("deployment-managed OWNER login and CSRF", async () => {
-      const session = await client.login(config.ADMIN_BOOTSTRAP_USERNAME, password, config.ADMIN_TOTP_SECRET);
+      const session = await client.login(config.ADMIN_BOOTSTRAP_USERNAME, password, totpSecret);
       if (!session.csrf) throw new Error("csrf_missing");
       return { username: session.username, csrfContract: true };
     });

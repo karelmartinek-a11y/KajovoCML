@@ -4,7 +4,8 @@ const files = {
   acceptance: "apps/server/src/cli/ssot-production-acceptance.ts",
   workflow: ".github/workflows/ci-deploy.yml",
   installer: "deploy/scripts/install-release.sh",
-  releaseGuard: "scripts/test-build-release.sh"
+  releaseGuard: "scripts/test-build-release.sh",
+  playwrightInstaller: "deploy/scripts/install-playwright-browser.sh"
 };
 
 const source = Object.fromEntries(await Promise.all(
@@ -26,13 +27,17 @@ requireText("acceptance", "safe production acceptance cleanup");
 requireText("acceptance", "Last-Event-ID reconnect has no duplicate cursor");
 requireText("workflow", "run_full_ssot_acceptance:");
 requireText("workflow", "KCML_RUN_FULL_SSOT_ACCEPTANCE");
-requireText("workflow", "--preserve-env=PASS,KCML_FACTORY_RESET_CONFIRM,KCML_RUN_FULL_SSOT_ACCEPTANCE");
+requireText("workflow", "KCML_ACCEPTANCE_RECONCILE_OWNER_PASSWORD");
+requireText("workflow", "--preserve-env=PASS,KCML_FACTORY_RESET_CONFIRM,KCML_RUN_FULL_SSOT_ACCEPTANCE,KCML_ACCEPTANCE_RECONCILE_OWNER_PASSWORD");
 requireText("installer", 'if [ "${KCML_RUN_FULL_SSOT_ACCEPTANCE:-false}" = "true" ]; then');
 requireText("installer", "dist/cli/ssot-production-acceptance.js");
 requireText("installer", 'KCML_ACCEPTANCE_BASE_URL="https://${admin_host}"');
 requireText("installer", 'echo "ssot-acceptance:$acceptance_line"');
 requireText("workflow", "ssot-acceptance:");
 requireText("releaseGuard", "dist/cli/ssot-production-acceptance.js");
+requireText("playwrightInstaller", "PLAYWRIGHT_BROWSERS_PATH");
+requireText("playwrightInstaller", "install --with-deps chromium");
+requireText("playwrightInstaller", "chromium.executablePath()");
 
 for (const forbidden of [
   "process.env.OPENAI_API_KEY",

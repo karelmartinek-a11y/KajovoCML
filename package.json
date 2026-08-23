@@ -39,7 +39,8 @@
     "generation:secret-autonomy:check": "node scripts/test-generation-secret-autonomy.mjs",
     "generation:browser-cross-origin:check": "node scripts/test-generation-browser-cross-origin.mjs",
     "generation:failure-cleanup:check": "node scripts/test-generation-technical-failure-cleanup.mjs",
-    "generation:integrating-secret-grant:check": "node scripts/test-generation-integrating-secret-grant.mjs"
+    "generation:integrating-secret-grant:check": "node scripts/test-generation-integrating-secret-grant.mjs",
+    "ssot:production:acceptance": "pnpm --filter @kcml/server exec tsx src/cli/ssot-production-acceptance.ts"
   },
   "workspaces": [
     "apps/*",

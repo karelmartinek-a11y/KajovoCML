@@ -278,6 +278,11 @@ sed "s/@KCML_UID@/${kcml_uid}/g" "$source_dir/deploy/systemd/kcml-monitor-runtim
   > /etc/systemd/system/kcml-monitor.service.d/runtime-user.conf
 chmod 0644 /etc/systemd/system/kcml-monitor.service.d/runtime-user.conf
 
+step install-playwright-browser
+export CHROMIUM_BINARY="$(PLAYWRIGHT_BROWSERS_PATH=/opt/kcml/playwright-browsers \
+  bash "$source_dir/deploy/scripts/install-playwright-browser.sh" "$source_dir")"
+echo "playwright-browser:path-configured=yes"
+
 step preflight
 export KCML_COMPONENT_HOST_SUFFIX="$component_hostname_suffix"
 GENERATION_WORKER_ENABLED=true KCML_RELEASE_SOURCE="$source_dir" bash "$source_dir/deploy/scripts/preflight.sh"
@@ -315,8 +320,16 @@ BUILD_ID="$release_id" \
   node "$source_dir/apps/server/dist/cli/admin-credential-forensics.js"
 
 step sync-admin-password
+acceptance_password_rotation_confirmation="${KCML_ADMIN_PASSWORD_ROTATION_CONFIRM:-}"
+if [ "${KCML_ACCEPTANCE_RECONCILE_OWNER_PASSWORD:-false}" = "true" ]; then
+  # An explicit production acceptance dispatch authorizes reconciliation to
+  # the already supplied deployment PASS. Ordinary deploys preserve the
+  # existing OWNER password unchanged; no account or secret is created here.
+  acceptance_password_rotation_confirmation="ROTATE_KCML_OWNER_PASSWORD"
+  echo "acceptance-owner-password:reconcile-existing-pass"
+fi
 admin_sync_result="$(PASS="$PASS" \
-KCML_ADMIN_PASSWORD_ROTATION_CONFIRM="${KCML_ADMIN_PASSWORD_ROTATION_CONFIRM:-}" \
+KCML_ADMIN_PASSWORD_ROTATION_CONFIRM="$acceptance_password_rotation_confirmation" \
 KCML_PROCESS_ROLE=admin-sync \
 DATABASE_URL_FILE=/etc/kcml/credentials/admin-sync/database_url \
 CONFIG_VAULT_MASTER_KEY_BASE64_FILE=/etc/kcml/credentials/config_vault_master_key \

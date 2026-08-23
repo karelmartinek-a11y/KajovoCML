@@ -238,8 +238,15 @@ when the repository workflow is explicitly dispatched with
 `run_full_ssot_acceptance=true`; push and pull-request runs keep the flag false.
 The self-hosted deploy runner passes the already deployment-managed `PASS` in
 process memory and uses the existing migrator database/config-vault
-credentials. The runner never creates, rotates, exports or prints a credential
-and emits only safe identifiers, state values, digests, counts and timings.
+credentials. The runner never creates a new credential, exports or prints a
+credential, and emits only safe identifiers, state values, digests, counts and
+timings. Ordinary deployments do not rotate the preserved OWNER password.
+The explicit acceptance dispatch also enables the narrowly scoped
+`KCML_ACCEPTANCE_RECONCILE_OWNER_PASSWORD` path: only when the preserved OWNER
+hash does not match the existing deployment-managed `PASS`, the deploy syncs
+that existing account to the same in-memory `PASS` so the real login can run.
+This is not a new credential, account, API bypass or test-only route; normal
+deployments retain the existing OWNER password.
 
 The runner exercises the real `admin.hcasc.cz` OWNER HTTP/session/CSRF boundary,
 persistent generation job and messages, Responses capability-first event trail,

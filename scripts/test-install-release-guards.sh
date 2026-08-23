@@ -16,8 +16,9 @@ renewal_failure_service="deploy/systemd/kcml-canonical-tls-renew-failure.service
 renewal_recovered_service="deploy/systemd/kcml-canonical-tls-renew-recovered.service"
 renewal_timer="deploy/systemd/kcml-canonical-tls-renew.timer"
 lineage_helper="deploy/scripts/certbot-lineage.sh"
+playwright_installer="deploy/scripts/install-playwright-browser.sh"
 
-for file in "$install_script" "$preflight_script" "$generation_unit" "$component_unit" "$helper" "$tls_script" "$acme_auth_hook" "$acme_cleanup_hook" "$acme_deploy_hook" "$renewal_script" "$renewal_service" "$renewal_failure_service" "$renewal_recovered_service" "$renewal_timer" "$lineage_helper"; do
+for file in "$install_script" "$preflight_script" "$generation_unit" "$component_unit" "$helper" "$tls_script" "$acme_auth_hook" "$acme_cleanup_hook" "$acme_deploy_hook" "$renewal_script" "$renewal_service" "$renewal_failure_service" "$renewal_recovered_service" "$renewal_timer" "$lineage_helper" "$playwright_installer"; do
   test -f "$file"
 done
 
@@ -78,6 +79,13 @@ grep -Fq 'step wedos-wapi-recover-acme' "$install_script"
 grep -Fq 'dist/cli/wedos-wapi.js" recover-acme' "$install_script"
 grep -Fq 'step wedos-wapi-roundtrip' "$install_script"
 grep -Fq 'dist/cli/wedos-wapi.js" wapi-test-roundtrip' "$install_script"
+grep -Fq 'step install-playwright-browser' "$install_script"
+grep -Fq 'install-playwright-browser.sh' "$install_script"
+grep -Fq 'PLAYWRIGHT_BROWSERS_PATH=/opt/kcml/playwright-browsers' "$install_script"
+grep -Fq 'install --with-deps chromium' "$playwright_installer"
+grep -Fq 'chromium.executablePath()' "$playwright_installer"
+grep -Fq 'playwright-browsers' "$playwright_installer"
+grep -Fq 'chromium_binary="${CHROMIUM_BINARY:-chromium}"' "$preflight_script"
 grep -Fq '"$PUBLIC_BASE_DOMAIN" "$component_hostname_suffix" "$tls_cert_path" "$tls_key_path" "$source_dir"' "$install_script"
 grep -Fq 'install -d -m 0700 /etc/kcml/tls' "$install_script"
 grep -Fq 'source_dir="${5:?verified release source required}"' "$tls_script"
@@ -127,6 +135,8 @@ grep -Fq 'test -x /usr/sbin/chroot' "$preflight_script"
 grep -Fq 'test -x /usr/bin/env' "$preflight_script"
 grep -Fq 'runuser -u kcml-runtime -- /usr/bin/setpriv --no-new-privs /usr/bin/unshare --user --map-root-user --mount --net --ipc --uts --pid --fork --kill-child=SIGKILL /bin/true' "$preflight_script"
 grep -Fq 'GENERATION_WORKER_ENABLED=true KCML_RELEASE_SOURCE="$source_dir" bash "$source_dir/deploy/scripts/preflight.sh"' "$install_script"
+grep -Fq 'acceptance-owner-password:reconcile-existing-pass' "$install_script"
+grep -Fq 'KCML_ACCEPTANCE_RECONCILE_OWNER_PASSWORD' "$install_script"
 grep -Fq "where deregistered_at is null and (code <> ('KCML' || lpad(kcml_number::text,4,'0'))" "$install_script"
 
 if grep -E -n 'kcml-onboarding-worker|GHCR_TOKEN|GITHUB_TOKEN|stage_registry_auth|repository-component-deploy' \
