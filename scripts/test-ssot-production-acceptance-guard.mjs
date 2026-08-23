@@ -30,6 +30,8 @@ requireText("workflow", "--preserve-env=PASS,KCML_FACTORY_RESET_CONFIRM,KCML_RUN
 requireText("installer", 'if [ "${KCML_RUN_FULL_SSOT_ACCEPTANCE:-false}" = "true" ]; then');
 requireText("installer", "dist/cli/ssot-production-acceptance.js");
 requireText("installer", 'KCML_ACCEPTANCE_BASE_URL="https://${admin_host}"');
+requireText("installer", 'echo "ssot-acceptance:$acceptance_line"');
+requireText("workflow", "ssot-acceptance:");
 requireText("releaseGuard", "dist/cli/ssot-production-acceptance.js");
 
 for (const forbidden of [

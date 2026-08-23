@@ -333,9 +333,9 @@ jobs:
           set -e
           if [ "$deploy_status" -ne 0 ]; then
             echo "::group::Safe KCML deploy diagnostics"
-          grep -E 'release-(step|failed|check|installed)|rollback-(ok|failed)|wedos-wapi:(FAIL|preflight|roundtrip)|wedos-(dns|acme)|openai-secret|secret_unavailable|platform_worker_identity' "$deploy_log" || true
+          grep -E 'release-(step|failed|check|installed)|rollback-(ok|failed)|wedos-wapi:(FAIL|preflight|roundtrip)|wedos-(dns|acme)|openai-secret|secret_unavailable|platform_worker_identity|ssot-acceptance:' "$deploy_log" || true
             sudo -n journalctl --since "$deploy_started_at" --no-pager \
-            | grep -E 'release-(step|failed|check|installed)|rollback-(ok|failed)|wedos-wapi:(FAIL|preflight|roundtrip)|wedos-(dns|acme)|openai-secret|secret_unavailable|platform_worker_identity' || true
+            | grep -E 'release-(step|failed|check|installed)|rollback-(ok|failed)|wedos-wapi:(FAIL|preflight|roundtrip)|wedos-(dns|acme)|openai-secret|secret_unavailable|platform_worker_identity|ssot-acceptance:' || true
             echo "::endgroup::"
             exit "$deploy_status"
           fi

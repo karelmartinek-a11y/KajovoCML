@@ -537,14 +537,30 @@ if [ "${KCML_RUN_FULL_SSOT_ACCEPTANCE:-false}" = "true" ]; then
   # credentials as the canonical deploy checks.  PASS remains process memory;
   # the CLI emits only safe identifiers, state, digests, counts and timings.
   step full-ssot-production-acceptance
-  PASS="$PASS" \
-  KCML_PROCESS_ROLE=migrate \
-  DATABASE_URL_FILE=/etc/kcml/credentials/migrator/database_url \
-  CONFIG_VAULT_MASTER_KEY_BASE64_FILE=/etc/kcml/credentials/config_vault_master_key \
-  NODE_ENV=production \
-  BUILD_ID="$release_id" \
-  KCML_ACCEPTANCE_BASE_URL="https://${admin_host}" \
-    node "$release_dir/apps/server/dist/cli/ssot-production-acceptance.js"
+  acceptance_log="$(mktemp)"
+  cleanup_acceptance_log() {
+    rm -f "$acceptance_log"
+  }
+  trap cleanup_acceptance_log EXIT
+  acceptance_status=0
+  if PASS="$PASS" \
+    KCML_PROCESS_ROLE=migrate \
+    DATABASE_URL_FILE=/etc/kcml/credentials/migrator/database_url \
+    CONFIG_VAULT_MASTER_KEY_BASE64_FILE=/etc/kcml/credentials/config_vault_master_key \
+    NODE_ENV=production \
+    BUILD_ID="$release_id" \
+    KCML_ACCEPTANCE_BASE_URL="https://${admin_host}" \
+      node "$release_dir/apps/server/dist/cli/ssot-production-acceptance.js" >"$acceptance_log"; then
+    acceptance_status=0
+  else
+    acceptance_status=$?
+  fi
+  while IFS= read -r acceptance_line; do
+    echo "ssot-acceptance:$acceptance_line"
+  done <"$acceptance_log"
+  if [ "$acceptance_status" -ne 0 ]; then
+    false
+  fi
 fi
 
 trap - ERR
