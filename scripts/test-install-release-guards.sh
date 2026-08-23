@@ -18,11 +18,13 @@ renewal_timer="deploy/systemd/kcml-canonical-tls-renew.timer"
 lineage_helper="deploy/scripts/certbot-lineage.sh"
 playwright_installer="deploy/scripts/install-playwright-browser.sh"
 playwright_lock_recovery="deploy/scripts/playwright-lock-recovery.mjs"
+playwright_compatibility="deploy/scripts/playwright-browser-compat.mjs"
 
 for file in "$install_script" "$preflight_script" "$generation_unit" "$component_unit" "$helper" "$tls_script" "$acme_auth_hook" "$acme_cleanup_hook" "$acme_deploy_hook" "$renewal_script" "$renewal_service" "$renewal_failure_service" "$renewal_recovered_service" "$renewal_timer" "$lineage_helper" "$playwright_installer"; do
   test -f "$file"
 done
 test -f "$playwright_lock_recovery"
+test -f "$playwright_compatibility"
 
 grep -Fq 'kcml-generation-worker.service' "$install_script"
 grep -Fq 'kcml-browser-automation-worker.service' "$install_script"
@@ -91,8 +93,14 @@ grep -Fq 'playwright_package="$source_dir/apps/server/node_modules/playwright"' 
 grep -Fq 'playwright_cli="$playwright_package/cli.js"' "$playwright_installer"
 grep -Fq 'node "$playwright_cli" install --with-deps chromium' "$playwright_installer"
 grep -Fq 'playwright-lock-recovery.mjs' "$playwright_installer"
+grep -Fq 'playwright-browser-compat.mjs' "$playwright_installer"
+grep -Fq 'needs-system-unzip' "$playwright_installer"
+grep -Fq 'install-deps' "$playwright_compatibility"
+grep -Fq 'unzip' "$playwright_compatibility"
+grep -Fq 'curl' "$playwright_compatibility"
 grep -Fq 'flock -n 9' "$playwright_installer"
 grep -Fq 'chromium.executablePath()' "$playwright_installer"
+grep -Fq 'INSTALLATION_COMPLETE' "$playwright_installer"
 grep -Fq 'playwright-browsers' "$playwright_installer"
 grep -Fq 'chromium_binary="${CHROMIUM_BINARY:-chromium}"' "$preflight_script"
 grep -Fq '"$PUBLIC_BASE_DOMAIN" "$component_hostname_suffix" "$tls_cert_path" "$tls_key_path" "$source_dir"' "$install_script"
