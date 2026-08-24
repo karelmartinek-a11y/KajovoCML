@@ -80,7 +80,7 @@ static symbol check is not upgraded to runtime PASS.
 | 71 | No post-cancel side effects | NOT VERIFIED | Production cancellation evidence pending. |
 | 72 | Desktop workflow usable | NOT VERIFIED | Required real-browser viewport audit pending. |
 | 73 | Tablet has no horizontal overflow | NOT VERIFIED | Required real-browser viewport audit pending. |
-| 74 | 390x844 has no page scroll | NOT VERIFIED | Required real-browser viewport audit pending. |
+| 74 | 390x844 has no horizontal page scroll | NOT VERIFIED | Required real-browser viewport audit pending. |
 | 75 | Composer is focusable | NOT VERIFIED | Required keyboard browser audit pending. |
 | 76 | Streaming state is readable | NOT VERIFIED | Required browser streaming audit pending. |
 | 77 | Tool activity hides reasoning | NOT VERIFIED | Required browser audit pending. |

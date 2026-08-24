@@ -224,7 +224,7 @@ async function waitForAutomationRun(client: ProductionHttpClient, runId: string,
   throw new Error(`automation_run_timeout:${string(last.status) || "unknown"}`);
 }
 
-async function geometry(page: Page): Promise<{ horizontalOverflow: boolean; offscreen: number; clipped: number; focusable: boolean }> {
+async function geometry(page: Page): Promise<{ horizontalOverflow: boolean; offscreen: number; clipped: number; obscured: number; undersizedTouchTargets: number; focusable: boolean }> {
   return page.evaluate(() => {
     window.scrollTo(0, 0);
     const horizontalOverflow = document.documentElement.scrollWidth > window.innerWidth + 1;
@@ -232,8 +232,11 @@ async function geometry(page: Page): Promise<{ horizontalOverflow: boolean; offs
       .filter((element) => element.offsetParent !== null && getComputedStyle(element).visibility !== "hidden");
     let offscreen = 0;
     let clipped = 0;
+    let obscured = 0;
+    let undersizedTouchTargets = 0;
     for (const element of actionable) {
       const rect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
       const hasHorizontalScroller = (() => {
         let ancestor = element.parentElement;
         while (ancestor && ancestor !== document.body) {
@@ -248,12 +251,23 @@ async function geometry(page: Page): Promise<{ horizontalOverflow: boolean; offs
       // container deliberately provides horizontal scrolling) or zero-sized
       // actionable controls that are nominally visible.
       if (((rect.right > window.innerWidth + 2 || rect.left < -2) && !hasHorizontalScroller) || rect.width < 1 || rect.height < 1) offscreen += 1;
-      if (element.scrollWidth > element.clientWidth + 1 || element.scrollHeight > element.clientHeight + 1) clipped += 1;
+      const clipsX = element.scrollWidth > element.clientWidth + 1 && ["hidden", "clip"].includes(style.overflowX);
+      const clipsY = element.scrollHeight > element.clientHeight + 1 && ["hidden", "clip"].includes(style.overflowY);
+      if (clipsX || clipsY) clipped += 1;
+      if (window.innerWidth <= 780 && (rect.width < 24 || rect.height < 24)) undersizedTouchTargets += 1;
+      if (rect.width >= 1 && rect.height >= 1) {
+        const x = Math.max(0, Math.min(window.innerWidth - 1, rect.left + rect.width / 2));
+        const y = Math.max(0, Math.min(window.innerHeight - 1, rect.top + rect.height / 2));
+        if (y >= 0 && y < window.innerHeight) {
+          const top = document.elementFromPoint(x, y);
+          if (top && !element.contains(top) && !top.contains(element)) obscured += 1;
+        }
+      }
     }
     const active = document.activeElement as HTMLElement | null;
     const focusRect = active?.getBoundingClientRect();
     const focusable = Boolean(active && focusRect && focusRect.width >= 1 && focusRect.height >= 1);
-    return { horizontalOverflow, offscreen, clipped, focusable };
+    return { horizontalOverflow, offscreen, clipped, obscured, undersizedTouchTargets, focusable };
   });
 }
 
@@ -277,7 +291,7 @@ async function browserUiAcceptance(context: BrowserContext, baseUrl: string): Pr
       await page.keyboard.press("Tab");
       const result = await geometry(page);
       geometryEvidence.push({ viewport: `${viewport.width}x${viewport.height}`, page: label, ...result });
-      if (result.horizontalOverflow || result.offscreen > 0 || !result.focusable) throw new Error(`ui_geometry_failed:${label}:${viewport.width}x${viewport.height}:${JSON.stringify(result)}`);
+      if (result.horizontalOverflow || result.offscreen > 0 || result.clipped > 0 || result.obscured > 0 || result.undersizedTouchTargets > 0 || !result.focusable) throw new Error(`ui_geometry_failed:${label}:${viewport.width}x${viewport.height}:${JSON.stringify(result)}`);
     }
   }
   await page.close();
