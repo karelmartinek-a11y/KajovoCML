@@ -3,7 +3,7 @@ import { loadBootstrapConfig } from "../config.js";
 import { createDb } from "../db.js";
 import { loadConfigFromDb } from "../domain/operational-config.js";
 import { processNextBrowserAutomationRun } from "../domain/browser-automation.js";
-import { recordPlatformWorkerHeartbeat } from "../onboarding/platform-worker-heartbeat.js";
+import { recordPlatformWorkerHeartbeat, runWithPeriodicPlatformWorkerHeartbeat } from "../onboarding/platform-worker-heartbeat.js";
 
 const bootstrapConfig = loadBootstrapConfig();
 const db = createDb(bootstrapConfig);
@@ -18,7 +18,11 @@ try {
   while (!controller.signal.aborted) {
     let worked = false;
     try {
-      worked = await processNextBrowserAutomationRun(db, config, workerId);
+      worked = await runWithPeriodicPlatformWorkerHeartbeat(
+        db,
+        { workerKind: "BROWSER_AUTOMATION", workerId, buildId: config.BUILD_ID },
+        () => processNextBrowserAutomationRun(db, config, workerId)
+      );
       await recordPlatformWorkerHeartbeat(db, { workerKind: "BROWSER_AUTOMATION", workerId, buildId: config.BUILD_ID, completed: worked });
     } catch (error) {
       await recordPlatformWorkerHeartbeat(db, {

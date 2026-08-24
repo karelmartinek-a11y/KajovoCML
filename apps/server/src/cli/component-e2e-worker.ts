@@ -3,7 +3,7 @@ import { loadBootstrapConfig } from "../config.js";
 import { createDb } from "../db.js";
 import { loadConfigFromDb } from "../domain/operational-config.js";
 import { processNextComponentE2ERun } from "../onboarding/component-e2e-worker.js";
-import { recordPlatformWorkerHeartbeat } from "../onboarding/platform-worker-heartbeat.js";
+import { recordPlatformWorkerHeartbeat, runWithPeriodicPlatformWorkerHeartbeat } from "../onboarding/platform-worker-heartbeat.js";
 
 const bootstrapConfig = loadBootstrapConfig();
 const db = createDb(bootstrapConfig);
@@ -17,7 +17,11 @@ try {
   while (!controller.signal.aborted) {
     let worked = false;
     try {
-      worked = await processNextComponentE2ERun(db, config, workerId);
+      worked = await runWithPeriodicPlatformWorkerHeartbeat(
+        db,
+        { workerKind: "COMPONENT_E2E", workerId, buildId: config.BUILD_ID },
+        () => processNextComponentE2ERun(db, config, workerId)
+      );
       await recordPlatformWorkerHeartbeat(db, { workerKind: "COMPONENT_E2E", workerId, buildId: config.BUILD_ID, completed: worked });
     } catch (error) {
       await recordPlatformWorkerHeartbeat(db, { workerKind: "COMPONENT_E2E", workerId, buildId: config.BUILD_ID, completed: false,

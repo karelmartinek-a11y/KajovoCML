@@ -24,3 +24,34 @@ export async function recordPlatformWorkerHeartbeat(db: Db, input: {
     [input.workerKind, input.workerId, input.buildId, input.completed, input.error?.slice(0, 500) ?? null]
   );
 }
+
+export async function runWithPeriodicPlatformWorkerHeartbeat<T>(
+  db: Db,
+  input: { workerKind: PlatformWorkerKind; workerId: string; buildId: string },
+  operation: () => Promise<T>,
+  intervalMs = 30_000
+): Promise<T> {
+  let inFlight: Promise<void> | undefined;
+  let heartbeatError: unknown;
+  let operationError: unknown;
+  let result: T | undefined;
+  const heartbeat = () => {
+    if (inFlight) return;
+    inFlight = recordPlatformWorkerHeartbeat(db, { ...input, completed: false })
+      .catch((error: unknown) => { heartbeatError = error; })
+      .finally(() => { inFlight = undefined; });
+  };
+  const timer = setInterval(heartbeat, intervalMs);
+  timer.unref();
+  try {
+    result = await operation();
+  } catch (error) {
+    operationError = error;
+  } finally {
+    clearInterval(timer);
+    if (inFlight) await inFlight;
+  }
+  if (operationError) throw operationError instanceof Error ? operationError : new Error("platform_worker_operation_failed");
+  if (heartbeatError) throw heartbeatError instanceof Error ? heartbeatError : new Error("platform_worker_heartbeat_failed");
+  return result as T;
+}
