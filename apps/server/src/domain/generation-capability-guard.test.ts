@@ -32,6 +32,14 @@ const spec = (decision: CapabilityDecision["decision"], reuse = true, missingDel
 const evidence = (inspected: Map<string, ReturnType<typeof candidate>>, candidates = new Set([componentId])): CapabilityTurnEvidence => ({ requirementDigest, inputMessageId: "44444444-4444-4444-8444-444444444444", candidateIds: candidates, inspected, lookupEventSequence: 3 });
 
 describe("server capability-first proposal guard", () => {
+  it("returns field-level safe diagnostics for a malformed proposal", () => {
+    const invalid = { objective: "sensitive-value-must-not-leak" };
+    const result = validateCapabilityProposal(invalid, evidence(new Map(), new Set()));
+    expect(result).toMatch(/^generation_specification_invalid:/);
+    expect(result).toContain("resultSummary:invalid_type");
+    expect(result).not.toContain("sensitive-value-must-not-leak");
+  });
+
   it("rejects a proposal before lookup or before relevant contract inspection", () => {
     expect(validateCapabilityProposal(spec("NEW_CAPABILITY_REQUIRED", false), null)).toBe("CAPABILITY_LOOKUP_REQUIRED");
     expect(validateCapabilityProposal(spec("FULL_REUSE"), evidence(new Map()))).toBe("CAPABILITY_CONTRACT_INSPECTION_REQUIRED");

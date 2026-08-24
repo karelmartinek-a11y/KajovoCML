@@ -401,8 +401,12 @@ export function validateCapabilityProposal(specInput: unknown, evidence: Capabil
   if (!evidence.inputMessageId || !/^sha256:[0-9a-f]{64}$/.test(evidence.requirementDigest)) return "CAPABILITY_LOOKUP_REQUIRED";
   if (!Number.isInteger(evidence.lookupEventSequence) || evidence.lookupEventSequence < 1) return "CAPABILITY_LOOKUP_REQUIRED";
   if (expectedInput && (evidence.inputMessageId !== expectedInput.messageId || evidence.requirementDigest !== expectedInput.requirementDigest)) return "CAPABILITY_LOOKUP_REQUIRED";
-  let spec: GenerationSpec;
-  try { spec = generationSpecificationSchema.parse(specInput); } catch { return "generation_specification_invalid"; }
+  const parsedSpec = generationSpecificationSchema.safeParse(specInput);
+  if (!parsedSpec.success) {
+    const issues = parsedSpec.error.issues.slice(0, 12).map((issue) => `${issue.path.join(".") || "$"}:${issue.code}`).join(",");
+    return `generation_specification_invalid:${issues}`;
+  }
+  const spec = parsedSpec.data;
   const decisions = spec.capabilityDecisions ?? [];
   if (!decisions.length || decisions.some((decision) => decision.requirementDigest !== evidence.requirementDigest)) return "CAPABILITY_LOOKUP_REQUIRED";
   if (evidence.candidateIds.size && !evidence.inspected.size) return "CAPABILITY_CONTRACT_INSPECTION_REQUIRED";
@@ -617,6 +621,7 @@ export async function processNextDiscussionTurn(db: Db, config: AppServerConfig,
     let providerResponseId: string | null = null;
     let completedResponse = false;
     let capabilityEvidence: CapabilityTurnEvidence | null = null;
+    let unresolvedProposalError: string | null = null;
     for (let modelTurn = 0; modelTurn < 8 && !completedResponse; modelTurn += 1) {
       const calls = new Map<string, PendingFunctionCall>();
       const itemToCall = new Map<string, string>();
@@ -655,7 +660,16 @@ export async function processNextDiscussionTurn(db: Db, config: AppServerConfig,
           upsertFunctionCall(calls, { callId, itemId: frame.item_id, name: frame.name, arguments: frame.arguments });
         }
       }
-      if (!calls.size) { completedResponse = true; break; }
+      if (!calls.size) {
+        if (unresolvedProposalError) {
+          if (!providerResponseId) throw new Error("openai_responses_missing_id");
+          previousResponseId = providerResponseId;
+          inputPayload = `The specification proposal is still not accepted. Correct it and call propose_generation_specification again in this same turn. Safe validation error: ${unresolvedProposalError}`;
+          continue;
+        }
+        completedResponse = true;
+        break;
+      }
       const toolOutputs: Array<Record<string, unknown>> = [];
       for (const call of calls.values()) {
         if (call.name === "lookup_cml_capabilities") {
@@ -696,10 +710,12 @@ export async function processNextDiscussionTurn(db: Db, config: AppServerConfig,
           if (capabilityError) throw new Error(capabilityError);
           await assertDiscussionLease(db, claimed.turnId, lease);
           const revision = await createSpecRevision(db, claimed.jobId, parsed, claimed.turnId, lease);
+          unresolvedProposalError = null;
           toolOutputs.push({ type: "function_call_output", call_id: call.callId, output: JSON.stringify({ ok: true, revisionId: revision.id, revision: revision.revision, digest: revision.digest }) });
           await appendLeasedDiscussionEvent(db, claimed.jobId, claimed.turnId, lease, "discussion.tool.completed", { turnId: claimed.turnId, toolName: call.name, revisionId: revision.id, revision: revision.revision, digest: revision.digest, revisionCreated: revision.created });
         } catch (error) {
           const errorCode = error instanceof Error ? error.message.slice(0, 300) : "generation_specification_invalid";
+          unresolvedProposalError = errorCode;
           toolOutputs.push({ type: "function_call_output", call_id: call.callId, output: JSON.stringify({ ok: false, error: errorCode }) });
           await appendLeasedDiscussionEvent(db, claimed.jobId, claimed.turnId, lease, "discussion.tool.failed", { turnId: claimed.turnId, toolName: call.name, errorCode });
         }

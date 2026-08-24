@@ -74,7 +74,11 @@ component_current_readiness -> principal/component eligibility`. The
 `lookup_cml_capabilities` and `read_cml_capability_contract` tools return safe
 contract metadata only. A proposal without lookup evidence, or without exact
 contract inspection for referenced candidates, returns a typed recoverable tool
-error and cannot create a revision. Approval revalidates the referenced
+error and cannot create a revision. A rejected proposal remains unresolved for
+that turn: ordinary assistant text cannot complete it, and the same bounded
+Responses chain must call `propose_generation_specification` again with a valid
+payload or exhaust the turn budget as a safe failure. Validation feedback contains
+schema paths and error classes only, never submitted values. Approval revalidates the referenced
 component revision, tool digest and runtime eligibility.
 
 Execution authority is explicit for every creation/continuation path: CREATE
