@@ -49,6 +49,7 @@ requireText(browser, "playwright-session.mjs", "interactive generation browser a
 const playwrightSession = await text("apps/server/src/generation/playwright-session.mjs");
 for (const required of ["chromium.launch", "browser.newContext", "safeUrl"]) requireText(playwrightSession, required, "Playwright browser platform");
 for (const forbidden of ["--no-sandbox", "Runtime.evaluate", "Page.navigate", "Input.dispatchKeyEvent"]) forbidText(playwrightSession, forbidden, "Playwright browser platform");
+requireText(playwrightSession, "chromiumSandbox: true", "Playwright browser platform must enable the Chromium sandbox");
 const runtimeHost = await text("apps/server/src/generation/runtime-host.mjs");
 requireText(runtimeHost, "GeneratedHandlerSandbox", "generated handler capability boundary");
 const handlerSandbox = await text("apps/server/src/generation/handler-sandbox.mjs");

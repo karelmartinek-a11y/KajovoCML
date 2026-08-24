@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
 import { rm } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { authenticator } from "otplib";
 import { chromium, type BrowserContext, type Page } from "playwright";
 import type { AppConfig } from "../config.js";
@@ -9,6 +11,7 @@ import { createDb } from "../db.js";
 import { loadConfigFromDb } from "../domain/operational-config.js";
 import { requireDeploymentManagedAdminPassword } from "../domain/deployment-managed-admin.js";
 import { decryptMfaSecret } from "../security/secrets.js";
+import { applyMutationCsrfHeader } from "./production-http-contract.js";
 
 /**
  * The production acceptance runner is deliberately a release-time CLI.  It is
@@ -101,7 +104,7 @@ class ProductionHttpClient {
     headers.set("host", this.host);
     const cookie = this.cookieHeader();
     if (cookie) headers.set("cookie", cookie);
-    if (init.method && !["GET", "HEAD"].includes(init.method.toUpperCase()) && this.csrfToken) headers.set("x-csrf-token", this.csrfToken);
+    applyMutationCsrfHeader(headers, init.method, this.csrfToken);
     const response = await fetch(new URL(path, this.baseUrl), { ...init, headers });
     this.absorb(response);
     return response;
@@ -144,6 +147,7 @@ class ProductionHttpClient {
   async sse(path: string, lastEventId = 0, timeoutMs = 8_000): Promise<SseEvent[]> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const events: SseEvent[] = [];
     try {
       const headers = new Headers({ accept: "text/event-stream", host: this.host, "last-event-id": String(lastEventId) });
       const cookie = this.cookieHeader();
@@ -153,7 +157,6 @@ class ProductionHttpClient {
       if (!response.ok || !response.body) throw new Error(`sse_http_${response.status}`);
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
-      const events: SseEvent[] = [];
       let buffer = "";
       while (true) {
         const chunk = await reader.read();
@@ -170,7 +173,7 @@ class ProductionHttpClient {
       }
       return events;
     } catch (error) {
-      if (controller.signal.aborted) return [];
+      if (controller.signal.aborted) return events;
       throw error;
     } finally {
       clearTimeout(timer);
@@ -261,6 +264,70 @@ async function browserUiAcceptance(context: BrowserContext, baseUrl: string): Pr
   }
   await page.close();
   return { viewports: VIEWPORTS.map((item) => `${item.width}x${item.height}`), pages: pages.length, samples: geometryEvidence.length };
+}
+
+type BrowserChildInput = {
+  baseUrl: string;
+  host: string;
+  chromiumBinary: string;
+  username: string;
+  password: string;
+  totpSecret?: string;
+};
+
+async function browserAcceptanceChild(): Promise<void> {
+  let raw = "";
+  for await (const chunk of process.stdin) raw += String(chunk);
+  const input = JSON.parse(raw) as BrowserChildInput;
+  const client = new ProductionHttpClient(input.baseUrl, input.host);
+  await client.login(input.username, input.password, input.totpSecret);
+  const browser = await chromium.launch({
+    headless: true,
+    executablePath: input.chromiumBinary || undefined,
+    chromiumSandbox: true
+  });
+  try {
+    const context = await browser.newContext();
+    for (const [name, value] of client.cookies) {
+      await context.addCookies([{ name, value, url: input.baseUrl, httpOnly: name.includes("session"), secure: true, sameSite: "Strict" }]);
+    }
+    process.stdout.write(JSON.stringify(await browserUiAcceptance(context, input.baseUrl)));
+    await context.close();
+  } finally {
+    await browser.close();
+  }
+}
+
+async function browserAcceptanceAsRuntimeUser(input: BrowserChildInput): Promise<JsonRecord> {
+  const uid = Number(process.env.KCML_ACCEPTANCE_BROWSER_UID);
+  const gid = Number(process.env.KCML_ACCEPTANCE_BROWSER_GID);
+  if (!Number.isInteger(uid) || uid <= 0 || !Number.isInteger(gid) || gid <= 0) throw new Error("acceptance_browser_runtime_identity_missing");
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [fileURLToPath(import.meta.url)], {
+      cwd: process.cwd(),
+      uid,
+      gid,
+      env: {
+        PATH: process.env.PATH,
+        NODE_ENV: "production",
+        KCML_ACCEPTANCE_BROWSER_CHILD: "1"
+      },
+      stdio: ["pipe", "pipe", "pipe"]
+    });
+    let stdout = "";
+    let stderr = "";
+    const timer = setTimeout(() => child.kill("SIGKILL"), 180_000);
+    child.stdout.on("data", (chunk) => { stdout = `${stdout}${String(chunk)}`.slice(-50_000); });
+    child.stderr.on("data", (chunk) => { stderr = `${stderr}${String(chunk)}`.slice(-10_000); });
+    child.once("error", (error) => { clearTimeout(timer); reject(error); });
+    child.once("exit", (code, signal) => {
+      clearTimeout(timer);
+      if (code !== 0) { reject(new Error(`acceptance_browser_child_failed:${code ?? signal}:${safeDetail(stderr)}`)); return; }
+      try { resolve(object(JSON.parse(stdout))); }
+      catch { reject(new Error("acceptance_browser_child_invalid_output")); }
+    });
+    child.stdin.end(JSON.stringify(input));
+  });
 }
 
 function readOnlyManifest(baseDomain: string): JsonRecord {
@@ -538,16 +605,12 @@ async function main(): Promise<void> {
         return { status: response.status };
       });
       let approvalCreated = false;
-      await check("correct approval freezes exact reusable specification", async () => {
+      await check("correct approval freezes exact specification", async () => {
         const specBody = await client.json(`/api/generation/jobs/${jobId}/spec`);
         const spec = object(specBody.spec); const typed = object(spec.spec);
         const decisions = Array.isArray(typed.capabilityDecisions) ? typed.capabilityDecisions : [];
-        const canApproveWithoutCreatingFixture = decisions.some((decision) => {
-          const value = object(decision);
-          return ["FULL_REUSE", "PARTIAL_REUSE"].includes(string(value.decision)) && Array.isArray(value.reuse) && value.reuse.length > 0;
-        });
         if (typed.openQuestions && Array.isArray(typed.openQuestions) && typed.openQuestions.length > 0) throw new Error("acceptance_spec_open_questions");
-        if (!canApproveWithoutCreatingFixture) return { approval: "not-run-no-reusable-capability" };
+        if (!decisions.length) throw new Error("acceptance_spec_capability_decision_missing");
         const response = await client.request(`/api/generation/jobs/${jobId}/approve-spec`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ revisionId: string(spec.id), digest: string(spec.digest) }) });
         const body = await response.json().catch(() => ({})) as JsonRecord;
         if (response.status !== 200 || !object(body.approval).revisionId) throw new Error(`approval_http_${response.status}`);
@@ -632,20 +695,20 @@ async function main(): Promise<void> {
       await check("automation repair route fails closed without component lineage", async () => {
         const response = await client.json(`/api/browser-automations/${definitionId}/repair`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
         const repair = object(response.repair);
-        if (string(repair.repairAction) !== "BLOCKED" || !string(repair.blockerCode)) throw new Error("automation_repair_not_blocked_without_lineage");
-        return { repairAction: repair.repairAction, blocker: repair.blockerCode };
+        if (string(repair.repair) !== "BLOCKED" || !string(repair.blockerCode)) throw new Error("automation_repair_not_blocked_without_lineage");
+        return { repairAction: repair.repair, blocker: repair.blockerCode };
       });
     }
 
     await check("authenticated OWNER browser UI geometry and navigation", async () => {
-      const browser = await chromium.launch({ headless: true, executablePath: config.CHROMIUM_BINARY || undefined });
-      try {
-        const context = await browser.newContext();
-        for (const [name, value] of client.cookies) await context.addCookies([{ name, value, url: baseUrl, httpOnly: name.includes("session"), secure: true, sameSite: "Strict" }]);
-        const result = await browserUiAcceptance(context, baseUrl);
-        await context.close();
-        return result;
-      } finally { await browser.close(); }
+      return browserAcceptanceAsRuntimeUser({
+        baseUrl,
+        host: config.ADMIN_HOST,
+        chromiumBinary: config.CHROMIUM_BINARY,
+        username: config.ADMIN_BOOTSTRAP_USERNAME,
+        password,
+        totpSecret
+      });
     });
 
     await check("safe production acceptance cleanup", async () => {
@@ -677,4 +740,5 @@ async function main(): Promise<void> {
   }
 }
 
-await main();
+if (process.env.KCML_ACCEPTANCE_BROWSER_CHILD === "1") await browserAcceptanceChild();
+else await main();

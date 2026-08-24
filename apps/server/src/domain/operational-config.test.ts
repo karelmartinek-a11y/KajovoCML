@@ -47,6 +47,23 @@ describe("operational configuration registry", () => {
     expect(effective.UI_TIME_ZONE).toBe("UTC");
   });
 
+  it("preserves the deployment-owned Playwright executable outside OWNER settings", async () => {
+    const query = vi.fn(async (sql: string) => {
+      if (sql.startsWith("select key,value_json")) return { rowCount: 0, rows: [] };
+      return { rowCount: 0, rows: [] };
+    });
+    const deployment = loadBootstrapConfig({
+      NODE_ENV: "test",
+      DATABASE_URL: "postgres://unused/test",
+      CONFIG_VAULT_MASTER_KEY_BASE64: vaultKey.toString("base64"),
+      CONFIG_VAULT_MASTER_KEY_ID: "vault-test",
+      CHROMIUM_BINARY: "/opt/kcml/playwright-browsers/chromium-test/chrome"
+    });
+    const effective = await loadConfigFromDb({ query } as unknown as Db, deployment);
+    expect(effective.CHROMIUM_BINARY).toBe("/opt/kcml/playwright-browsers/chromium-test/chrome");
+    expect((await listOperationalConfig({ query } as unknown as Db, effective)).some((item) => item.envKey === "CHROMIUM_BINARY")).toBe(false);
+  });
+
   it("never exposes plaintext secrets in the admin view", async () => {
     const ciphertext = encryptVaultSecret("plaintext-must-not-leak", vaultKey, { keyId: "vault-test", settingKey: "alertPrimaryHmacKey" });
     const query = vi.fn(async (sql: string) => {

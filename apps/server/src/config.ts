@@ -320,7 +320,10 @@ const bootstrapEnvSchema = z.object({
   PORT: z.coerce.number().int().min(1).max(65535).default(3000),
   DATABASE_URL: z.string().min(1),
   CONFIG_VAULT_MASTER_KEY_BASE64: vaultMasterKey,
-  CONFIG_VAULT_MASTER_KEY_ID: z.string().trim().min(1).max(120).default("config-v1")
+  CONFIG_VAULT_MASTER_KEY_ID: z.string().trim().min(1).max(120).default("config-v1"),
+  // Playwright's managed executable is a deployment-owned immutable path.
+  // It is intentionally not an OWNER-editable operational setting.
+  CHROMIUM_BINARY: z.string().default("chromium")
 }).superRefine((config, ctx) => {
   if (config.NODE_ENV === "production" && config.KCML_PROCESS_ROLE !== "migrate" && config.CONFIG_VAULT_MASTER_KEY_BASE64.length !== 32) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["CONFIG_VAULT_MASTER_KEY_BASE64"], message: "config vault master key is required in production" });
@@ -433,7 +436,8 @@ export function parseStoredRuntimeConfig(bootstrap: BootstrapConfig, values: Nod
     PORT: String(bootstrap.PORT),
     DATABASE_URL: bootstrap.DATABASE_URL,
     CONFIG_VAULT_MASTER_KEY_BASE64: bootstrap.CONFIG_VAULT_MASTER_KEY_BASE64.toString("base64"),
-    CONFIG_VAULT_MASTER_KEY_ID: bootstrap.CONFIG_VAULT_MASTER_KEY_ID
+    CONFIG_VAULT_MASTER_KEY_ID: bootstrap.CONFIG_VAULT_MASTER_KEY_ID,
+    CHROMIUM_BINARY: bootstrap.CHROMIUM_BINARY
   });
 }
 

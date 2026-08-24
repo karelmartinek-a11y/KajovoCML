@@ -9,6 +9,10 @@ import { lookupCmlCapabilities, readCmlCapabilityContract, type CapabilityCandid
 
 type SqlExecutor = Db | pg.PoolClient;
 
+function isPoolExecutor(executor: SqlExecutor): executor is Db {
+  return typeof (executor as pg.PoolClient).release !== "function";
+}
+
 export type DiscussionRole = "OWNER" | "ASSISTANT" | "SYSTEM";
 const textList = z.array(z.string().trim().min(1).max(10_000)).max(200);
 const browserAutomationStepSchema = z.object({
@@ -109,8 +113,8 @@ async function assertDiscussionLease(db: SqlExecutor, turnId: string, lease: Dis
   if (!result.rowCount) throw leaseLostError();
 }
 
-async function createLeasedAssistantMessage(db: SqlExecutor, jobId: string, turnId: string, lease: DiscussionLease): Promise<DiscussionMessageRecord> {
-  if (typeof (db as Db).connect === "function") return tx<DiscussionMessageRecord>(db as Db, (client) => createLeasedAssistantMessage(client, jobId, turnId, lease));
+export async function createLeasedAssistantMessage(db: SqlExecutor, jobId: string, turnId: string, lease: DiscussionLease): Promise<DiscussionMessageRecord> {
+  if (isPoolExecutor(db)) return tx<DiscussionMessageRecord>(db, (client) => createLeasedAssistantMessage(client, jobId, turnId, lease));
   const existing = await db.query("select id,sequence,role,status,content,turn_id,created_at from generation_job_message where job_id=$1 and idempotency_key=$2", [jobId, `assistant:${turnId}`]);
   if (existing.rowCount) {
     const row = existing.rows[0];
@@ -242,7 +246,7 @@ export type GenerationSpecRevision = Readonly<{
 }>;
 
 export async function createSpecRevision(db: SqlExecutor, jobId: string, input: unknown, turnId: string, lease?: DiscussionLease): Promise<GenerationSpecRevision> {
-  if (typeof (db as Db).connect === "function") return tx<GenerationSpecRevision>(db as Db, (client) => createSpecRevisionLocked(client, jobId, input, turnId, lease));
+  if (isPoolExecutor(db)) return tx<GenerationSpecRevision>(db, (client) => createSpecRevisionLocked(client, jobId, input, turnId, lease));
   return createSpecRevisionLocked(db, jobId, input, turnId, lease);
 }
 
@@ -495,11 +499,10 @@ function functionCallFromItem(item: Record<string, unknown>): PendingFunctionCal
 export async function recoverExpiredDiscussionTurns(db: Db): Promise<number> {
   return tx(db, async (client) => {
     const expired = await client.query(
-      `select turn.id,turn.job_id,turn.status
+      `select turn.id,turn.job_id,turn.status,job.state job_state
          from generation_discussion_turn turn
          join generation_job job on job.id=turn.job_id
-        where job.state='DISCUSSING'
-          and turn.status in ('RUNNING','INTERRUPT_REQUESTED')
+        where turn.status in ('RUNNING','INTERRUPT_REQUESTED')
           and turn.lease_until is not null
           and turn.lease_until<now()
         order by turn.lease_until
@@ -507,6 +510,27 @@ export async function recoverExpiredDiscussionTurns(db: Db): Promise<number> {
     );
     let recovered = 0;
     for (const row of expired.rows) {
+      if (String(row.job_state) !== "DISCUSSING") {
+        const message = await client.query(
+          `update generation_job_message
+              set status='INTERRUPTED',interrupted_at=coalesce(interrupted_at,now())
+            where turn_id=$1 and role='ASSISTANT' and status='STREAMING'
+          returning id`,
+          [row.id]
+        );
+        await client.query(
+          `update generation_discussion_turn
+              set status='INTERRUPTED',error_code='discussion_lease_expired_job_terminal',
+                  interrupted_at=coalesce(interrupted_at,now()),completed_at=coalesce(completed_at,now()),
+                  lease_owner=null,lease_token=null,lease_until=null,heartbeat_at=null
+            where id=$1`,
+          [row.id]
+        );
+        if (message.rowCount) await appendDiscussionEvent(client, String(row.job_id), "discussion.message.interrupted", { messageId: String(message.rows[0].id), turnId: String(row.id), recovered: true });
+        await appendDiscussionEvent(client, String(row.job_id), "discussion.turn.interrupted", { turnId: String(row.id), recovered: true, jobState: String(row.job_state) });
+        recovered += 1;
+        continue;
+      }
       const successor = await client.query(
         "select id from generation_discussion_turn where job_id=$1 and status='QUEUED' and id<>$2 for update",
         [row.job_id, row.id]

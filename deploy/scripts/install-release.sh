@@ -591,6 +591,8 @@ if [ "${KCML_RUN_FULL_SSOT_ACCEPTANCE:-false}" = "true" ]; then
   trap cleanup_acceptance_log EXIT
   acceptance_status=0
   if PASS="$PASS" \
+    KCML_ACCEPTANCE_BROWSER_UID="$(id -u kcml)" \
+    KCML_ACCEPTANCE_BROWSER_GID="$(id -g kcml)" \
     KCML_PROCESS_ROLE=migrate \
     DATABASE_URL_FILE=/etc/kcml/credentials/migrator/database_url \
     CONFIG_VAULT_MASTER_KEY_BASE64_FILE=/etc/kcml/credentials/config_vault_master_key \

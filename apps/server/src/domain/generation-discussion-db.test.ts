@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { loadConfig, type AppConfig } from "../config.js";
 import { createDb, type Db } from "../db.js";
 import { cancelGenerationJob, createGenerationJob } from "./generation.js";
-import { approveSpec, canonicalJson, createSpecRevision, digest, generationSpecificationSchema, queueDiscussionTurn, recoverExpiredDiscussionTurns, type GenerationSpec } from "./generation-discussion.js";
+import { approveSpec, canonicalJson, createLeasedAssistantMessage, createSpecRevision, digest, generationSpecificationSchema, queueDiscussionTurn, recoverExpiredDiscussionTurns, type GenerationSpec } from "./generation-discussion.js";
 
 const enabled = process.env.KCML_TEST_DATABASE === "1";
 let db: Db;
@@ -67,6 +67,20 @@ describe.skipIf(!enabled)("generation discussion PostgreSQL contract", () => {
     expect(String(stored.rows[0].content)).toBe("Změň business pravidlo.");
   });
 
+  it("creates the leased assistant exactly once through a Pool without recursively reconnecting a PoolClient", async () => {
+    const created = await createGenerationJob(db, ownerId, `discussion assistant lease ${randomUUID()}`, randomUUID(), randomUUID());
+    jobIds.push(created.job.id);
+    const turn = await db.query("select id from generation_discussion_turn where job_id=$1 and status='QUEUED'", [created.job.id]);
+    const turnId = String(turn.rows[0].id);
+    const lease = { owner: `worker-${randomUUID()}`, token: randomUUID() };
+    await db.query("update generation_discussion_turn set status='RUNNING',lease_owner=$2,lease_token=$3,lease_until=now()+interval '1 minute' where id=$1", [turnId, lease.owner, lease.token]);
+    const first = await createLeasedAssistantMessage(db, created.job.id, turnId, lease);
+    const replay = await createLeasedAssistantMessage(db, created.job.id, turnId, lease);
+    expect(replay.id).toBe(first.id);
+    const messages = await db.query("select count(*)::int count from generation_job_message where job_id=$1 and role='ASSISTANT' and turn_id=$2", [created.job.id, turnId]);
+    expect(Number(messages.rows[0].count)).toBe(1);
+  });
+
   it("reuses an immutable historical digest while approval freezes the exact current revision", async () => {
     const created = await createGenerationJob(db, ownerId, `discussion revision ${randomUUID()}`, randomUUID(), randomUUID());
     jobIds.push(created.job.id);
@@ -109,6 +123,21 @@ describe.skipIf(!enabled)("generation discussion PostgreSQL contract", () => {
     expect(state.rows[0].state).toBe("CANCELLED");
     expect(terminal.rows[0].status).toBe("INTERRUPT_REQUESTED");
     expect(message.rows[0].status).toBe("INTERRUPTED");
+  });
+
+  it("terminalizes an expired worker turn after its generation job was cancelled", async () => {
+    const created = await createGenerationJob(db, ownerId, `discussion cancelled crash ${randomUUID()}`, randomUUID(), randomUUID());
+    jobIds.push(created.job.id);
+    const turn = await db.query("select id from generation_discussion_turn where job_id=$1 and status='QUEUED'", [created.job.id]);
+    const turnId = String(turn.rows[0].id);
+    await db.query("update generation_discussion_turn set status='RUNNING',lease_owner='dead-worker',lease_token=$2,lease_until=now()+interval '1 minute' where id=$1", [turnId, randomUUID()]);
+    await db.query("insert into generation_job_message(job_id,role,content,turn_id,idempotency_key,status) values ($1,'ASSISTANT','partial',$2,$3,'STREAMING')", [created.job.id, turnId, `assistant:${turnId}`]);
+    await cancelGenerationJob(db, created.job.id, ownerId, randomUUID());
+    await db.query("update generation_discussion_turn set lease_until=now()-interval '1 second' where id=$1", [turnId]);
+    expect(await recoverExpiredDiscussionTurns(db)).toBe(1);
+    const recovered = await db.query("select status,error_code,lease_owner,lease_token,lease_until,completed_at from generation_discussion_turn where id=$1", [turnId]);
+    expect(recovered.rows[0]).toMatchObject({ status: "INTERRUPTED", error_code: "discussion_lease_expired_job_terminal", lease_owner: null, lease_token: null, lease_until: null });
+    expect(recovered.rows[0].completed_at).toBeTruthy();
   });
 
   it("rejects approval while a newer OWNER turn is queued", async () => {

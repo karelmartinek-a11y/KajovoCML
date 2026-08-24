@@ -85,7 +85,7 @@ export class PlaywrightBrowserSession {
 
   async start() {
     if (this.context) return;
-    this.browser = await chromium.launch({ headless: true, executablePath: this.chromiumBinary || undefined });
+    this.browser = await chromium.launch({ headless: true, executablePath: this.chromiumBinary || undefined, chromiumSandbox: true });
     this.context = await this.browser.newContext({ acceptDownloads: true });
     this.page = await this.context.newPage();
     this.page.on("popup", (page) => { this.page = page; });
