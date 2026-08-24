@@ -255,9 +255,8 @@ export async function preflightBrowserAutomation(db: Db, definitionId: string, a
     const digest = browserAutomationDigest(manifest);
     if (digest !== String(row.digest)) fail("automation_digest_mismatch", 409);
     await tx(db, async (client) => {
-      await client.query("update browser_automation_revision set status='PREFLIGHTED',verification_status='PENDING' where id=$1 and digest=$2", [row.revision_id, digest]);
       await client.query("update browser_automation_definition set last_failure_at=null,last_failure_code=null,updated_at=now() where id=$1", [definitionId]);
-      await appendAudit(client, { eventType: "browser_automation.preflight.completed", actorType: "admin", actorId, objectType: "browser_automation_definition", objectId: definitionId, after: { revisionId: String(row.revision_id), digest, verification: "STATIC_MANIFEST_VALIDATION" }, correlationId });
+      await appendAudit(client, { eventType: "browser_automation.preflight.completed", actorType: "admin", actorId, objectType: "browser_automation_definition", objectId: definitionId, after: { revisionId: String(row.revision_id), digest, verification: "STATIC_MANIFEST_VALIDATION", runtimeVerificationPreserved: true }, correlationId });
     });
     return { definitionId, revisionId: String(row.revision_id), digest, valid: true, verificationStatus: "STATIC_VALIDATED", runtimeExecutionRequired: true };
   } catch (error) {
