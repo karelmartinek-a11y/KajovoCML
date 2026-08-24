@@ -5,6 +5,7 @@ import { loadBootstrapConfig } from "../config.js";
 import { createDb } from "../db.js";
 import { requireDeploymentManagedAdminPassword } from "../domain/deployment-managed-admin.js";
 import { loadConfigFromDb } from "../domain/operational-config.js";
+import { resolveAdminTotpSecret } from "./admin-totp.js";
 import { serializeAdminLoginSmokeOutput } from "./admin-login-smoke-output.js";
 
 const SESSION_COOKIE = "__Host-kcml_session";
@@ -87,7 +88,8 @@ try {
   let finalBody = loginBody;
   let finalHeaders = loginResponse.headers;
   if (loginBody.mfaRequired === true) {
-    if (!config.ADMIN_TOTP_SECRET) {
+    const totpSecret = await resolveAdminTotpSecret(db, config);
+    if (!totpSecret) {
       throw new Error("admin_login_smoke_mfa_secret_missing");
     }
     const challengeCookie = findCookie(loginResponse.headers, LOGIN_CHALLENGE_COOKIE);
@@ -98,7 +100,7 @@ try {
       baseUrl,
       host,
       "/api/login/mfa",
-      { code: authenticator.generate(config.ADMIN_TOTP_SECRET) },
+      { code: authenticator.generate(totpSecret) },
       `${LOGIN_CHALLENGE_COOKIE}=${challengeCookie}`
     );
     finalBody = await mfaResponse.json() as Record<string, unknown>;
