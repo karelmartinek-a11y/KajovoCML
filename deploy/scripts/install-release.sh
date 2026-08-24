@@ -433,44 +433,77 @@ done < <(psql "$app_database_url" --no-psqlrc --tuples-only --no-align --quiet -
 admin_username="$(effective_admin_username)"
 export ADMIN_BOOTSTRAP_USERNAME="$admin_username"
 step verify-core-hosts
+release_check() {
+  local label="$1"
+  shift
+  if "$@"; then
+    echo "release-check:${label}=PASS"
+    return 0
+  fi
+  echo "release-check-failed:${label}" >&2
+  return 1
+}
+check_admin_login_internal() {
+  PASS="$PASS" \
+  KCML_PROCESS_ROLE=admin-sync \
+  DATABASE_URL_FILE=/etc/kcml/credentials/admin-sync/database_url \
+  CONFIG_VAULT_MASTER_KEY_BASE64_FILE=/etc/kcml/credentials/config_vault_master_key \
+  NODE_ENV=production \
+  BUILD_ID="$release_id" \
+  KCML_LOGIN_SMOKE_BASE_URL="http://127.0.0.1:${PORT:-3010}" \
+  KCML_LOGIN_SMOKE_HOST="$admin_host" \
+    node "$release_dir/apps/server/dist/cli/admin-login-smoke.js" | jq -e '.ok == true' >/dev/null
+}
+check_admin_login_public() {
+  PASS="$PASS" \
+  KCML_PROCESS_ROLE=admin-sync \
+  DATABASE_URL_FILE=/etc/kcml/credentials/admin-sync/database_url \
+  CONFIG_VAULT_MASTER_KEY_BASE64_FILE=/etc/kcml/credentials/config_vault_master_key \
+  NODE_ENV=production \
+  BUILD_ID="$release_id" \
+  KCML_LOGIN_SMOKE_BASE_URL="https://${admin_host}" \
+  KCML_LOGIN_SMOKE_HOST="$admin_host" \
+    node "$release_dir/apps/server/dist/cli/admin-login-smoke.js" | jq -e '.ok == true' >/dev/null
+}
+check_auth_discovery() {
+  curl -fsS -H "Host: ${AUTH_HOST:?AUTH_HOST is required}" \
+    "http://127.0.0.1:${PORT:-3010}/.well-known/oauth-authorization-server" \
+    | jq -e --arg issuer "https://${AUTH_HOST}" '.issuer == $issuer' >/dev/null
+}
+check_secret_discovery_internal() {
+  curl -fsS -H "Host: secrets.${PUBLIC_BASE_DOMAIN:?PUBLIC_BASE_DOMAIN is required}" \
+    "http://127.0.0.1:${PORT:-3010}/.well-known/kcml-secret-api" \
+    | jq -e --arg issuer "https://secrets.${PUBLIC_BASE_DOMAIN}" \
+        --arg resolve "https://secrets.${PUBLIC_BASE_DOMAIN}/v1/secrets/resolve" \
+        '.issuer == $issuer and .resolveEndpoint == $resolve and (.auth | sort) == ["access_token_bearer"]' >/dev/null
+}
+check_secret_discovery_public() {
+  curl -fsS "https://secrets.${PUBLIC_BASE_DOMAIN}/.well-known/kcml-secret-api" \
+    | jq -e --arg issuer "https://secrets.${PUBLIC_BASE_DOMAIN}" \
+        --arg resolve "https://secrets.${PUBLIC_BASE_DOMAIN}/v1/secrets/resolve" \
+        '.issuer == $issuer and .resolveEndpoint == $resolve and (.auth | sort) == ["access_token_bearer"]' >/dev/null
+}
+check_secret_health_public() {
+  curl -fsS "https://secrets.${PUBLIC_BASE_DOMAIN}/health" \
+    | jq -e '.status == "ok"' >/dev/null
+}
+check_unknown_host() {
+  test "$(curl -sS -o /dev/null -w '%{http_code}' -H 'Host: unknown.invalid' \
+    "http://127.0.0.1:${PORT:-3010}/health")" = "404"
+}
 if [ "$admin_password_matches_pass" = "true" ]; then
-PASS="$PASS" \
-KCML_PROCESS_ROLE=admin-sync \
-DATABASE_URL_FILE=/etc/kcml/credentials/admin-sync/database_url \
-CONFIG_VAULT_MASTER_KEY_BASE64_FILE=/etc/kcml/credentials/config_vault_master_key \
-NODE_ENV=production \
-BUILD_ID="$release_id" \
-KCML_LOGIN_SMOKE_BASE_URL="http://127.0.0.1:${PORT:-3010}" \
-KCML_LOGIN_SMOKE_HOST="$admin_host" \
-  node "$release_dir/apps/server/dist/cli/admin-login-smoke.js" | jq -e '.ok == true' >/dev/null
-PASS="$PASS" \
-KCML_PROCESS_ROLE=admin-sync \
-DATABASE_URL_FILE=/etc/kcml/credentials/admin-sync/database_url \
-CONFIG_VAULT_MASTER_KEY_BASE64_FILE=/etc/kcml/credentials/config_vault_master_key \
-NODE_ENV=production \
-BUILD_ID="$release_id" \
-KCML_LOGIN_SMOKE_BASE_URL="https://${admin_host}" \
-KCML_LOGIN_SMOKE_HOST="$admin_host" \
-  node "$release_dir/apps/server/dist/cli/admin-login-smoke.js" | jq -e '.ok == true' >/dev/null
+  release_check admin-login-internal check_admin_login_internal
+  release_check admin-login-public check_admin_login_public
 else
+  echo "release-check:admin-login-internal=SKIPPED"
+  echo "release-check:admin-login-public=SKIPPED"
   echo "admin-login-smoke:SKIPPED preserved_owner_credential_diverges_from_pass"
 fi
-curl -fsS -H "Host: ${AUTH_HOST:?AUTH_HOST is required}" \
-  "http://127.0.0.1:${PORT:-3010}/.well-known/oauth-authorization-server" \
-  | jq -e --arg issuer "https://${AUTH_HOST}" '.issuer == $issuer' >/dev/null
-curl -fsS -H "Host: secrets.${PUBLIC_BASE_DOMAIN:?PUBLIC_BASE_DOMAIN is required}" \
-  "http://127.0.0.1:${PORT:-3010}/.well-known/kcml-secret-api" \
-  | jq -e --arg issuer "https://secrets.${PUBLIC_BASE_DOMAIN}" \
-      --arg resolve "https://secrets.${PUBLIC_BASE_DOMAIN}/v1/secrets/resolve" \
-      '.issuer == $issuer and .resolveEndpoint == $resolve and (.auth | sort) == ["access_token_bearer"]' >/dev/null
-curl -fsS "https://secrets.${PUBLIC_BASE_DOMAIN}/.well-known/kcml-secret-api" \
-  | jq -e --arg issuer "https://secrets.${PUBLIC_BASE_DOMAIN}" \
-      --arg resolve "https://secrets.${PUBLIC_BASE_DOMAIN}/v1/secrets/resolve" \
-      '.issuer == $issuer and .resolveEndpoint == $resolve and (.auth | sort) == ["access_token_bearer"]' >/dev/null
-curl -fsS "https://secrets.${PUBLIC_BASE_DOMAIN}/health" \
-  | jq -e '.status == "ok"' >/dev/null
-test "$(curl -sS -o /dev/null -w '%{http_code}' -H 'Host: unknown.invalid' \
-  "http://127.0.0.1:${PORT:-3010}/health")" = "404"
+release_check auth-discovery check_auth_discovery
+release_check secret-discovery-internal check_secret_discovery_internal
+release_check secret-discovery-public check_secret_discovery_public
+release_check secret-health-public check_secret_health_public
+release_check unknown-host-guard check_unknown_host
 step smoke-reference-external-api
 if [ "$admin_password_matches_pass" = "true" ]; then
   bash "$release_dir/deploy/scripts/smoke-reference-external-api.sh" "$release_dir"
