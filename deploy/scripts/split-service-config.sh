@@ -4,10 +4,18 @@ umask 077
 
 legacy_env="${KCML_LEGACY_ENV:-/etc/kcml/kcml.env}"
 test -r "$legacy_env"
+# An installer may pass a freshly rotated application-role URL after
+# configure-db-roles has updated PostgreSQL. Preserve that explicit value
+# across the legacy environment import; otherwise a stale legacy assignment
+# can rematerialize credentials that no longer authenticate.
+database_app_url_override="${DATABASE_APP_URL:-}"
 set -a
 # shellcheck disable=SC1090,SC1091
 . "$legacy_env"
 set +a
+if [ -n "$database_app_url_override" ]; then
+  DATABASE_APP_URL="$database_app_url_override"
+fi
 
 if [ -n "${1:-}" ]; then
   BUILD_ID="$1"

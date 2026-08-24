@@ -77,6 +77,14 @@ workspaces there; omitting this path makes those real Playwright operations fail
 inside the systemd mount namespace even though the same browser binary works for
 the unprivileged service account. No broader filesystem write access is granted.
 
+Application-role database rotation is materialized through
+`/etc/kcml/database-app.password` and `/etc/kcml/database-app.url`. The final
+service-config split must prefer the freshly configured URL passed by the
+installer over any legacy environment assignment; restoring a stale URL after
+`configure-db-roles` would put all DB-backed services into an authentication
+restart loop. The split-service regression test exercises that stale-input
+case without production credentials.
+
 When an approved specification requires a credential, deterministic component Secret grants are committed through the existing Secret Manager before provider/browser/API work resumes. This applies both to a newly supplied OWNER secret and an already ACTIVE secret rediscovered during integration; it does not introduce a second approval or transfer workflow.
 
 The service configuration must set `KCML_COMPONENT_HOST_SUFFIX` to the canonical component DNS suffix whenever it differs from `PUBLIC_BASE_DOMAIN`. For the current production topology this is `kajovocml.hcasc.cz`. The deployment invariant compares persisted component identities against this setting; repair the configuration value, never component identity rows or the invariant, when an inherited base-domain default is wrong.
