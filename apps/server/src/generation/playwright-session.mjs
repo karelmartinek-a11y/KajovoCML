@@ -74,7 +74,10 @@ function locatorFor(page, value) {
 
 export class PlaywrightBrowserSession {
   constructor({ chromiumBinary, workspace, sessionId, allowLocal = false }) {
-    this.chromiumBinary = chromiumBinary;
+    // Deployment and CI publish the verified Playwright-compatible executable
+    // through CHROMIUM_BINARY.  Keep an explicit constructor override for
+    // callers that deliberately bind a different managed installation.
+    this.chromiumBinary = chromiumBinary || process.env.CHROMIUM_BINARY;
     this.workspace = workspace;
     this.sessionId = sessionId;
     this.allowLocal = allowLocal;
