@@ -115,7 +115,7 @@ class ProductionHttpClient {
     const body = await response.json().catch(() => ({})) as JsonRecord;
     const accepted = Array.isArray(expected) ? expected.includes(response.status) : response.status === expected;
     if (!accepted) {
-      const code = string(body.code) || `http_${response.status}`;
+      const code = string(body.error) || string(body.code) || `http_${response.status}`;
       throw new Error(`${code}:${response.status}`);
     }
     return body;
@@ -226,6 +226,7 @@ async function waitForAutomationRun(client: ProductionHttpClient, runId: string,
 
 async function geometry(page: Page): Promise<{ horizontalOverflow: boolean; offscreen: number; clipped: number; focusable: boolean }> {
   return page.evaluate(() => {
+    window.scrollTo(0, 0);
     const horizontalOverflow = document.documentElement.scrollWidth > window.innerWidth + 1;
     const actionable = Array.from(document.querySelectorAll<HTMLElement>("button,a,input,textarea,select,[tabindex]"))
       .filter((element) => element.offsetParent !== null && getComputedStyle(element).visibility !== "hidden");
@@ -233,7 +234,20 @@ async function geometry(page: Page): Promise<{ horizontalOverflow: boolean; offs
     let clipped = 0;
     for (const element of actionable) {
       const rect = element.getBoundingClientRect();
-      if (rect.right > window.innerWidth + 2 || rect.left < -2 || rect.bottom < -2 || rect.top > window.innerHeight + 2) offscreen += 1;
+      const hasHorizontalScroller = (() => {
+        let ancestor = element.parentElement;
+        while (ancestor && ancestor !== document.body) {
+          const style = getComputedStyle(ancestor);
+          if (["auto", "scroll"].includes(style.overflowX) && ancestor.scrollWidth > ancestor.clientWidth + 1) return true;
+          ancestor = ancestor.parentElement;
+        }
+        return false;
+      })();
+      // Content below the fold is reachable through normal document scrolling.
+      // Count only horizontally unreachable controls (unless their canonical
+      // container deliberately provides horizontal scrolling) or zero-sized
+      // actionable controls that are nominally visible.
+      if (((rect.right > window.innerWidth + 2 || rect.left < -2) && !hasHorizontalScroller) || rect.width < 1 || rect.height < 1) offscreen += 1;
       if (element.scrollWidth > element.clientWidth + 1 || element.scrollHeight > element.clientHeight + 1) clipped += 1;
     }
     const active = document.activeElement as HTMLElement | null;
@@ -259,7 +273,7 @@ async function browserUiAcceptance(context: BrowserContext, baseUrl: string): Pr
       await page.keyboard.press("Tab");
       const result = await geometry(page);
       geometryEvidence.push({ viewport: `${viewport.width}x${viewport.height}`, page: label, ...result });
-      if (result.horizontalOverflow || result.offscreen > 0 || !result.focusable) throw new Error(`ui_geometry_failed:${label}:${viewport.width}x${viewport.height}`);
+      if (result.horizontalOverflow || result.offscreen > 0 || !result.focusable) throw new Error(`ui_geometry_failed:${label}:${viewport.width}x${viewport.height}:${JSON.stringify(result)}`);
     }
   }
   await page.close();

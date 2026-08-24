@@ -80,6 +80,9 @@ export type GenerationJobView = {
   ownerAdminId: string;
   originalPrompt: string;
   state: GenerationState;
+  currentSpecRevisionId: string | null;
+  approvedSpecRevisionId: string | null;
+  approvedSpecDigest: string | null;
   plan: GenerationPlan | null;
   inputs: Array<{
     id: string; key: string; label: string; description: string; kind: GenerationInputKind; required: boolean; secret: boolean;
@@ -163,6 +166,9 @@ export async function getGenerationJob(db: Db, jobId: string): Promise<Generatio
     parentJobId: row.parent_job_id ? String(row.parent_job_id) : null, runSequence: Number(row.run_sequence ?? 1),
     operatorPrompt: row.operator_prompt ? String(row.operator_prompt) : null, repairComponentId: row.repair_component_id ? String(row.repair_component_id) : null,
     ownerAdminId: String(row.owner_admin_id), originalPrompt: String(row.original_prompt), state: state(row.state),
+    currentSpecRevisionId: row.current_spec_revision_id ? String(row.current_spec_revision_id) : null,
+    approvedSpecRevisionId: row.approved_spec_revision_id ? String(row.approved_spec_revision_id) : null,
+    approvedSpecDigest: row.approved_spec_digest ? String(row.approved_spec_digest) : null,
     plan: row.plan as GenerationPlan | null,
     inputs: inputs.rows.map((input) => ({
       id: String(input.id), key: String(input.input_key), label: String(input.label), description: String(input.description),

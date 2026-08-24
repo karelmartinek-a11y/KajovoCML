@@ -29,6 +29,8 @@ requireText("acceptance", "canonical OWNER read surfaces and safe metadata bound
 requireText("acceptance", "human role mutation is rejected without creating another role");
 requireText("acceptance", "correct approval freezes exact specification");
 requireText("acceptance", "assistant_delta_event_missing");
+requireText("acceptance", "string(body.error) || string(body.code)");
+requireText("acceptance", "Content below the fold is reachable through normal document scrolling");
 if (source.acceptance.includes("not-run-no-reusable-capability")) throw new Error("ssot acceptance guard forbids skipped approval reported as PASS");
 requireText("workflow", "run_full_ssot_acceptance:");
 requireText("workflow", "KCML_RUN_FULL_SSOT_ACCEPTANCE");

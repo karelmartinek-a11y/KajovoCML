@@ -36,7 +36,7 @@ ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
-ReadWritePaths=/var/lib/kcml/runtime
+ReadWritePaths=/var/lib/kcml/generation /var/lib/kcml/runtime
 
 [Install]
 WantedBy=multi-user.target

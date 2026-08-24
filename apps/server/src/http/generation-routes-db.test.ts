@@ -111,7 +111,9 @@ describe.skipIf(!enabled)("authenticated generation HTTP/SSE contract", () => {
     jobIds.push(created.job.id);
     const list = await requestJson("/api/generation/jobs", { headers: headers() });
     expect(list.status).toBe(200);
-    expect((await list.json() as { jobs: Array<{ id: string; state: string }> }).jobs).toEqual(expect.arrayContaining([expect.objectContaining({ id: created.job.id, state: "DISCUSSING" })]));
+    expect((await list.json() as { jobs: Array<{ id: string; state: string; currentSpecRevisionId: string | null; approvedSpecRevisionId: string | null }> }).jobs).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: created.job.id, state: "DISCUSSING", currentSpecRevisionId: null, approvedSpecRevisionId: null })
+    ]));
 
     const message = await requestJson(`/api/generation/jobs/${created.job.id}/messages`, {
       method: "POST", headers: headers(true), body: { content: "Přidej bezpečné čtení katalogu.", idempotencyKey: randomUUID() }

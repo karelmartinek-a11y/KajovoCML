@@ -70,6 +70,13 @@ complete per-address snapshot in the deploy diagnostic and fails closed.
 
 Generation writes workspaces under `GENERATION_ROOT`, local releases under `GENERATED_COMPONENT_ROOT`, uses `RUNTIME_SOCKET_ROOT` for UDS, and exposes each activated element through its canonical HTTPS hostname. When a candidate is abandoned after a technical failure, the existing generation release cleanup must complete before a new remediation revision starts: first CREATE stops the runtime/removes `current`/marks the release `ROLLED_BACK`; UPDATE/REPAIR restores the previous release. Terminal REPAIR failure additionally restores the captured base component lifecycle/control state. INTEGRATING retry is the exception because the same candidate remains intentionally live for the next provider attempt. Runtime credentials are systemd credentials sourced from KajovoCML Secret Manager, never environment/user handoff tokens.
 
+The OWNER web service keeps `ProtectSystem=strict` and has a narrow writable
+exception for `/var/lib/kcml/generation` in addition to its runtime directory.
+OWNER preview and automation verification create isolated temporary browser
+workspaces there; omitting this path makes those real Playwright operations fail
+inside the systemd mount namespace even though the same browser binary works for
+the unprivileged service account. No broader filesystem write access is granted.
+
 When an approved specification requires a credential, deterministic component Secret grants are committed through the existing Secret Manager before provider/browser/API work resumes. This applies both to a newly supplied OWNER secret and an already ACTIVE secret rediscovered during integration; it does not introduce a second approval or transfer workflow.
 
 The service configuration must set `KCML_COMPONENT_HOST_SUFFIX` to the canonical component DNS suffix whenever it differs from `PUBLIC_BASE_DOMAIN`. For the current production topology this is `kajovocml.hcasc.cz`. The deployment invariant compares persisted component identities against this setting; repair the configuration value, never component identity rows or the invariant, when an inherited base-domain default is wrong.

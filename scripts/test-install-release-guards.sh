@@ -4,6 +4,7 @@ set -euo pipefail
 install_script="deploy/scripts/install-release.sh"
 preflight_script="deploy/scripts/preflight.sh"
 generation_unit="deploy/systemd/kcml-generation-worker.service"
+web_unit="deploy/systemd/kcml.service"
 component_unit="deploy/systemd/kcml-generated-component@.service"
 helper="deploy/scripts/kcml-generated-runtime-helper"
 tls_script="deploy/scripts/ensure-canonical-tls.sh"
@@ -20,7 +21,7 @@ playwright_installer="deploy/scripts/install-playwright-browser.sh"
 playwright_lock_recovery="deploy/scripts/playwright-lock-recovery.mjs"
 playwright_compatibility="deploy/scripts/playwright-browser-compat.mjs"
 
-for file in "$install_script" "$preflight_script" "$generation_unit" "$component_unit" "$helper" "$tls_script" "$acme_auth_hook" "$acme_cleanup_hook" "$acme_deploy_hook" "$renewal_script" "$renewal_service" "$renewal_failure_service" "$renewal_recovered_service" "$renewal_timer" "$lineage_helper" "$playwright_installer"; do
+for file in "$install_script" "$preflight_script" "$web_unit" "$generation_unit" "$component_unit" "$helper" "$tls_script" "$acme_auth_hook" "$acme_cleanup_hook" "$acme_deploy_hook" "$renewal_script" "$renewal_service" "$renewal_failure_service" "$renewal_recovered_service" "$renewal_timer" "$lineage_helper" "$playwright_installer"; do
   test -f "$file"
 done
 test -f "$playwright_lock_recovery"
@@ -148,6 +149,7 @@ if [ "$split_config_line" -ge "$migrate_line" ] || [ "$migrate_line" -ge "$opena
   exit 1
 fi
 grep -Fq 'GENERATION_WORKER_ENABLED' deploy/scripts/split-service-config.sh
+grep -Fq 'ReadWritePaths=/var/lib/kcml/generation /var/lib/kcml/runtime' "$web_unit"
 grep -Fq 'GENERATION_WORKER_INTERVAL_MS' deploy/scripts/split-service-config.sh
 grep -Fq 'COMPONENT_WORKER_INTERVAL_MS' deploy/scripts/split-service-config.sh
 grep -Fq 'LoadCredentialEncrypted=runtime_token:' "$component_unit"

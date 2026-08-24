@@ -86,6 +86,10 @@ Generation resources use `/api/generation/jobs/:id`. The discussion API is:
 - `POST /api/generation/jobs/:id/messages` — appends OWNER message and starts a turn.
 - `GET /api/generation/jobs/:id/events` — SSE with `Last-Event-ID` replay.
 - `GET /api/generation/jobs/:id/spec` and `/spec/revisions` — current/revisioned spec.
+- Job list/detail views expose `currentSpecRevisionId`,
+  `approvedSpecRevisionId` and `approvedSpecDigest`; these canonical pointers are
+  required for race-free clients to observe proposal and approval progress
+  without inferring state from message text.
 - `POST /api/generation/jobs/:id/approve-spec` — exact revision/digest freeze.
 - `POST /api/generation/jobs/:id/cancel` — authoritative cancellation.
 - `GET|POST /api/generation/jobs/:id/browser/preview` — job-scoped safe frame
