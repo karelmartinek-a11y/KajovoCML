@@ -322,7 +322,7 @@ async function browserUiAcceptance(context: BrowserContext, baseUrl: string): Pr
       await page.keyboard.press("Tab");
       const result = await geometry(page);
       geometryEvidence.push({ viewport: `${viewport.width}x${viewport.height}`, page: label, ...result });
-      if (result.horizontalOverflow || result.offscreen > 0 || result.clipped > 0 || result.obscured > 0 || result.undersizedTouchTargets > 0 || !result.focusable) throw new Error(`ui_geometry_failed:${label}:${viewport.width}x${viewport.height}:${JSON.stringify(result)}`);
+      if (result.horizontalOverflow || result.offscreen > 0 || result.clipped > 0 || result.obscured > 0 || result.undersizedTouchTargets > 0 || !result.focusable) throw new Error(`ui_geometry_failed:${label}:${viewport.width}x${viewport.height}:offscreen=${result.offscreen}:clipped=${result.clipped}:${result.clippedElements.join("|")}:obscured=${result.obscured}:${result.obscuredElements.join("|")}:undersized=${result.undersizedTouchTargets}:focusable=${result.focusable}`);
     }
   }
   await page.close();
@@ -716,7 +716,7 @@ async function main(): Promise<void> {
             [jobId]
           ).catch(() => ({ rows: [] as Array<Record<string, unknown>> }));
           const latest = failure.rows[0] ?? {};
-          throw new Error(`production_generation_${string(terminal.state)}:${string(terminal.blockerCode) || "no_blocker_code"}:event=${string(latest.event_type) || "none"}:message=${string(latest.message).slice(0, 260)}`);
+          throw new Error(`production_generation_${string(terminal.state)}:${string(terminal.blockerCode) || "no_blocker_code"}:event=${string(latest.event_type) || "none"}:details=${JSON.stringify(latest.details ?? {}).slice(0, 360)}:message=${string(latest.message).slice(0, 180)}`);
         }
         if (string(terminal.authorityKind) !== "OWNER_APPROVED" || string(terminal.authoritySpecDigest) !== approvedSpecDigest || string(terminal.approvedSpecDigest) !== approvedSpecDigest) throw new Error("production_generation_authority_mismatch");
         const components = Array.isArray(terminal.components) ? terminal.components.map(object) : [];
