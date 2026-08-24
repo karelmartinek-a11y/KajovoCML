@@ -470,7 +470,7 @@ export function appendDiscussionTextDelta(state: DiscussionTextStreamState, delt
   const lower = trimmed.toLowerCase();
   const ambiguousFence = "```json".startsWith(lower);
   const structured = trimmed.startsWith("{") || trimmed.startsWith("[") || lower.startsWith("```json") ||
-    forbiddenOwnerStructuredKeys.some((key) => new RegExp(`(?:^|[\\s,{])${key}\\s*:`, "iu").test(pendingPrefix));
+    forbiddenOwnerStructuredKeys.some((key) => new RegExp(`(?:^|[\\s,{"'])${key}\\s*:`, "iu").test(pendingPrefix));
   if (structured) return { state: { content: "", pendingPrefix: "", rejectedStructuredOutput: true }, visibleDelta: "" };
   if (!trimmed || ambiguousFence) return { state: { ...state, pendingPrefix }, visibleDelta: "" };
   return { state: { content: `${state.content}${pendingPrefix}`, pendingPrefix: "", rejectedStructuredOutput: false }, visibleDelta: pendingPrefix };
