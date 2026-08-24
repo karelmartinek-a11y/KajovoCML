@@ -10,6 +10,7 @@ import { loadBootstrapConfig } from "../config.js";
 import { createDb } from "../db.js";
 import { loadConfigFromDb } from "../domain/operational-config.js";
 import { requireDeploymentManagedAdminPassword } from "../domain/deployment-managed-admin.js";
+import { enqueueGeneratedRepairFromMonitoring } from "../onboarding/monitoring.js";
 import { decryptMfaSecret } from "../security/secrets.js";
 import { applyMutationCsrfHeader } from "./production-http-contract.js";
 
@@ -453,6 +454,7 @@ async function main(): Promise<void> {
     const createdJobs: string[] = [];
     const createdAutomations: string[] = [];
     const createdBrowserCredentialIds: string[] = [];
+    let generatedComponentId = "";
     const check = async (name: string, fn: () => Promise<string | JsonRecord | void>): Promise<void> => {
       const started = Date.now();
       sequence += 1;
@@ -667,6 +669,7 @@ async function main(): Promise<void> {
         return { status: response.status };
       });
       let approvalCreated = false;
+      let approvedSpecDigest = "";
       await check("correct approval freezes exact specification", async () => {
         const specBody = await client.json(`/api/generation/jobs/${jobId}/spec`);
         const spec = object(specBody.spec); const typed = object(spec.spec);
@@ -677,6 +680,7 @@ async function main(): Promise<void> {
         const body = await response.json().catch(() => ({})) as JsonRecord;
         if (response.status !== 200 || !object(body.approval).revisionId) throw new Error(`approval_http_${response.status}`);
         approvalCreated = true;
+        approvedSpecDigest = string(spec.digest);
         const approvedJob = await client.json(`/api/generation/jobs/${jobId}`);
         if (!["ANALYZING", "IMPLEMENTING", "INTEGRATING", "VALIDATING", "CML_CONFORMANCE", "ACTIVATING", "COMPLETED", "CANCELLED"].includes(string(object(approvedJob.job).state))) throw new Error("approval_state_not_advanced");
         return { approval: "PASS", state: string(object(approvedJob.job).state), digest: string(spec.digest) };
@@ -696,6 +700,50 @@ async function main(): Promise<void> {
         }
         const job = await waitForJob(client, cancellationJobId, (candidate) => string(candidate.state) === "CANCELLED", 30_000);
         return { state: job.state, isolatedFixture: approvalCreated };
+      });
+      await check("approved generation completes from frozen specification", async () => {
+        if (!approvalCreated || !approvedSpecDigest) throw new Error("production_generation_approval_missing");
+        const terminal = await waitForJob(client, jobId, (candidate) => ["COMPLETED", "FAILED", "BLOCKED", "CANCELLED"].includes(string(candidate.state)), 900_000);
+        if (string(terminal.state) !== "COMPLETED") throw new Error(`production_generation_${string(terminal.state)}:${string(terminal.blockerCode) || "no_blocker_code"}`);
+        if (string(terminal.authorityKind) !== "OWNER_APPROVED" || string(terminal.authoritySpecDigest) !== approvedSpecDigest || string(terminal.approvedSpecDigest) !== approvedSpecDigest) throw new Error("production_generation_authority_mismatch");
+        const components = Array.isArray(terminal.components) ? terminal.components.map(object) : [];
+        if (!components.length) throw new Error("production_generation_component_missing");
+        generatedComponentId = string(components[0]?.componentId);
+        const runtime = await db.query(
+          `select c.code,c.lifecycle_state,c.activation_state,c.operational_state,c.enabled,c.active_revision_id,
+                  release.id active_release_id,release.generation_job_id release_job_id
+             from component c
+             left join lateral (
+               select id,generation_job_id from local_component_release
+                where component_id=c.id and state='ACTIVE' order by activated_at desc limit 1
+             ) release on true
+            where c.id=$1`,
+          [generatedComponentId]
+        );
+        const row = runtime.rows[0] as Record<string, unknown> | undefined;
+        if (!row || row.lifecycle_state !== "ACTIVE" || row.activation_state !== "ACTIVE" || row.enabled !== true || !row.active_revision_id || !row.active_release_id || String(row.release_job_id) !== jobId) throw new Error("production_generation_activation_incomplete");
+        return { jobId, state: terminal.state, authority: terminal.authorityKind, specificationDigest: approvedSpecDigest, componentId: generatedComponentId, componentCode: String(row.code), activeRevision: "yes", activeRelease: "yes" };
+      });
+      await check("automatic repair inherits the frozen production specification", async () => {
+        if (!generatedComponentId || !approvedSpecDigest) throw new Error("production_repair_source_component_missing");
+        const correlationId = randomUUID();
+        const queued = object(await enqueueGeneratedRepairFromMonitoring(db, generatedComponentId, {
+          source: "ssot_production_acceptance",
+          failureClass: "CONTROLLED_READINESS_CONTRACT_FAILURE",
+          behaviorChangeRequired: false
+        }, correlationId));
+        const repairJobId = string(queued.id);
+        if (!repairJobId) throw new Error("production_repair_not_queued");
+        createdJobs.push(repairJobId);
+        if (string(queued.jobKind) !== "REPAIR" || string(queued.authorityKind) !== "INHERITED_TECHNICAL" || string(queued.authoritySourceJobId) !== jobId || string(queued.authoritySpecDigest) !== approvedSpecDigest || string(queued.state) !== "IMPLEMENTING") throw new Error("production_repair_initial_authority_mismatch");
+        const terminal = await waitForJob(client, repairJobId, (candidate) => ["COMPLETED", "FAILED", "BLOCKED", "CANCELLED"].includes(string(candidate.state)), 900_000);
+        if (string(terminal.state) !== "COMPLETED") throw new Error(`production_repair_${string(terminal.state)}:${string(terminal.blockerCode) || "no_blocker_code"}`);
+        const repairComponents = Array.isArray(terminal.components) ? terminal.components.map(object) : [];
+        if (string(terminal.authorityKind) !== "INHERITED_TECHNICAL" || string(terminal.authoritySourceJobId) !== jobId || string(terminal.authoritySpecDigest) !== approvedSpecDigest || repairComponents.length !== 1 || string(repairComponents[0]?.componentId) !== generatedComponentId) throw new Error("production_repair_terminal_authority_mismatch");
+        const releases = await db.query("select id,state,generation_job_id from local_component_release where component_id=$1 order by created_at", [generatedComponentId]);
+        const active = releases.rows.filter((row) => row.state === "ACTIVE");
+        if (active.length !== 1 || String(active[0]?.generation_job_id) !== repairJobId || releases.rows.length < 2) throw new Error("production_repair_activation_order_invalid");
+        return { repairJobId, state: terminal.state, authority: terminal.authorityKind, sourceJobId: terminal.authoritySourceJobId, specificationDigest: terminal.authoritySpecDigest, componentIdentityPreserved: true, releaseCount: releases.rows.length, activeReleaseFromRepair: true };
       });
     }
 
@@ -774,13 +822,16 @@ async function main(): Promise<void> {
     });
 
     await check("safe production acceptance cleanup", async () => {
+      if (generatedComponentId) {
+        await client.json(`/api/components/${generatedComponentId}/activation`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ enabled: false }) });
+      }
       for (const id of createdAutomations) await cleanupAutomation(db, id);
       for (const id of createdBrowserCredentialIds) {
         await db.query("update secret_grant set revoked_at=coalesce(revoked_at,now()) where secret_id=$1", [id]);
         await db.query("update secret_record set status='DELETED',deleted_at=coalesce(deleted_at,now()),active_version_id=null where id=$1", [id]);
       }
       for (const id of createdJobs) await cleanupDiscussion(db, config, id);
-      return { automationFixtures: createdAutomations.length, browserCredentialFixtures: createdBrowserCredentialIds.length, discussionFixtures: createdJobs.length, cleanup: "attempted" };
+      return { automationFixtures: createdAutomations.length, browserCredentialFixtures: createdBrowserCredentialIds.length, discussionFixtures: createdJobs.length, generatedComponentDeactivated: Boolean(generatedComponentId), cleanup: "attempted" };
     });
 
     const failed = evidence.filter((item) => item.status === "FAIL");

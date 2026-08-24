@@ -941,8 +941,8 @@ input[type="checkbox"] { width: 17px; height: 17px; min-height: 17px; padding: 0
 .dashboard-node-state small { color: var(--muted); font-size: 8px; }
 .dashboard-node-locked { margin: 8px; padding: 7px; display: flex; gap: 6px; align-items: center; border-radius: 4px; background: #f0f2f4; color: #697583; font-size: 9px; line-height: 1.35; }
 .dashboard-node-secrets { min-height: 39px; padding: 7px 8px; display: flex; align-items: center; gap: 4px; flex-wrap: wrap; border-bottom: 1px solid var(--line); }
-.dashboard-node-secrets button { min-height: 23px; max-width: 112px; padding: 0 5px; gap: 3px; overflow: hidden; border: 1px solid #c5d7d5; background: var(--teal-soft); color: #27635f; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
-.dashboard-node-secrets button span { margin-left: 2px; color: #a52c25; }
+.dashboard-node-secrets button { min-width: 0; min-height: 23px; max-width: 100%; flex: 0 1 100%; padding: 3px 5px; display: inline-flex; align-items: center; gap: 3px; overflow-wrap: anywhere; border: 1px solid #c5d7d5; background: var(--teal-soft); color: #27635f; font-size: 8px; line-height: 1.25; text-align: left; white-space: normal; }
+.dashboard-node-secrets button span { margin-left: auto; flex: 0 0 auto; color: #a52c25; }
 .dashboard-node-secrets > span, .dashboard-node-secrets > small { color: var(--muted); font-size: 8px; }
 .dashboard-node-ports { min-height: 56px; display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 8px 0; }
 .dashboard-port-column { display: grid; gap: 4px; align-content: start; }
