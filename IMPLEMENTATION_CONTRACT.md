@@ -128,6 +128,10 @@ returns `STATIC_VALIDATED` after manifest/digest
 validation; the `revisions/:revisionId/verify` route runs the same Playwright
 interpreter and can produce `PASS` only for a manifest whose every step is
 explicitly `READ_ONLY`. No static check is promoted to runtime PASS.
+Worker finalization explicitly types nullable PostgreSQL error parameters and
+atomically writes the terminal status, protected evidence reference and cleared
+lease. A successful run with no error code cannot remain indefinitely
+`RUNNING` because of an ambiguous null query parameter.
 
 Human authorization is deliberately binary across the whole product: an
 authenticated active human account is `OWNER`. `ADMIN`, `AUDITOR` and any

@@ -264,10 +264,14 @@ async function browserUiAcceptance(context: BrowserContext, baseUrl: string): Pr
   for (const viewport of VIEWPORTS) {
     await page.setViewportSize(viewport);
     await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
-    await page.waitForLoadState("networkidle", { timeout: 15_000 }).catch(() => undefined);
+    await page.locator(".app-shell").waitFor({ state: "visible", timeout: 15_000 }).catch(() => {
+      throw new Error(`ui_authenticated_shell_missing:${new URL(page.url()).pathname}`);
+    });
     for (const label of pages) {
       const button = page.getByRole("button", { name: label, exact: true });
-      if (await button.count() === 0) throw new Error(`ui_navigation_missing:${label}`);
+      await button.waitFor({ state: "visible", timeout: 15_000 }).catch(() => {
+        throw new Error(`ui_navigation_missing:${label}:${new URL(page.url()).pathname}`);
+      });
       await button.click();
       await page.waitForTimeout(80);
       await page.keyboard.press("Tab");

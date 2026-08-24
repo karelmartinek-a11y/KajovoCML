@@ -456,7 +456,7 @@ async function finalizeRun(db: Db, config: AutomationConfig, run: Record<string,
   return tx(db, async (client) => {
     const result = await client.query(
       `update browser_automation_run
-          set status=$4,output_json=$5::jsonb,error_code=$6, safe_error=case when $6 is null then null else jsonb_build_object('code',$6) end,
+          set status=$4,output_json=$5::jsonb,error_code=$6::text, safe_error=case when $6::text is null then null else jsonb_build_object('code',$6::text) end,
               completed_at=now(),lease_until=null,current_step=null,progress_json=$7::jsonb
         where id=$1 and lease_owner=$2 and lease_token=$3::uuid and status in ('RUNNING','CANCEL_REQUESTED') returning id`,
       [runId, workerId, leaseToken, status, output ? JSON.stringify(output) : null, errorCode, JSON.stringify({ evidenceKey })]

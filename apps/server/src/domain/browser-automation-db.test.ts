@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createDb, type Db } from "../db.js";
 import {
@@ -6,6 +9,7 @@ import {
   browserAutomationDigest,
   createBrowserAutomationRun,
   preflightBrowserAutomation,
+  processNextBrowserAutomationRun,
   requestBrowserAutomationCancel,
   setBrowserAutomationEnabled
 } from "./browser-automation.js";
@@ -14,6 +18,7 @@ const enabled = process.env.KCML_TEST_DATABASE === "1";
 let db: Db;
 let ownerId = "";
 const definitionIds: string[] = [];
+const workspaces: string[] = [];
 
 describe.skipIf(!enabled)("browser automation queue persistence", () => {
   beforeAll(async () => {
@@ -29,6 +34,7 @@ describe.skipIf(!enabled)("browser automation queue persistence", () => {
       await db.query("delete from browser_automation_run where definition_id=any($1::uuid[])", [definitionIds]);
       await db.query("delete from browser_automation_definition where id=any($1::uuid[])", [definitionIds]);
     }
+    for (const workspace of workspaces) await rm(workspace, { recursive: true, force: true });
     await db.end();
   });
 
@@ -77,4 +83,37 @@ describe.skipIf(!enabled)("browser automation queue persistence", () => {
     expect(stored.rows[0]).toMatchObject({ status: "ACTIVE", verification_status: "PASS" });
     await expect(setBrowserAutomationEnabled(db, definitionId, true, ownerId, randomUUID())).resolves.toBeUndefined();
   });
+
+  it("finalizes a real worker execution instead of leaving a claimed run RUNNING", async () => {
+    const manifest = {
+      schemaVersion: "kcml.browser-automation.v1",
+      steps: [{ action: "WAIT", timeoutMs: 50, sideEffectClass: "READ_ONLY" }]
+    };
+    const definition = await db.query(
+      `insert into browser_automation_definition(code,stable_key,display_name,status) values ($1,$1,'Worker finalization fixture','ENABLED') returning id`,
+      [`worker-${randomUUID().replaceAll("-", "").slice(0, 20)}`]
+    );
+    const definitionId = String(definition.rows[0].id); definitionIds.push(definitionId);
+    const revision = await db.query(
+      `insert into browser_automation_revision(definition_id,revision,manifest,canonical_json,digest,status,verification_status,activated_at)
+       values ($1,1,$2::jsonb,$3,$4,'ACTIVE','PASS',now()) returning id`,
+      [definitionId, JSON.stringify(manifest), browserAutomationCanonicalJson(manifest), browserAutomationDigest(manifest)]
+    );
+    await db.query("update browser_automation_definition set active_revision_id=$2 where id=$1", [definitionId, revision.rows[0].id]);
+    const run = await createBrowserAutomationRun(db, definitionId, {}, `worker-${randomUUID()}`, null, ownerId, randomUUID());
+    const workspace = await mkdtemp(path.join(tmpdir(), "kcml-browser-worker-db-")); workspaces.push(workspace);
+
+    await expect(processNextBrowserAutomationRun(db, {
+      GENERATION_ROOT: workspace,
+      CHROMIUM_BINARY: "",
+      CONFIG_VAULT_MASTER_KEY_BASE64: Buffer.alloc(32, 9),
+      CONFIG_VAULT_MASTER_KEY_ID: "db-test-v1"
+    }, `db-worker-${randomUUID()}`, 30_000)).resolves.toBe(true);
+
+    const stored = await db.query("select status,error_code,completed_at,lease_until from browser_automation_run where id=$1", [run.id]);
+    expect(stored.rows[0]).toMatchObject({ status: "SUCCEEDED", error_code: null, lease_until: null });
+    expect(stored.rows[0].completed_at).not.toBeNull();
+    const artifacts = await db.query("select kind,storage_key from browser_automation_artifact where run_id=$1", [run.id]);
+    expect(artifacts.rows).toEqual([expect.objectContaining({ kind: "EVIDENCE" })]);
+  }, 60_000);
 });
