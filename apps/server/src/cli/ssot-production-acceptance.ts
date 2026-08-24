@@ -309,8 +309,8 @@ async function browserUiAcceptance(context: BrowserContext, baseUrl: string): Pr
   for (const viewport of VIEWPORTS) {
     await page.setViewportSize(viewport);
     await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
-    await page.locator(".app-shell").waitFor({ state: "visible", timeout: 15_000 }).catch(() => {
-      throw new Error(`ui_authenticated_shell_missing:${new URL(page.url()).pathname}`);
+    await page.locator(".app-shell").waitFor({ state: "visible", timeout: 15_000 }).catch(async () => {
+      throw new Error(`ui_authenticated_shell_missing:${new URL(page.url()).pathname}:title=${await page.title()}:body=${(await page.locator("body").innerText().catch(() => "")).slice(0, 300)}`);
     });
     for (const label of pages) {
       const button = page.getByRole("button", { name: label, exact: true });
@@ -671,6 +671,12 @@ async function main(): Promise<void> {
       let approvalCreated = false;
       let approvedSpecDigest = "";
       await check("correct approval freezes exact specification", async () => {
+        const deadline = Date.now() + 60_000;
+        while (Date.now() < deadline) {
+          const activeTurn = await db.query("select 1 from generation_discussion_turn where job_id=$1 and status in ('QUEUED','RUNNING','INTERRUPT_REQUESTED') limit 1", [jobId]);
+          if (!activeTurn.rowCount) break;
+          await new Promise((resolve) => setTimeout(resolve, 250));
+        }
         const specBody = await client.json(`/api/generation/jobs/${jobId}/spec`);
         const spec = object(specBody.spec); const typed = object(spec.spec);
         const decisions = Array.isArray(typed.capabilityDecisions) ? typed.capabilityDecisions : [];

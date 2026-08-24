@@ -444,6 +444,14 @@ async function capabilityReferencesStillCurrent(db: SqlExecutor, spec: Generatio
 }
 
 const invalidOwnerText = "Odpověď modelu nebyla v požadovaném textovém formátu. Pokračujte prosím upřesněním požadavku.";
+const forbiddenOwnerStructuredKeys = [
+  ["assistant", "Message"].join(""),
+  "specification",
+  "browser" + "Automations",
+  "capability" + "Decisions",
+  "component" + "Id",
+  "function_call_output"
+];
 
 export function createDiscussionTextStream(): DiscussionTextStreamState {
   return { content: "", pendingPrefix: "", rejectedStructuredOutput: false };
@@ -461,8 +469,9 @@ export function appendDiscussionTextDelta(state: DiscussionTextStreamState, delt
   const trimmed = pendingPrefix.trimStart();
   const lower = trimmed.toLowerCase();
   const ambiguousFence = "```json".startsWith(lower);
-  const structured = trimmed.startsWith("{") || trimmed.startsWith("[") || lower.startsWith("```json");
-  if (structured) return { state: { content: state.content, pendingPrefix: "", rejectedStructuredOutput: true }, visibleDelta: "" };
+  const structured = trimmed.startsWith("{") || trimmed.startsWith("[") || lower.startsWith("```json") ||
+    forbiddenOwnerStructuredKeys.some((key) => new RegExp(`(?:^|[\\s,{])${key}\\s*:`, "iu").test(pendingPrefix));
+  if (structured) return { state: { content: "", pendingPrefix: "", rejectedStructuredOutput: true }, visibleDelta: "" };
   if (!trimmed || ambiguousFence) return { state: { ...state, pendingPrefix }, visibleDelta: "" };
   return { state: { content: `${state.content}${pendingPrefix}`, pendingPrefix: "", rejectedStructuredOutput: false }, visibleDelta: pendingPrefix };
 }
