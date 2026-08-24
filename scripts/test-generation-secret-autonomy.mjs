@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { BrowserSession } from "../apps/server/src/generation/browser-session.mjs";
-import { GeneratedHandlerSandbox } from "../apps/server/src/generation/handler-sandbox.mjs";
 import { reconcileGenerationPlanSecrets, generationSecretGrantElementKeys, normalizeGenerationSecretName } from "../apps/server/src/generation/generation-secret-plan.mjs";
 import { captureProviderBrowserSecret, captureProviderJsonSecrets } from "../apps/server/src/generation/provider-secret-capability.mjs";
 
@@ -90,22 +91,14 @@ try {
   assert.equal((store.get("PROVIDER_API_TOKEN"))?.version, 2, "existing provider secret did not use rotate/upsert lifecycle");
   assert.equal(await resolveSecret("PROVIDER_API_TOKEN"), "api-v2");
 
-  const handlerPath = path.join(tmp, "handler.mjs");
-  await writeFile(handlerPath, `
-export const tools=[{name:'secretEcho',title:'secretEcho',description:'secretEcho',inputSchema:{type:'object'},outputSchema:{type:'object'}}];
-export async function invoke(name,args,context){ if(name!=='secretEcho') throw new Error('tool_not_found'); return {value:await context.secret('WHATSAPP_APP_SECRET')}; }
-`, "utf8");
-  const sandbox = new GeneratedHandlerSandbox({
-    handlerPath, componentCode: "KCML9999", timeoutMs: 5000,
-    capabilities: {
-      secret: resolveSecret,
-      callExternal: async () => { throw new Error("unused"); }, callComponent: async () => { throw new Error("unused"); },
-      stateGet: async () => null, stateSet: async () => ({ ok: true }), stateDelete: async () => ({ ok: true })
-    }
-  });
-  try {
-    assert.deepEqual(await sandbox.dispatch("invoke", { name: "secretEcho", arguments: {} }), { value: "provider-v1" }, "generated runtime could not immediately use provider-generated Secret Manager value");
-  } finally { await sandbox.close(); }
+  const sandboxHelper = fileURLToPath(new URL("./test-generation-secret-sandbox.mjs", import.meta.url));
+  const runningAsRoot = typeof process.getuid === "function" && process.getuid() === 0;
+  const command = runningAsRoot ? process.execPath : "/usr/bin/sudo";
+  const args = runningAsRoot
+    ? [sandboxHelper]
+    : ["-n", "env", `PATH=${process.env.PATH || "/usr/bin:/usr/sbin:/bin:/sbin"}`, process.execPath, sandboxHelper];
+  const sandboxResult = spawnSync(command, args, { stdio: "inherit" });
+  if (sandboxResult.status !== 0) throw sandboxResult.error ?? new Error(`generation_secret_sandbox_failed:${sandboxResult.status ?? "signal"}`);
 
   console.log("PASS generation Secret Manager reuse OWNER_INPUT_REQUIRED filtering deterministic grants provider capture rotate and immediate browser/runtime use");
 } finally {
