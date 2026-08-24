@@ -61,6 +61,13 @@ capability field remain byte-for-byte compatible. Approved revisions are
 immutable and planner/implementation input must match both id and digest plus
 the execution-authority lineage.
 
+The implementation Responses loop may return candidate paths only after the
+server independently re-reads every declared manifest and handler, validates
+the manifest against the canonical schema and runs the handler syntax check. A
+failed final check is returned to the same bounded tool loop as recoverable
+validation evidence; it is never accepted merely because the model emitted a
+final JSON envelope.
+
 Capability-first is server-enforced per discussion turn. The canonical source
 is `component -> active_revision -> component_tool_contract ->
 component_current_readiness -> principal/component eligibility`. The

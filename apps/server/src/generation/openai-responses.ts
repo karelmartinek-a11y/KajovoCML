@@ -149,6 +149,34 @@ async function shell(command: string, cwd: string, signal?: AbortSignal): Promis
   });
 }
 
+type CandidateArtifactValidation = {
+  valid: boolean;
+  manifestErrors: Array<{ path?: string; keyword?: string; message?: string }>;
+  handlerSyntaxError: string | null;
+};
+
+async function validateCandidateArtifacts(
+  ctx: ToolContext,
+  manifestPathInput: unknown,
+  handlerPathInput: unknown
+): Promise<CandidateArtifactValidation> {
+  const manifestPath = safePath(ctx.workspace, stringArg(manifestPathInput));
+  const handlerPath = safePath(ctx.workspace, stringArg(handlerPathInput));
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as unknown;
+  const schema = JSON.parse(await readFile(path.join(ctx.workspace, "component-manifest.schema.json"), "utf8")) as object;
+  const ajv = new Ajv2020({ strict: false, allErrors: true, validateFormats: false });
+  const validate = ajv.compile(schema);
+  const valid = validate(manifest);
+  const syntax = await shell(`${JSON.stringify(process.execPath)} --check ${JSON.stringify(handlerPath)}`, ctx.workspace, ctx.signal)
+    .then(() => null)
+    .catch((error: unknown) => error instanceof Error ? error.message : "handler_syntax_failed");
+  return {
+    valid: Boolean(valid) && !syntax,
+    manifestErrors: valid ? [] : (validate.errors ?? []).slice(0, 20).map((item: { instancePath?: string; keyword?: string; message?: string }) => ({ path: item.instancePath, keyword: item.keyword, message: item.message })),
+    handlerSyntaxError: syntax
+  };
+}
+
 function publicHttpsUrl(value: string): URL {
   const url = new URL(value);
   if (url.protocol !== "https:") throw new Error("https_required");
@@ -186,21 +214,7 @@ async function callTool(name: string, args: Record<string, unknown>, ctx: ToolCo
       return { ok: true, path: args.path };
     }
     case "run_command": return shell(String(args.command), ctx.workspace, ctx.signal);
-    case "validate_candidate_artifacts": {
-      const manifestPath = safePath(ctx.workspace, stringArg(args.manifestPath));
-      const handlerPath = safePath(ctx.workspace, stringArg(args.handlerPath));
-      const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as unknown;
-      const schema = JSON.parse(await readFile(path.join(ctx.workspace, "component-manifest.schema.json"), "utf8")) as object;
-      const ajv = new Ajv2020({ strict: false, allErrors: true, validateFormats: false });
-      const validate = ajv.compile(schema);
-      const valid = validate(manifest);
-      const syntax = await shell(`${JSON.stringify(process.execPath)} --check ${JSON.stringify(handlerPath)}`, ctx.workspace, ctx.signal).then(() => null).catch((error: unknown) => error instanceof Error ? error.message : "handler_syntax_failed");
-      return {
-        valid: Boolean(valid) && !syntax,
-        manifestErrors: valid ? [] : (validate.errors ?? []).slice(0, 20).map((item: { instancePath?: string; keyword?: string; message?: string }) => ({ path: item.instancePath, keyword: item.keyword, message: item.message })),
-        handlerSyntaxError: syntax
-      };
-    }
+    case "validate_candidate_artifacts": return validateCandidateArtifacts(ctx, args.manifestPath, args.handlerPath);
     case "fetch_url": {
       const url = publicHttpsUrl(String(args.url));
       const response = await fetch(url, { signal: ctx.signal ? AbortSignal.any([ctx.signal, AbortSignal.timeout(30000)]) : AbortSignal.timeout(30000), redirect: "follow" });
@@ -351,7 +365,7 @@ export async function implementGeneration(apiKey: string, model: string, input: 
   repairEvidence?: Record<string, unknown> | null;
   signal?: AbortSignal;
 }): Promise<GenerationImplementationResult> {
-  const instructions = `Jsi zaměřený interní implementátor KajovoCML. Pracuješ výhradně v přiděleném workspace. docs/SSOT_CURRENT.md a component-manifest-2026.07.22-compliance.1.schema.json jsou závazné. IMPLEMENTING vytváří zdroj, manifest a integrační plán; NESMÍ konfigurovat externí provider ani předpokládat živý callback. Web research je dovolen. Nevytvářej mock, placeholder, TODO ani demo a nepoužívej GitHub/CI/GHCR/OCI/integration token. Handler exportuje tools a async invoke(name,input,context); side-effecty jsou pouze context.secret, context.callComponent, context.callExternal a bounded context.state. context.callExternal podporuje {targetHost,routePath,scope,method,headers,bodyType,body,payload,timeoutMs}; metody GET/POST/PUT/PATCH/DELETE/HEAD musí jít výhradně přes CML. DŮLEŽITÉ: runtime.egressGrants obsahuje POUZE {type,targetHost,port,pathPrefix,scope}. HTTP methods a auth patří výhradně do top-level outboundPolicies objektu {type,targetHost,port,pathPrefix,scope,methods,auth}; nikdy je nedávej do runtime.egressGrants. Veřejný provider webhook deklaruj pod /webhooks/... s EXTERNAL_WEBHOOK verification. Secret, který má provider vydat až po nasazení candidate, zůstává v element.requiredSecretNames a providerGeneratedSecretNames a nesmí být hardcoded. Pro každý element vytvoř/uprav elements/<key>/handler.mjs a manifest.kcml.json, povinně volej validate_candidate_artifacts pro každý pár handler/manifest a oprav všechny vrácené chyby před odpovědí. Vrať pouze JSON {"summary":string,"elements":[{"key":string,"handlerPath":string,"manifestPath":string}],"integrationPlan":{"required":boolean,"summary":string,"steps":string[]}} nebo needsInput pro skutečně chybějící OWNER údaj s ownerRequired=true, ownerReason a derivationSource="OWNER". Provider-side konfigurace proběhne až v samostatné INTEGRATING fázi po deploy candidate runtime.`
+  const instructions = `Jsi zaměřený interní implementátor KajovoCML. Pracuješ výhradně v přiděleném workspace. docs/SSOT_CURRENT.md a component-manifest-2026.07.22-compliance.1.schema.json jsou závazné. IMPLEMENTING vytváří zdroj, manifest a integrační plán; NESMÍ konfigurovat externí provider ani předpokládat živý callback. Web research je dovolen. Nevytvářej mock, placeholder, TODO ani demo a nepoužívej GitHub/CI/GHCR/OCI/integration token. Handler exportuje tools a async invoke(name,input,context); side-effecty jsou pouze context.secret, context.callComponent, context.callExternal a bounded context.state. context.callExternal podporuje {targetHost,routePath,scope,method,headers,bodyType,body,payload,timeoutMs}; metody GET/POST/PUT/PATCH/DELETE/HEAD musí jít výhradně přes CML. DŮLEŽITÉ: runtime.executionMode je pouze REQUEST_RESPONSE nebo LONG_RUNNING, runtime.readinessMode je DEPENDENCY_AWARE a všechny tři runtime.persistentState survives* hodnoty jsou true. runtime.egressGrants obsahuje POUZE HTTPS položku {type:"HTTPS_FETCH",targetHost,port,pathPrefix,scope}. HTTP methods a auth patří výhradně do top-level outboundPolicies objektu s položkou {type:"HTTPS_FETCH",targetHost,port,pathPrefix,scope,methods,auth:{mode,...}}; nikdy je nedávej do runtime.egressGrants. contacts používají pouze {type:"EMAIL"|"SLACK"|"URL",value}. tools položka nepoužívá displayName ani sideEffectClass. endpoints položka vždy obsahuje key,method,path,scope,requestSchema,responseSchema a nepoužívá type. Veřejný provider webhook deklaruj pod /webhooks/... s endpoint auth.mode EXTERNAL_WEBHOOK a verification. Secret, který má provider vydat až po nasazení candidate, zůstává v element.requiredSecretNames a providerGeneratedSecretNames a nesmí být hardcoded. Pro každý element vytvoř/uprav elements/<key>/handler.mjs a manifest.kcml.json, povinně volej validate_candidate_artifacts pro každý pár handler/manifest a oprav všechny vrácené chyby před odpovědí. Server před přijetím výsledku znovu validuje každý deklarovaný pár, takže nevalidní výstup neukončí implementační tool-loop. Vrať pouze JSON {"summary":string,"elements":[{"key":string,"handlerPath":string,"manifestPath":string}],"integrationPlan":{"required":boolean,"summary":string,"steps":string[]}} nebo needsInput pro skutečně chybějící OWNER údaj s ownerRequired=true, ownerReason a derivationSource="OWNER". Provider-side konfigurace proběhne až v samostatné INTEGRATING fázi po deploy candidate runtime.`
   let previous: string | undefined;
   let inputPayload: unknown = `Owner prompt:\n${input.prompt}\n\nApproved plan:\n${JSON.stringify(input.plan)}\n\nReservations:\n${JSON.stringify(input.reservations)}${input.repairEvidence ? `\n\nMonitoring/error evidence for repair:\n${JSON.stringify(input.repairEvidence)}` : ""}${input.remediation ? `\n\nPrevious technical failure to remediate:\n${input.remediation}` : ""}`;
   const context: ToolContext = { ...input };
@@ -369,7 +383,16 @@ export async function implementGeneration(apiKey: string, model: string, input: 
         const result = parseJson<GenerationImplementationResult>(outputText(response));
         if (result.needsInput?.length) return result;
         if (!result.elements?.length) throw new Error("generation_implementation_result_invalid");
-        return result;
+        const validations = await Promise.all(result.elements.map(async (element) => {
+          try {
+            return { key: element.key, ...(await validateCandidateArtifacts(context, element.manifestPath, element.handlerPath)) };
+          } catch (error) {
+            return { key: element.key, valid: false, manifestErrors: [], handlerSyntaxError: error instanceof Error ? error.message : "candidate_validation_failed" };
+          }
+        }));
+        if (validations.every((item) => item.valid)) return result;
+        inputPayload = `FINAL_CANDIDATE_VALIDATION_FAILED. Výsledek nelze přijmout. Oprav uvedené soubory, znovu zavolej validate_candidate_artifacts pro každý pár a vrať finální JSON až po validním výsledku. Bezpečné validační chyby:\n${JSON.stringify(validations)}`;
+        continue;
       }
       const toolOutputs: Array<Record<string, unknown>> = [];
       for (const call of calls) {
