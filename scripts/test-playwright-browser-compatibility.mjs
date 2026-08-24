@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { parsePlaywrightDryRun, shouldUseSystemUnzip } from "../deploy/scripts/playwright-browser-compat.mjs";
 
 const dryRun = `browser: chromium version 140.0.7339.186
@@ -21,5 +22,10 @@ assert.equal(shouldUseSystemUnzip("24.17.0"), true);
 assert.equal(shouldUseSystemUnzip("24.17.1"), true);
 assert.equal(shouldUseSystemUnzip("24.18.0"), false);
 assert.equal(shouldUseSystemUnzip("25.0.0"), false);
+execFileSync(process.execPath, ["deploy/scripts/playwright-browser-compat.mjs", "needs-system-unzip", "24.17.0"]);
+assert.throws(
+  () => execFileSync(process.execPath, ["deploy/scripts/playwright-browser-compat.mjs", "needs-system-unzip", "24.18.0"]),
+  (error) => error?.status === 1
+);
 assert.throws(() => parsePlaywrightDryRun("browser: ffmpeg\n"), /chromium_dry_run_missing/u);
 console.log("PASS Playwright compatibility plan is strict, HTTPS-only and scoped to Node 24.17");

@@ -126,7 +126,7 @@ export async function installChromiumWithSystemUnzip({ sourceDir, playwrightCli,
 if (import.meta.url === `file://${process.argv[1]}`) {
   const command = process.argv[2];
   if (command === "needs-system-unzip") {
-    process.exitCode = shouldUseSystemUnzip(process.argv[3]);
+    process.exitCode = shouldUseSystemUnzip(process.argv[3]) ? 0 : 1;
   } else if (command === "install") {
     const [, , , sourceDir, playwrightCli, browserRoot, chromiumBinary] = process.argv;
     if (!sourceDir || !playwrightCli || !browserRoot || !chromiumBinary) throw new Error("playwright_chromium_compat_arguments_required");
