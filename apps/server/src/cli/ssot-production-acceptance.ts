@@ -224,7 +224,7 @@ async function waitForAutomationRun(client: ProductionHttpClient, runId: string,
   throw new Error(`automation_run_timeout:${string(last.status) || "unknown"}`);
 }
 
-async function geometry(page: Page): Promise<{ horizontalOverflow: boolean; offscreen: number; clipped: number; obscured: number; undersizedTouchTargets: number; focusable: boolean }> {
+async function geometry(page: Page): Promise<{ horizontalOverflow: boolean; offscreen: number; clipped: number; obscured: number; obscuredElements: string[]; undersizedTouchTargets: number; focusable: boolean }> {
   return page.evaluate(() => {
     window.scrollTo(0, 0);
     const horizontalOverflow = document.documentElement.scrollWidth > window.innerWidth + 1;
@@ -233,6 +233,7 @@ async function geometry(page: Page): Promise<{ horizontalOverflow: boolean; offs
     let offscreen = 0;
     let clipped = 0;
     let obscured = 0;
+    const obscuredElements: string[] = [];
     let undersizedTouchTargets = 0;
     for (const element of actionable) {
       const rect = element.getBoundingClientRect();
@@ -256,18 +257,34 @@ async function geometry(page: Page): Promise<{ horizontalOverflow: boolean; offs
       if (clipsX || clipsY) clipped += 1;
       if (window.innerWidth <= 780 && (rect.width < 24 || rect.height < 24)) undersizedTouchTargets += 1;
       if (rect.width >= 1 && rect.height >= 1) {
-        const x = Math.max(0, Math.min(window.innerWidth - 1, rect.left + rect.width / 2));
-        const y = Math.max(0, Math.min(window.innerHeight - 1, rect.top + rect.height / 2));
-        if (y >= 0 && y < window.innerHeight) {
+        const visibleLeft = Math.max(0, rect.left);
+        const visibleRight = Math.min(window.innerWidth, rect.right);
+        const visibleTop = Math.max(0, rect.top);
+        const visibleBottom = Math.min(window.innerHeight, rect.bottom);
+        // Controls below the fold are reachable by ordinary vertical scrolling.
+        // Hit-test only the part that is actually inside the current viewport;
+        // clamping an off-screen centre to the viewport edge falsely reports the
+        // element as covered by whichever unrelated control occupies that edge.
+        if (visibleRight > visibleLeft && visibleBottom > visibleTop) {
+          const x = visibleLeft + (visibleRight - visibleLeft) / 2;
+          const y = visibleTop + (visibleBottom - visibleTop) / 2;
           const top = document.elementFromPoint(x, y);
-          if (top && !element.contains(top) && !top.contains(element)) obscured += 1;
+          if (top && !element.contains(top) && !top.contains(element)) {
+            obscured += 1;
+            obscuredElements.push([
+              element.tagName.toLowerCase(),
+              element.getAttribute("aria-label") ?? element.textContent?.trim().slice(0, 80) ?? "",
+              `covered-by:${top.tagName.toLowerCase()}`,
+              top.getAttribute("aria-label") ?? top.textContent?.trim().slice(0, 80) ?? ""
+            ].join(":"));
+          }
         }
       }
     }
     const active = document.activeElement as HTMLElement | null;
     const focusRect = active?.getBoundingClientRect();
     const focusable = Boolean(active && focusRect && focusRect.width >= 1 && focusRect.height >= 1);
-    return { horizontalOverflow, offscreen, clipped, obscured, undersizedTouchTargets, focusable };
+    return { horizontalOverflow, offscreen, clipped, obscured, obscuredElements, undersizedTouchTargets, focusable };
   });
 }
 

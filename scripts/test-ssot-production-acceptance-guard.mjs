@@ -31,6 +31,11 @@ requireText("acceptance", "correct approval freezes exact specification");
 requireText("acceptance", "assistant_delta_event_missing");
 requireText("acceptance", "string(body.error) || string(body.code)");
 requireText("acceptance", "Content below the fold is reachable through normal document scrolling");
+requireText("acceptance", "visibleBottom > visibleTop");
+requireText("acceptance", "obscuredElements.push");
+if (source.acceptance.includes("Math.min(window.innerHeight - 1, rect.top + rect.height / 2)")) {
+  throw new Error("ssot acceptance guard forbids viewport-edge hit testing for below-fold controls");
+}
 if (source.acceptance.includes("not-run-no-reusable-capability")) throw new Error("ssot acceptance guard forbids skipped approval reported as PASS");
 requireText("workflow", "run_full_ssot_acceptance:");
 requireText("workflow", "KCML_RUN_FULL_SSOT_ACCEPTANCE");
