@@ -710,7 +710,14 @@ async function main(): Promise<void> {
       await check("approved generation completes from frozen specification", async () => {
         if (!approvalCreated || !approvedSpecDigest) throw new Error("production_generation_approval_missing");
         const terminal = await waitForJob(client, jobId, (candidate) => ["COMPLETED", "FAILED", "BLOCKED", "CANCELLED"].includes(string(candidate.state)), 900_000);
-        if (string(terminal.state) !== "COMPLETED") throw new Error(`production_generation_${string(terminal.state)}:${string(terminal.blockerCode) || "no_blocker_code"}`);
+        if (string(terminal.state) !== "COMPLETED") {
+          const failure = await db.query(
+            `select event_type,message,details from generation_job_event where job_id=$1 order by created_at desc limit 1`,
+            [jobId]
+          ).catch(() => ({ rows: [] as Array<Record<string, unknown>> }));
+          const latest = failure.rows[0] ?? {};
+          throw new Error(`production_generation_${string(terminal.state)}:${string(terminal.blockerCode) || "no_blocker_code"}:event=${string(latest.event_type) || "none"}:message=${string(latest.message).slice(0, 260)}`);
+        }
         if (string(terminal.authorityKind) !== "OWNER_APPROVED" || string(terminal.authoritySpecDigest) !== approvedSpecDigest || string(terminal.approvedSpecDigest) !== approvedSpecDigest) throw new Error("production_generation_authority_mismatch");
         const components = Array.isArray(terminal.components) ? terminal.components.map(object) : [];
         if (!components.length) throw new Error("production_generation_component_missing");
