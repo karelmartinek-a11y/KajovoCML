@@ -48,8 +48,10 @@ describe("generation implementation artifact acceptance", () => {
       })).resolves.toEqual(result);
 
       expect(requests).toHaveLength(2);
+      expect(String(requests[0]?.instructions)).toContain("component-manifest.example.json");
       expect(requests[1]).toMatchObject({ previous_response_id: "response-1" });
       expect(String(requests[1]?.input)).toContain("FINAL_CANDIDATE_VALIDATION_FAILED");
+      expect(String(requests[1]?.input)).toContain("component-manifest.example.json");
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }

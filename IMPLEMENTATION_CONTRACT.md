@@ -231,6 +231,10 @@ authorization header.
 ## Runtime interfaces
 
 The generation worker, never an HTTP request, owns OpenAI Responses streaming.
+Its implementation workspace freezes the canonical component schema and valid
+manifest example by digest. Candidate manifests must be derived from that
+example and pass the server-side schema plus handler syntax check before any
+revision registration or candidate deployment.
 The Browser Automation worker records a `BROWSER_AUTOMATION` entry in the
 existing `platform_worker_heartbeat` table. Readiness requires fresh
 generation and Browser Automation heartbeats in addition to the canonical
