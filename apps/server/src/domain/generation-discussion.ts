@@ -339,7 +339,7 @@ const proposeGenerationSpecificationTool = {
 const lookupCmlCapabilitiesTool = { type: "function", name: "lookup_cml_capabilities", strict: true, description: "Search the canonical active CML component/revision/tool contracts before deciding whether new capability is needed.", parameters: { type: "object", additionalProperties: false, properties: { requirement: { type: "string" }, keywords: stringArray }, required: ["requirement", "keywords"] } };
 const readCmlCapabilityContractTool = { type: "function", name: "read_cml_capability_contract", strict: true, description: "Read the exact current safe contract of a candidate returned by lookup_cml_capabilities.", parameters: { type: "object", additionalProperties: false, properties: { componentId: { type: "string" } }, required: ["componentId"] } };
 
-const discussionInstructions = `Jsi KajovoCML AI v persistentní OWNER diskusi. Odpovídej OWNERovi normálním srozumitelným českým textem po částech; nikdy nevracej JSON, JSON envelope ani markdownový blok obsahující interní strukturu. Neodhaluj chain of thought. Než navrhneš novou nebo změněnou GenerationSpecification, vždy zavolej lookup_cml_capabilities pro aktuální OWNER požadavek; pokud vrátí kandidáty relevantní pro rozhodnutí, načti jejich přesný contract přes read_cml_capability_contract. Teprve potom zavolej propose_generation_specification s capabilityDecisions a přesnými canonical references. Pokud zůstávají open questions, tool nevolej a polož konkrétní další otázku. Browser automation návrhy smí používat pouze KCML_PLAYWRIGHT_PLATFORM a declarativní manifest, nikdy generovaný browser runtime source.`;
+const discussionInstructions = `Jsi KajovoCML AI v persistentní OWNER diskusi. Odpovídej OWNERovi normálním srozumitelným českým textem po částech; nikdy nevracej JSON, JSON envelope, interní názvy polí ani markdownový blok obsahující interní strukturu. Neodhaluj chain of thought ani interní validační chyby. Než navrhneš novou nebo změněnou GenerationSpecification, vždy zavolej lookup_cml_capabilities pro aktuální OWNER požadavek; pokud vrátí kandidáty relevantní pro rozhodnutí, načti jejich přesný contract přes read_cml_capability_contract. Teprve potom zavolej propose_generation_specification s capabilityDecisions a přesnými canonical references. Pokud zůstávají open questions, tool nevolej a polož konkrétní další otázku. Pokud požadavek nepotřebuje webový prohlížeč, browserAutomations musí být přesně prázdné pole. Pokud jej potřebuje, každé pole navigationPolicy entryOrigins, allowedOrigins, authOrigins, redirectOrigins a downloadOrigins musí být pole řetězců. Browser automation návrhy smí používat pouze KCML_PLAYWRIGHT_PLATFORM a declarativní manifest, nikdy generovaný browser runtime source.`;
 
 export async function queueDiscussionTurn(db: Db, jobId: string, ownerId: string, content: string, idempotencyKey?: string) {
   return tx(db, async (client) => {
@@ -403,7 +403,12 @@ export function validateCapabilityProposal(specInput: unknown, evidence: Capabil
   if (expectedInput && (evidence.inputMessageId !== expectedInput.messageId || evidence.requirementDigest !== expectedInput.requirementDigest)) return "CAPABILITY_LOOKUP_REQUIRED";
   const parsedSpec = generationSpecificationSchema.safeParse(specInput);
   if (!parsedSpec.success) {
-    const issues = parsedSpec.error.issues.slice(0, 12).map((issue) => `${issue.path.join(".") || "$"}:${issue.code}`).join(",");
+    const issues = parsedSpec.error.issues.slice(0, 12).map((issue) => {
+      const expected = "expected" in issue && typeof issue.expected === "string"
+        ? `:expected_${issue.expected.replace(/[^a-z0-9_]/giu, "_").toLowerCase()}`
+        : "";
+      return `${issue.path.join(".") || "$"}:${issue.code}${expected}`;
+    }).join(",");
     return `generation_specification_invalid:${issues}`;
   }
   const spec = parsedSpec.data;

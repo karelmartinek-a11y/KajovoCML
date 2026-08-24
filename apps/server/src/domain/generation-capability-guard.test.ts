@@ -36,8 +36,18 @@ describe("server capability-first proposal guard", () => {
     const invalid = { objective: "sensitive-value-must-not-leak" };
     const result = validateCapabilityProposal(invalid, evidence(new Map(), new Set()));
     expect(result).toMatch(/^generation_specification_invalid:/);
-    expect(result).toContain("resultSummary:invalid_type");
+    expect(result).toContain("resultSummary:invalid_type:expected_string");
     expect(result).not.toContain("sensitive-value-must-not-leak");
+  });
+
+  it("returns an actionable expected collection type without echoing submitted values", () => {
+    const invalid = {
+      ...spec("NEW_CAPABILITY_REQUIRED", false),
+      browserAutomations: [{ navigationPolicy: { downloadOrigins: "sensitive-origin-must-not-leak" } }]
+    };
+    const result = validateCapabilityProposal(invalid, evidence(new Map(), new Set()));
+    expect(result).toContain("browserAutomations.0.navigationPolicy.downloadOrigins:invalid_type:expected_array");
+    expect(result).not.toContain("sensitive-origin-must-not-leak");
   });
 
   it("rejects a proposal before lookup or before relevant contract inspection", () => {

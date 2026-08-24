@@ -224,7 +224,7 @@ async function waitForAutomationRun(client: ProductionHttpClient, runId: string,
   throw new Error(`automation_run_timeout:${string(last.status) || "unknown"}`);
 }
 
-async function geometry(page: Page): Promise<{ horizontalOverflow: boolean; offscreen: number; clipped: number; obscured: number; obscuredElements: string[]; undersizedTouchTargets: number; focusable: boolean }> {
+async function geometry(page: Page): Promise<{ horizontalOverflow: boolean; offscreen: number; clipped: number; clippedElements: string[]; obscured: number; obscuredElements: string[]; undersizedTouchTargets: number; focusable: boolean }> {
   return page.evaluate(() => {
     window.scrollTo(0, 0);
     const horizontalOverflow = document.documentElement.scrollWidth > window.innerWidth + 1;
@@ -232,6 +232,7 @@ async function geometry(page: Page): Promise<{ horizontalOverflow: boolean; offs
       .filter((element) => element.offsetParent !== null && getComputedStyle(element).visibility !== "hidden");
     let offscreen = 0;
     let clipped = 0;
+    const clippedElements: string[] = [];
     let obscured = 0;
     const obscuredElements: string[] = [];
     let undersizedTouchTargets = 0;
@@ -252,9 +253,21 @@ async function geometry(page: Page): Promise<{ horizontalOverflow: boolean; offs
       // container deliberately provides horizontal scrolling) or zero-sized
       // actionable controls that are nominally visible.
       if (((rect.right > window.innerWidth + 2 || rect.left < -2) && !hasHorizontalScroller) || rect.width < 1 || rect.height < 1) offscreen += 1;
-      const clipsX = element.scrollWidth > element.clientWidth + 1 && ["hidden", "clip"].includes(style.overflowX);
+      // Native fields expose long values through keyboard/caret scrolling.
+      // Chromium reports hidden overflow even though the value remains fully
+      // reachable, so this is not clipped product content.
+      const nativeScrollableField = ["INPUT", "TEXTAREA", "SELECT"].includes(element.tagName);
+      const clipsX = !nativeScrollableField && element.scrollWidth > element.clientWidth + 1 && ["hidden", "clip"].includes(style.overflowX);
       const clipsY = element.scrollHeight > element.clientHeight + 1 && ["hidden", "clip"].includes(style.overflowY);
-      if (clipsX || clipsY) clipped += 1;
+      if (clipsX || clipsY) {
+        clipped += 1;
+        clippedElements.push([
+          element.tagName.toLowerCase(),
+          element.getAttribute("aria-label") ?? element.textContent?.trim().slice(0, 80) ?? "",
+          clipsX ? "x" : "",
+          clipsY ? "y" : ""
+        ].join(":"));
+      }
       if (window.innerWidth <= 780 && (rect.width < 24 || rect.height < 24)) undersizedTouchTargets += 1;
       if (rect.width >= 1 && rect.height >= 1) {
         const visibleLeft = Math.max(0, rect.left);
@@ -284,7 +297,7 @@ async function geometry(page: Page): Promise<{ horizontalOverflow: boolean; offs
     const active = document.activeElement as HTMLElement | null;
     const focusRect = active?.getBoundingClientRect();
     const focusable = Boolean(active && focusRect && focusRect.width >= 1 && focusRect.height >= 1);
-    return { horizontalOverflow, offscreen, clipped, obscured, obscuredElements, undersizedTouchTargets, focusable };
+    return { horizontalOverflow, offscreen, clipped, clippedElements, obscured, obscuredElements, undersizedTouchTargets, focusable };
   });
 }
 
