@@ -456,7 +456,7 @@ export async function registerGeneratedRevision(db: Db, config: GenerationRouteC
   const revisionId=await tx(db, async(client)=>{
     const revision=await client.query(`insert into component_revision(component_id,revision,manifest,manifest_digest,capabilities,protocols,transports,derived_gates,validation_state) values ($1,$2,$3::jsonb,$4,$5::text[],$6::text[],$7::text[],$8::jsonb,'PENDING') on conflict(component_id,revision) do update set manifest=excluded.manifest,manifest_digest=excluded.manifest_digest,capabilities=excluded.capabilities,protocols=excluded.protocols,transports=excluded.transports,derived_gates=excluded.derived_gates,validation_state='PENDING' returning id`,[component.componentId,manifestRevision(manifest),JSON.stringify(manifest),digest,manifest.capabilities,manifestProtocols(manifest),manifestTransports(manifest),JSON.stringify(ACTIVATION_GATES)]);
     const id=String(revision.rows[0].id); await replaceDerivedComponentContracts(client,component.componentId,id,manifest,component.hostname);
-    await client.query(`update component_external_permission permission set revoked_at=coalesce(revoked_at,now())
+    await client.query(`update component_external_permission permission set revoked_at=coalesce(permission.revoked_at,now())
       from component_external_target target
       where permission.external_target_id=target.id and permission.component_id=$1 and target.target_key like 'generated-%'`, [component.componentId]);
     for (const policy of manifest.outboundPolicies) {
