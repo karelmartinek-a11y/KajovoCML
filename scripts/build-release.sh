@@ -44,6 +44,7 @@ cp -R deploy/alert-sink deploy/nginx deploy/scripts deploy/systemd "$destination
 cp docs/SSOT_CURRENT.md "$destination/docs/SSOT_CURRENT.md"
 cp "apps/server/src/contracts/component-manifest-${catalog_version}.schema.json" "$destination/docs/"
 cp docs/service-manifest-external-api-v1.0.example.json "$destination/docs/"
+cp "docs/onboarding-manifest-${catalog_version}.example.json" "$destination/docs/"
 cp docs/onboarding-catalogs/external-api-1.0.json "$destination/docs/external-api-1.0.json"
 cp -R docs/releases "$destination/docs/releases" 2>/dev/null || true
 # Release artifacts must exclude test sources/outputs so retired onboarding-only

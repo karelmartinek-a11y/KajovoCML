@@ -56,6 +56,7 @@ release="$(node --input-type=module -e "import('./apps/server/dist/domain/releas
 require_file "$tmpdir/release/docs/SSOT_CURRENT.md"
 require_file "$tmpdir/release/docs/component-manifest-${release}.schema.json"
 require_file "$tmpdir/release/docs/service-manifest-external-api-v1.0.example.json"
+require_file "$tmpdir/release/docs/onboarding-manifest-${release}.example.json"
 require_file "$tmpdir/release/docs/external-api-1.0.json"
 jq -e '.sourceCommit == "test-source" and .repository == "test-owner/test-repository" and .workflow == "test-owner/test-repository/.github/workflows/ci-deploy.yml@refs/heads/main"' "$tmpdir/release/release-manifest.json" >/dev/null
 require_file "$tmpdir/release/apps/server/dist/cli/generation-worker.js"
