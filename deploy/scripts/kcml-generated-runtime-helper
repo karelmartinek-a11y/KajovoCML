@@ -41,7 +41,7 @@ case "$action" in
     /usr/bin/systemctl "$action" "$unit"
     ;;
   status)
-    /usr/bin/systemctl show "$unit" --property=ActiveState --property=MainPID --property=NRestarts
+    /usr/bin/systemctl show "$unit" --property=ActiveState --property=SubState --property=Result --property=ExecMainCode --property=ExecMainStatus --property=MainPID --property=NRestarts
     ;;
   *)
     echo "unsupported action: $action" >&2
