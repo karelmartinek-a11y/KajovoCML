@@ -351,7 +351,7 @@ export function DashboardPage({ releaseInfo, onOpenStandardPage }: {
     try {
       const next = await loadDashboardTopology();
       setTopology(next);
-      setZoom(next.workspace.viewport.zoom || 1);
+      setZoom(window.matchMedia("(max-width: 780px)").matches ? 1 : (next.workspace.viewport.zoom || 1));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Dashboard se nepodařilo načíst.");
     } finally {
@@ -420,7 +420,7 @@ export function DashboardPage({ releaseInfo, onOpenStandardPage }: {
       })) return current;
       return next;
     });
-  }, [nodes, topology?.ports, zoom, draggingNodeId, runtimeMotions]);
+  }, [presentationNodes, topology?.ports, zoom, draggingNodeId, runtimeMotions]);
   const selectedNode = topology?.nodes.find((node) => node.id === selectedNodeId) ?? null;
   const selectedEdge = topology?.edges.find((edge) => edge.id === selectedEdgeId) ?? null;
   const motions = Object.values(runtimeMotions);
@@ -549,7 +549,7 @@ export function DashboardPage({ releaseInfo, onOpenStandardPage }: {
         <section className="dashboard-canvas-shell">
           <div className="dashboard-canvas-toolbar">
             <label>Stav<select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="ALL">Všechny prvky</option><option value="HEALTHY">Zdravé</option><option value="CRITICAL">Kritické</option><option value="SUSPENDED">Suspendované</option></select></label>
-            <div className="dashboard-zoom-controls" aria-label="Ovládání zobrazení"><button aria-label="Oddálit" onClick={() => setZoom((value) => Math.max(0.35, value - 0.1))}><Minus size={16} /></button><span>{Math.round(zoom * 100)} %</span><button aria-label="Přiblížit" onClick={() => setZoom((value) => Math.min(2, value + 0.1))}><Plus size={16} /></button><button aria-label="Přizpůsobit prvky" onClick={() => { setZoom(0.75); canvasRef.current?.scrollTo({ top: 0, left: 0, behavior: "smooth" }); }}><Maximize2 size={16} /></button></div>
+            <div className="dashboard-zoom-controls" aria-label="Ovládání zobrazení"><button aria-label="Oddálit" onClick={() => setZoom((value) => Math.max(window.innerWidth <= 780 ? 1 : 0.35, value - 0.1))}><Minus size={16} /></button><span>{Math.round(zoom * 100)} %</span><button aria-label="Přiblížit" onClick={() => setZoom((value) => Math.min(2, value + 0.1))}><Plus size={16} /></button><button aria-label="Přizpůsobit prvky" onClick={() => { setZoom(window.innerWidth <= 780 ? 1 : 0.75); canvasRef.current?.scrollTo({ top: 0, left: 0, behavior: "smooth" }); }}><Maximize2 size={16} /></button></div>
             <button className={listMode ? "active" : ""} onClick={() => setListMode((value) => !value)}><List size={16} /> Přístupný seznam</button>
             {pendingSource ? <div className="dashboard-connect-notice"><Link2 size={15} /> Vybrán {pendingSource.label}. Zvolte příchozí zásuvku.<button onClick={() => setPendingSource(null)}>Zrušit</button></div> : null}
           </div>

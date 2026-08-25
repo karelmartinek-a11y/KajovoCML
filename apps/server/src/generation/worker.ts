@@ -210,6 +210,13 @@ async function normalizeGeneratedManifest(
     type: "SOURCE_PACKAGE",
     digest: sourceDigest,
     sourceBundleDigest: sourceDigest,
+    buildContract: recordValue(artifact.buildContract) ?? {
+      builder: "KCML_GENERATION_WORKER",
+      sourceDigest,
+      entrypoint: "handler.mjs",
+      manifest: "manifest.kcml.json",
+      runtime: "KCML_RESTRICTED_HANDLER"
+    },
     provenance: {
       ...(recordValue(artifact.provenance) ?? {}),
       issuer: `https://admin.${config.PUBLIC_BASE_DOMAIN}/generation/jobs/${jobId}`,
