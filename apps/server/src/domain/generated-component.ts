@@ -650,6 +650,11 @@ export async function waitForGeneratedRuntime(config: GenerationRouteConfig, com
   } catch (error) {
     status = error instanceof Error ? error.message.replace(/[^A-Za-z0-9_=.: -]/g, "").slice(0, 240) : status;
   }
+  try {
+    const startupError = await readFile(path.join(config.GENERATED_COMPONENT_ROOT, component.code.toLowerCase(), "data", "startup-error.txt"), "utf8");
+    const safeStartupError = startupError.replace(/[^A-Za-z0-9_=.: -]/g, " ").slice(-240).trim();
+    if (safeStartupError) status = `${status}StartupError=${safeStartupError}`.slice(0, 480);
+  } catch { /* no startup diagnosis was persisted */ }
   throw new Error(`generated_runtime_probe_timeout:${status}`);
 }
 

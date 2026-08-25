@@ -133,12 +133,25 @@ async function callExternal(input) {
   return { statusCode: Number(result.statusCode), headers: result.headers ?? {}, body: result.body, response: result.response };
 }
 
-const sandbox = new GeneratedHandlerSandbox({
-  handlerPath,
-  componentCode,
-  capabilities: { secret: resolveRuntimeSecret, callComponent, callExternal, stateGet, stateSet, stateDelete }
-});
-const handlerDescription = await sandbox.ready;
+let sandbox;
+let handlerDescription;
+try {
+  sandbox = new GeneratedHandlerSandbox({
+    handlerPath,
+    componentCode,
+    capabilities: { secret: resolveRuntimeSecret, callComponent, callExternal, stateGet, stateSet, stateDelete }
+  });
+  handlerDescription = await sandbox.ready;
+} catch (error) {
+  // Keep a bounded, secret-free startup diagnosis for the generation worker.
+  // The runtime token and provider payloads are never part of this message.
+  const detail = String(error instanceof Error ? error.message : error)
+    .replace(/kca_[A-Za-z0-9_-]+/g, "[REDACTED]")
+    .replace(/(authorization|token|secret|password)\s*[:=]\s*[^\s,;]+/gi, "$1=[REDACTED]")
+    .slice(-2000);
+  await writeFile(resolve(stateDir, "startup-error.txt"), detail, { mode: 0o640 }).catch(() => undefined);
+  throw error;
+}
 if (!Array.isArray(handlerDescription?.tools)) throw new Error("generated_handler_contract_invalid");
 function toolDefinitions() { return handlerDescription.tools; }
 async function customStates() {
