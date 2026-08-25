@@ -306,6 +306,19 @@ async function authoritativeNameservers(zone: string): Promise<string[]> {
   return authorities;
 }
 
+type AuthoritativeEndpoint = Readonly<{ authority: string; address: string }>;
+
+async function authoritativeEndpoints(zone: string): Promise<AuthoritativeEndpoint[]> {
+  const authorities = await authoritativeNameservers(zone);
+  const resolved = await Promise.all(authorities.map(async (authority) => {
+    const addresses = await authoritativeNameServerAddresses(authority);
+    return addresses.map((address) => ({ authority, address }));
+  }));
+  const endpoints = resolved.flat();
+  if (!endpoints.length) throw new Error("wedos_dns_authoritative_endpoints_missing");
+  return endpoints;
+}
+
 async function authoritativeTxtValues(zoneInput: string, recordNameInput: string): Promise<string[]> {
   const zone = normalizeZone(zoneInput); const recordName = normalizeRecordName(recordNameInput);
   const authorities = await authoritativeNameservers(zone);
@@ -337,38 +350,34 @@ async function authoritativeTxtValues(zoneInput: string, recordNameInput: string
   return [...new Set(values)];
 }
 
-export async function observeAuthoritativeDns(zoneInput: string, recordNameInput: string, value: string, startedAt = Date.now()): Promise<AuthoritativeDnsSnapshot> {
+async function observeAuthoritativeDnsAtEndpoints(zoneInput: string, recordNameInput: string, value: string, endpoints: AuthoritativeEndpoint[], startedAt: number): Promise<AuthoritativeDnsSnapshot> {
   const zone = normalizeZone(zoneInput); const recordName = normalizeRecordName(recordNameInput);
-  const authorities = await authoritativeNameservers(zone);
   const target = fqdn(zone, recordName);
-  const observations: AuthoritativeDnsObservation[] = [];
-  for (const authority of authorities) {
-    const addresses = await authoritativeNameServerAddresses(authority);
-    for (const address of addresses) {
-      const soaResolver = new Resolver(); soaResolver.setServers([address]);
-      const txtResolver = new Resolver(); txtResolver.setServers([address]);
-      const soaPromise = boundedDnsQuery(soaResolver, () => soaResolver.resolveSoa(`${zone}.`));
-      const txtPromise = boundedDnsQuery(txtResolver, () => txtResolver.resolveTxt(target));
-      try {
-        const [soaResult, txtResult] = await Promise.allSettled([soaPromise, txtPromise]);
-        const soaStatus = soaResult.status === "fulfilled" ? "AVAILABLE" : observationFailure(errorCode(soaResult.reason));
-        const soaSerial = soaResult.status === "fulfilled" ? String(soaResult.value.serial) : null;
-        if (txtResult.status === "rejected") {
-          const code = errorCode(txtResult.reason);
-          if (["ENODATA", "ENOTFOUND", "NXDOMAIN"].includes(code)) {
-            observations.push({ authority, address, response: "OK", soaStatus, soaSerial, expectedTxtPresent: false });
-          } else {
-            observations.push({ authority, address, response: observationFailure(code), soaStatus, soaSerial, expectedTxtPresent: null });
-          }
-        } else {
-          observations.push({ authority, address, response: "OK", soaStatus, soaSerial, expectedTxtPresent: txtResult.value.some((record) => record.join("") === value) });
-        }
-      } catch (error) {
-        observations.push({ authority, address, response: observationFailure(errorCode(error)), soaStatus: "PROTOCOL_FAILURE", soaSerial: null, expectedTxtPresent: null });
+  const observations = await Promise.all(endpoints.map(async ({ authority, address }): Promise<AuthoritativeDnsObservation> => {
+    const soaResolver = new Resolver(); soaResolver.setServers([address]);
+    const txtResolver = new Resolver(); txtResolver.setServers([address]);
+    const soaPromise = boundedDnsQuery(soaResolver, () => soaResolver.resolveSoa(`${zone}.`));
+    const txtPromise = boundedDnsQuery(txtResolver, () => txtResolver.resolveTxt(target));
+    try {
+      const [soaResult, txtResult] = await Promise.allSettled([soaPromise, txtPromise]);
+      const soaStatus = soaResult.status === "fulfilled" ? "AVAILABLE" : observationFailure(errorCode(soaResult.reason));
+      const soaSerial = soaResult.status === "fulfilled" ? String(soaResult.value.serial) : null;
+      if (txtResult.status === "rejected") {
+        const code = errorCode(txtResult.reason);
+        if (["ENODATA", "ENOTFOUND", "NXDOMAIN"].includes(code)) return { authority, address, response: "OK", soaStatus, soaSerial, expectedTxtPresent: false };
+        return { authority, address, response: observationFailure(code), soaStatus, soaSerial, expectedTxtPresent: null };
       }
+      return { authority, address, response: "OK", soaStatus, soaSerial, expectedTxtPresent: txtResult.value.some((record) => record.join("") === value) };
+    } catch (error) {
+      return { authority, address, response: observationFailure(errorCode(error)), soaStatus: "PROTOCOL_FAILURE", soaSerial: null, expectedTxtPresent: null };
     }
-  }
+  }));
   return { zone, elapsedSeconds: Math.max(0, Math.floor((Date.now() - startedAt) / 1000)), observations };
+}
+
+export async function observeAuthoritativeDns(zoneInput: string, recordNameInput: string, value: string, startedAt = Date.now()): Promise<AuthoritativeDnsSnapshot> {
+  const zone = normalizeZone(zoneInput);
+  return observeAuthoritativeDnsAtEndpoints(zone, recordNameInput, value, await authoritativeEndpoints(zone), startedAt);
 }
 
 function baselineSerial(baseline: AuthoritativeDnsSnapshot | undefined, observation: AuthoritativeDnsObservation): string | null {
@@ -459,9 +468,10 @@ export async function findAuthoritativeTxtByDigest(zone: string, recordName: str
 export async function waitForAuthoritativeTxt(zone: string, recordName: string, value: string, expectedPresent: boolean, baseline?: AuthoritativeDnsSnapshot): Promise<void> {
   let lastError: unknown = new Error("wedos_dns_authoritative_propagation_unknown");
   const startedAt = Date.now();
+  const endpoints = await authoritativeEndpoints(normalizeZone(zone));
   while (Date.now() - startedAt < AUTHORITATIVE_PROPAGATION_TIMEOUT_MS) {
     try {
-      const snapshot = await observeAuthoritativeDns(zone, recordName, value, startedAt);
+      const snapshot = await observeAuthoritativeDnsAtEndpoints(zone, recordName, value, endpoints, startedAt);
       const evaluation = evaluateAuthoritativeTxtSnapshot(snapshot, expectedPresent, baseline);
       if (evaluation !== "PASS") throw new WedosDnsObservationError(snapshot, evaluation, baseline, expectedPresent);
       return;

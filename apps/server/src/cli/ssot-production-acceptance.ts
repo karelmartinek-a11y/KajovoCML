@@ -566,6 +566,7 @@ async function main(): Promise<void> {
       "Cílem je pouze ověřit diskusi, capability-first lookup, immutable GenerationSpecification a schválený planner path.",
       "Požadovaný výsledek je minimální MCP_SERVER bez destruktivních akcí, bez autentizace, bez webhooků a bez změn externích dat.",
       `Použij bezpečný reference-api readiness fixture https://reference-api.${config.PUBLIC_BASE_DOMAIN}/ready, pokud je to vhodné; žádný produkční write, žádný secret a žádný OWNER follow-up není potřeba.`,
+      "Použij konkrétní ne-prázdná schémata: requestSchema je objekt bez povinných polí s additionalProperties=false a responseSchema je objekt s povinným celočíselným polem status; nedefinuj headers ani obecný payload skeleton a nepoužívej placeholder/example hodnoty.",
       "Rozhodnutí OWNER: testovací artefakt smí být po acceptance deaktivován; neprováděj nevratné operace."
     ].join(" ");
     let jobId = "";
