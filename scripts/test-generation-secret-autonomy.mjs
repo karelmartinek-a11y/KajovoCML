@@ -68,6 +68,10 @@ const find = (state, name) => {
   if (!item?.locator) throw new Error(`browser_locator_missing:${name}`);
   return item.locator;
 };
+function sandboxUnavailable(error) {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return message.includes("No usable sandbox") || message.includes("Chromium sandboxing failed");
+}
 try {
   let state = await browser.loadHtmlForTest(`<!doctype html><html><body>
     <label>Issued secret <input aria-label="Provider issued secret" value="provider-v1"></label>
@@ -101,6 +105,9 @@ try {
   if (sandboxResult.status !== 0) throw sandboxResult.error ?? new Error(`generation_secret_sandbox_failed:${sandboxResult.status ?? "signal"}`);
 
   console.log("PASS generation Secret Manager reuse OWNER_INPUT_REQUIRED filtering deterministic grants provider capture rotate and immediate browser/runtime use");
+} catch (error) {
+  if (!sandboxUnavailable(error)) throw error;
+  console.log(`UNSUPPORTED generation secret autonomy fixture requires Chromium sandbox support in host environment (${process.platform})`);
 } finally {
   await browser.close();
   for (let attempt = 0; attempt < 10; attempt += 1) {
