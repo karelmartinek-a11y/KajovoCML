@@ -570,7 +570,8 @@ async function main(): Promise<void> {
       "Požadovaný výsledek je minimální MCP_SERVER bez destruktivních akcí, bez autentizace, bez webhooků a bez změn externích dat.",
       `Použij bezpečný reference-api readiness fixture https://reference-api.${config.PUBLIC_BASE_DOMAIN}/ready, pokud je to vhodné; žádný produkční write, žádný secret a žádný OWNER follow-up není potřeba.`,
       "Použij konkrétní ne-prázdná schémata: requestSchema je objekt bez povinných polí s additionalProperties=false a responseSchema je objekt s povinným celočíselným polem status; nedefinuj headers ani obecný payload skeleton a nepoužívej placeholder/example hodnoty.",
-      "Rozhodnutí OWNER: testovací artefakt smí být po acceptance deaktivován; neprováděj nevratné operace."
+      "Rozhodnutí OWNER: testovací artefakt smí být po acceptance deaktivován; neprováděj nevratné operace.",
+      "Všechny otázky pro tento deterministický fixture jsou zodpovězené; openQuestions musí být přesně prázdné pole. Nežádej OWNER o follow-up, zvol bezpečné read-only defaults a ihned navrhni specifikaci přes propose_generation_specification."
     ].join(" ");
     let jobId = "";
     let streamEvents: SseEvent[] = [];
