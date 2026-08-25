@@ -18,6 +18,22 @@ describe(`generic component manifest ${KCML_RELEASE.catalogVersion}`, () => {
     expect(validateComponentManifest(withoutTools).tools).toEqual([]);
   });
 
+  it("normalizes an exact duplicate embedded fixture without weakening conflicting fixtures", () => {
+    const duplicate = structuredClone(example.e2eScenarios as Array<Record<string, unknown>>)[0]!;
+    const parsed = validateComponentManifest({
+      ...manifest(),
+      e2eScenarios: [...structuredClone(example.e2eScenarios as Array<Record<string, unknown>>), duplicate]
+    });
+    expect(parsed.e2eScenarios).toHaveLength((example.e2eScenarios as unknown[]).length);
+
+    const conflicting = structuredClone(duplicate);
+    conflicting.timeoutMs = Number(conflicting.timeoutMs) + 1;
+    expect(() => validateComponentManifest({
+      ...manifest(),
+      e2eScenarios: [...structuredClone(example.e2eScenarios as Array<Record<string, unknown>>), conflicting]
+    })).toThrow("duplicate_e2e_fixture_conflict");
+  });
+
   it("rejects client-supplied KCML identity", () => {
     expect(() => validateComponentManifest({ ...manifest(), hostname: "kcml9999.kajovocml.hcasc.cz" })).toThrow("invalid_manifest");
   });

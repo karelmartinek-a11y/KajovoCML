@@ -271,11 +271,29 @@ function rejectIncompleteContract(manifest: ComponentManifest): void {
   rejectPlaceholderSchemas(manifest);
 }
 
+function normalizeEmbeddedScenarioSet(manifest: ComponentManifest): ComponentManifest {
+  const seen = new Map<string, string>();
+  const scenarios: JsonRecord[] = [];
+  for (const scenario of manifest.e2eScenarios) {
+    const key = `${text(scenario.scenarioKey)}\u0000${text(scenario.variantKey)}`;
+    const fingerprint = canonicalJson(scenario);
+    const previous = seen.get(key);
+    if (previous && previous !== fingerprint) {
+      throw Object.assign(new Error(`duplicate_e2e_fixture_conflict:${text(scenario.scenarioKey)}:${text(scenario.variantKey)}`), { statusCode: 400 });
+    }
+    if (!previous) {
+      seen.set(key, fingerprint);
+      scenarios.push(scenario);
+    }
+  }
+  return scenarios.length === manifest.e2eScenarios.length ? manifest : { ...manifest, e2eScenarios: scenarios };
+}
+
 export function validateComponentManifest(input: unknown): ComponentManifest {
   if (!validateCatalogComponentManifest(input)) {
     throw Object.assign(new Error("invalid_manifest"), { statusCode: 400, errors: validateCatalogComponentManifest.errors });
   }
-  const manifest = input as ComponentManifest;
+  const manifest = normalizeEmbeddedScenarioSet(input as ComponentManifest);
   rejectIncompleteContract(manifest);
   return manifest;
 }
