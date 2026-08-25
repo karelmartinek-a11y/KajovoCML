@@ -202,7 +202,17 @@ async function normalizeGeneratedManifest(
     "component.control.ack", "component.state.query", "component.heartbeat", "component.audit.write"
   ];
   const declaredCapabilities = Array.isArray(parsed.capabilities) ? parsed.capabilities.filter((value): value is string => typeof value === "string") : [];
-  parsed.capabilities = [...new Set([...requiredPlatformCapabilities, ...declaredCapabilities])];
+  const hasHttpsOutboundPolicy = Array.isArray(parsed.outboundPolicies)
+    && parsed.outboundPolicies.some((policy) => {
+      const type = recordValue(policy)?.type;
+      return typeof type === "string" && type === "HTTPS_FETCH";
+    });
+  // HTTPS_FETCH is executed through the canonical CML external gateway.  The
+  // corresponding platform capability is derived from the server-validated
+  // manifest policy, never from a model claim, so generated manifests cannot
+  // lose the permission required by their own declared outbound behavior.
+  const derivedCapabilities = hasHttpsOutboundPolicy ? ["component.outbound.pulse"] : [];
+  parsed.capabilities = [...new Set([...requiredPlatformCapabilities, ...derivedCapabilities, ...declaredCapabilities])];
   parsed.registrationRevision = registrationRevisionOverride ?? (typeof parsed.registrationRevision === "string" && parsed.registrationRevision.trim() ? parsed.registrationRevision : "1.0.0");
   parsed.displayName = component.displayName;
   parsed.artifact = {

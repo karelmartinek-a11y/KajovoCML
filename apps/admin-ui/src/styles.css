@@ -735,9 +735,9 @@ input[type="checkbox"] { width: 17px; height: 17px; min-height: 17px; padding: 0
    production acceptance browser measures the rendered geometry, including
    compact dashboard controls and inline action links. */
 @media (max-width: 780px) {
-  button, input, select, textarea, [role="button"] { min-height: 24px; }
-  a { min-height: 24px; display: inline-flex; align-items: center; }
-  input[type="checkbox"] { width: 24px; height: 24px; min-width: 24px; min-height: 24px; }
+  button, input, select, textarea, [role="button"] { min-height: 30px; }
+  a { min-height: 30px; display: inline-flex; align-items: center; }
+  input[type="checkbox"] { width: 30px; height: 30px; min-width: 30px; min-height: 30px; }
 }
 
 .component-filter-bar { align-items: end; flex-wrap: wrap; gap: 10px; }
