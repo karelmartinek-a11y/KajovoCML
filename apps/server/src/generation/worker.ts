@@ -499,8 +499,13 @@ async function runValidationPhase(db: Db, config: AppConfig, job: GenerationJobV
   await runConformanceAndActivation(db, config, job, artifacts, correlationId, signal);
 }
 
-async function implementJob(db: Db, config: AppConfig, job: GenerationJobView, signal: AbortSignal): Promise<void> {
-  await cancellationCheckpoint(db, job.id, signal);
+async function implementJob(db: Db, config: AppConfig, initialJob: GenerationJobView, signal: AbortSignal): Promise<void> {
+  await cancellationCheckpoint(db, initialJob.id, signal);
+  // The analysis phase persists the planner result and advances the state in a
+  // separate transaction. Reload before implementation so a worker observing
+  // the state transition cannot carry a pre-analysis null plan into the next
+  // phase.
+  const job = initialJob.plan ? initialJob : await getGenerationJob(db, initialJob.id);
   if (!job.plan) throw new Error("generation_plan_missing");
   const ownerAdminId = job.ownerAdminId;
   const correlationId = randomUUID();

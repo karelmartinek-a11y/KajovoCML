@@ -28,4 +28,12 @@ describe("OWNER discussion text stream", () => {
     expect(second.visibleDelta).toBe("");
     expect(finishDiscussionTextStream(second.state).content).not.toContain("```json");
   });
+
+  it("redacts a structured tool/spec fragment that only becomes detectable at completion", () => {
+    let state = createDiscussionTextStream();
+    state = appendDiscussionTextDelta(state, "Hotová odpověď. capabilityDecisions: [{componentId:").state;
+    const finished = finishDiscussionTextStream(state);
+    expect(finished.content).not.toContain("capabilityDecisions");
+    expect(finished.content).toContain("textovém formátu");
+  });
 });

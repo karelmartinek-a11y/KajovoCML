@@ -731,6 +731,15 @@ input[type="checkbox"] { width: 17px; height: 17px; min-height: 17px; padding: 0
 .automation-binding-form input { width: 100%; }
 @media (max-width: 700px) { .automation-binding-form { align-items: stretch; flex-direction: column; } .automation-binding-form button { width: 100%; } }
 
+/* Keep every interactive target comfortably usable on touch devices.  The
+   production acceptance browser measures the rendered geometry, including
+   compact dashboard controls and inline action links. */
+@media (max-width: 780px) {
+  button, input, select, textarea, [role="button"] { min-height: 24px; }
+  a { min-height: 24px; display: inline-flex; align-items: center; }
+  input[type="checkbox"] { width: 24px; height: 24px; min-width: 24px; min-height: 24px; }
+}
+
 .component-filter-bar { align-items: end; flex-wrap: wrap; gap: 10px; }
 .component-filter-bar h2 { margin-right: auto; align-self: center; }
 .component-filter-bar > label:not(.search-box) { display: grid; gap: 4px; color: #5f6c7a; font-size: 9.5px; font-weight: 650; }

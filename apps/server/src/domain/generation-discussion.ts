@@ -478,7 +478,15 @@ export function appendDiscussionTextDelta(state: DiscussionTextStreamState, delt
 
 export function finishDiscussionTextStream(state: DiscussionTextStreamState): Readonly<{ content: string; visibleDelta: string }> {
   if (state.rejectedStructuredOutput) return { content: invalidOwnerText, visibleDelta: "" };
-  return { content: `${state.content}${state.pendingPrefix}`, visibleDelta: state.pendingPrefix };
+  const content = `${state.content}${state.pendingPrefix}`;
+  // A provider can emit a complete structured fragment only at the end of a
+  // response.  Re-check the reconciled content before persisting the terminal
+  // message so a late tool/spec envelope can never become OWNER-visible text.
+  const lower = content.toLowerCase();
+  const structured = content.trimStart().startsWith("{") || content.trimStart().startsWith("[") || lower.includes("```json") ||
+    forbiddenOwnerStructuredKeys.some((key) => new RegExp(`(?:^|[\\s,{"'])${key}\\s*:`, "iu").test(content));
+  if (structured) return { content: invalidOwnerText, visibleDelta: "" };
+  return { content, visibleDelta: state.pendingPrefix };
 }
 
 function recordValue(value: unknown): Record<string, unknown> | null {
