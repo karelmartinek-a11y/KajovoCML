@@ -643,7 +643,14 @@ export async function waitForGeneratedRuntime(config: GenerationRouteConfig, com
     }
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
-  throw new Error("generated_runtime_probe_timeout");
+  let status = "unavailable";
+  try {
+    const result = await run(config.GENERATION_PRIVILEGED_HELPER, ["status", component.code.toLowerCase()], { timeoutMs: 15_000 });
+    status = result.stdout.trim().replace(/[^A-Za-z0-9_=.: -]/g, "").slice(0, 240) || status;
+  } catch (error) {
+    status = error instanceof Error ? error.message.replace(/[^A-Za-z0-9_=.: -]/g, "").slice(0, 240) : status;
+  }
+  throw new Error(`generated_runtime_probe_timeout:${status}`);
 }
 
 
