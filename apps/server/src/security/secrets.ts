@@ -10,7 +10,10 @@ export type IssuedSecret = {
 
 export function issueOpaqueSecret(): IssuedSecret {
   const raw = randomBytes(SECRET_BYTES);
-  const value = raw.toString("base64url");
+  // Access tokens are externally identified by the canonical KCML prefix.
+  // Keep the prefix outside the encoded random payload so the entropy and
+  // existing fingerprint/lookup semantics remain unchanged.
+  const value = `kca_${raw.toString("base64url")}`;
   return {
     value,
     fingerprint: fingerprintSecret(value)

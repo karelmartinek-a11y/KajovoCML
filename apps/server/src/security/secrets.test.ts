@@ -4,7 +4,8 @@ import { decryptMfaSecret, decryptVaultSecret, encryptMfaSecret, encryptVaultSec
 describe("KCML secrets", () => {
   it("issues client and bearer secrets from at least 64 random bytes", () => {
     const issued = issueOpaqueSecret();
-    const decoded = Buffer.from(issued.value, "base64url");
+    expect(issued.value).toMatch(/^kca_[A-Za-z0-9_-]+$/);
+    const decoded = Buffer.from(issued.value.slice("kca_".length), "base64url");
     expect(decoded.length).toBe(SECRET_BYTES);
     expect(issued.value).not.toContain("=");
     expect(issued.fingerprint).toHaveLength(32);
