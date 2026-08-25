@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { Ajv2020 } from "ajv/dist/2020.js";
+import { validateComponentManifest } from "../domain/component.js";
 import type { GenerationPlan } from "../domain/generation.js";
 import { PlaywrightBrowserSession as BrowserSession } from "./playwright-session.mjs";
 import { captureProviderBrowserSecret, captureProviderJsonSecrets } from "./provider-secret-capability.mjs";
@@ -168,12 +169,27 @@ async function validateCandidateArtifacts(
   const ajv = new Ajv2020({ strict: false, allErrors: true, validateFormats: false });
   const validate = ajv.compile(schema);
   const valid = validate(manifest);
+  let contractError: string | null = null;
+  // The implementation tool is also used with small contract fixtures in
+  // unit tests.  Apply the product-level completeness rules only to the
+  // actual KCML manifest shape; the JSON Schema remains authoritative for
+  // generic artifact contracts.
+  if (valid && objectArg(manifest)?.schemaVersion) {
+    try {
+      validateComponentManifest(manifest);
+    } catch (error) {
+      contractError = error instanceof Error ? error.message : "manifest_contract_invalid";
+    }
+  }
   const syntax = await shell(`${JSON.stringify(process.execPath)} --check ${JSON.stringify(handlerPath)}`, ctx.workspace, ctx.signal)
     .then(() => null)
     .catch((error: unknown) => error instanceof Error ? error.message : "handler_syntax_failed");
   return {
-    valid: Boolean(valid) && !syntax,
-    manifestErrors: valid ? [] : (validate.errors ?? []).slice(0, 20).map((item: { instancePath?: string; keyword?: string; message?: string }) => ({ path: item.instancePath, keyword: item.keyword, message: item.message })),
+    valid: Boolean(valid) && !contractError && !syntax,
+    manifestErrors: valid && !contractError ? [] : [
+      ...(validate.errors ?? []).slice(0, 20).map((item: { instancePath?: string; keyword?: string; message?: string }) => ({ path: item.instancePath, keyword: item.keyword, message: item.message })),
+      ...(contractError ? [{ path: "/", keyword: "kcml-contract", message: contractError }] : [])
+    ],
     handlerSyntaxError: syntax,
     canonicalTemplatePath: "component-manifest.example.json"
   };
