@@ -9,13 +9,14 @@ const workerPath = fileURLToPath(new URL("./handler-sandbox-worker.mjs", import.
 const namespaceScript = String.raw`
 set -eu
 ROOT="$1"
+SOURCE="$ROOT.source"
 NODE_BIN="$2"
 HANDLER="$3"
 WORKER="$4"
 COMPONENT_CODE="$5"
-mkdir -p "$ROOT/app" "$ROOT/lib" "$ROOT/lib64"
-touch "$ROOT/node" "$ROOT/app/handler.mjs" "$ROOT/app/handler-sandbox-worker.mjs"
-/usr/bin/mount --bind "$ROOT" "$ROOT"
+mkdir -p "$SOURCE/app" "$SOURCE/lib" "$SOURCE/lib64"
+touch "$SOURCE/node" "$SOURCE/app/handler.mjs" "$SOURCE/app/handler-sandbox-worker.mjs"
+/usr/bin/mount --bind "$SOURCE" "$ROOT"
 /usr/bin/mount -o remount,bind,ro "$ROOT"
 /usr/bin/mount --bind "$NODE_BIN" "$ROOT/node"
 /usr/bin/mount -o remount,bind,ro "$ROOT/node"
@@ -170,6 +171,9 @@ export class GeneratedHandlerSandbox {
         new Promise((resolve) => setTimeout(() => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); resolve(); }, 1000))
       ]);
     }
-    if (this.sandboxRoot) await rm(this.sandboxRoot, { recursive: true, force: true }).catch(() => undefined);
+    if (this.sandboxRoot) {
+      await rm(this.sandboxRoot, { recursive: true, force: true }).catch(() => undefined);
+      await rm(`${this.sandboxRoot}.source`, { recursive: true, force: true }).catch(() => undefined);
+    }
   }
 }

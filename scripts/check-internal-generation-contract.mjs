@@ -53,7 +53,7 @@ requireText(playwrightSession, "chromiumSandbox: true", "Playwright browser plat
 const runtimeHost = await text("apps/server/src/generation/runtime-host.mjs");
 requireText(runtimeHost, "GeneratedHandlerSandbox", "generated handler capability boundary");
 const handlerSandbox = await text("apps/server/src/generation/handler-sandbox.mjs");
-for (const required of ["/usr/bin/unshare", '"--mount", "--net"', '"--pid", "--fork"', "/usr/sbin/chroot", "mount -o remount,bind,ro"]) requireText(handlerSandbox, required, "generated handler OS capability boundary");
+for (const required of ["/usr/bin/unshare", '"--mount", "--net"', '"--pid", "--fork"', "/usr/sbin/chroot", 'SOURCE=\"$ROOT.source\"', 'mount --bind \"$SOURCE\" \"$ROOT\"', "mount -o remount,bind,ro"]) requireText(handlerSandbox, required, "generated handler OS capability boundary");
 for (const file of ["apps/server/src/generation/handler-sandbox.mjs", "apps/server/src/generation/handler-sandbox-worker.mjs", "apps/server/src/generation/generation-cancellation.mjs", "apps/server/src/generation/generation-release-cleanup.mjs", "apps/server/src/generation/generation-failure-recovery.mjs", "apps/server/src/generation/generation-secret-grant-control.mjs", "apps/server/src/onboarding/generated-repair-enqueue.mjs", "scripts/test-generated-handler-capabilities.mjs", "scripts/test-generation-cancellation.mjs", "scripts/test-generation-technical-failure-cleanup.mjs", "scripts/test-generation-integrating-secret-grant.mjs", "scripts/test-repair-enqueue-control.mjs"]) await access(file);
 await access("scripts/test-generation-browser.mjs");
 await access("scripts/test-generation-automation-runtime-no-ai.mjs");
