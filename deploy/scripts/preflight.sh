@@ -28,6 +28,15 @@ openssl x509 -in "$tls_cert_path" -noout -text | grep -F "DNS:*.${PUBLIC_BASE_DO
 openssl x509 -in "$tls_cert_path" -noout -text | grep -F "DNS:*.${KCML_COMPONENT_HOST_SUFFIX}" >/dev/null
 command -v systemd-run >/dev/null
 command -v systemd-creds >/dev/null
+# Encrypted credentials used by generated component units are sealed with the
+# host credential key.  Older installations may not have initialized that
+# key yet; initialize it once, without replacing an existing key.  The key
+# itself is never printed or copied into the application configuration.
+systemd_credential_secret="/var/lib/systemd/credential.secret"
+if [ ! -s "$systemd_credential_secret" ]; then
+  systemd-creds setup >/dev/null
+fi
+test -s "$systemd_credential_secret"
 test -x /usr/bin/unshare
 test -x /usr/bin/mount
 test -x /usr/sbin/chroot
