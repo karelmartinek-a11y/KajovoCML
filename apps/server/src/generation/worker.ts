@@ -241,6 +241,24 @@ async function normalizeGeneratedManifest(
     };
     parsed.runtime = normalizedRuntime;
   }
+  // Registration evidence is server-owned: model-provided entries may be
+  // incomplete or carry a digest that does not match their content. Record the
+  // exact normalized artifact facts that this worker is actually registering.
+  const evidenceJson = {
+    generationJobId: jobId,
+    componentId: component.componentId,
+    sourceDigest,
+    registrationRevision: parsed.registrationRevision,
+    capabilities: parsed.capabilities,
+    artifact: parsed.artifact
+  };
+  const evidenceBytes = Buffer.from(canonicalJson(evidenceJson));
+  parsed.documentationEvidence = [{
+    key: "kcml-generation-normalized-manifest",
+    path: `evidence/generation/${jobId}/normalized-manifest.json`,
+    digest: sha256(evidenceBytes),
+    content: { mediaType: "application/json", json: evidenceJson }
+  }];
   await writeFile(manifestPath, `${JSON.stringify(parsed, null, 2)}\n`, "utf8");
   return { handlerPath, manifestPath, manifest: parsed };
 }

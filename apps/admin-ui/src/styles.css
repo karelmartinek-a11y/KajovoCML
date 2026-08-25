@@ -1015,6 +1015,10 @@ input[type="checkbox"] { width: 17px; height: 17px; min-height: 17px; padding: 0
 .dashboard-edge-status.incompatible, .dashboard-edge-status.denied { border-color: #efb2ad; background: #fff3f2; color: #96251f; }
 .dashboard-edge-status.unknown { border-color: #c5cdd6; background: #f5f7f9; color: #566473; }
 .dashboard-context-content details { border: 1px solid var(--line); border-radius: 5px; }
+
+@media (max-width: 1450px) and (min-width: 801px) {
+  .dashboard-workbench { grid-template-columns: 220px minmax(0, 1fr) 260px; }
+}
 .dashboard-context-content summary { padding: 8px; cursor: pointer; font-size: 10px; font-weight: 750; }
 .dashboard-context-content pre { max-height: 300px; margin: 0; padding: 9px; overflow: auto; border-top: 1px solid var(--line); background: #101923; color: #dce7ef; font-size: 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .dashboard-timeline { min-height: 190px; }
