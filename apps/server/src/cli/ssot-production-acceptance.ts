@@ -498,6 +498,16 @@ async function main(): Promise<void> {
       if (body.role !== "OWNER") throw new Error("admin_security_owner_role_missing");
       return { role: body.role, mfaEnabled: Boolean(body.mfaEnabled) };
     });
+    await check("all production human accounts use OWNER semantics", async () => {
+      const body = await client.json("/api/admin-accounts");
+      const accounts = Array.isArray(body.accounts) ? body.accounts.map((entry) => object(entry)) : [];
+      const roles = [...new Set(accounts.map((account) => string(account.role)).filter(Boolean))];
+      const nonOwner = accounts.filter((account) => string(account.role) !== "OWNER").length;
+      if (nonOwner > 0 || roles.some((role) => role !== "OWNER")) {
+        throw new Error(`non_owner_human_accounts:${nonOwner}:roles=${roles.join(",") || "none"}`);
+      }
+      return { accountCount: accounts.length, humanRoleSet: roles.length ? roles : ["OWNER"], nonOwnerHumanAccounts: nonOwner };
+    });
     await check("canonical OWNER read surfaces and safe metadata boundary", async () => {
       const paths = [
         "/api/admin-accounts", "/api/operational-config", "/api/secrets", "/api/components",
