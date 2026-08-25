@@ -42,7 +42,9 @@ case "$action" in
     ;;
   status)
     /usr/bin/systemctl show "$unit" --property=ActiveState --property=SubState --property=Result --property=ExecMainCode --property=ExecMainStatus --property=MainPID --property=NRestarts
-    journal=$(/usr/bin/journalctl -u "$unit" -n 24 --no-pager -o cat 2>/dev/null \
+    journal=$(/usr/bin/journalctl -u "$unit" -n 48 --no-pager -o cat 2>/dev/null \
+      | /usr/bin/grep -E 'Error:|error|EACCES|ENOENT|permission|generated_runtime|runtime_token' \
+      | /usr/bin/tail -n 8 \
       | /usr/bin/sed -E 's/kca_[A-Za-z0-9_-]+/[REDACTED]/g; s/(authorization|token|secret|password)[[:space:]]*[:=][^,;[:space:]]*/\1=[REDACTED]/Ig' \
       | /usr/bin/tr '\n' ' ' | /usr/bin/cut -c 1-1600)
     if [ -n "$journal" ]; then

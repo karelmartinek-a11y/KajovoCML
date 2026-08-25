@@ -166,6 +166,7 @@ grep -Fq 'ReadWritePaths=/var/lib/kcml/runtime /var/lib/kcml/generated-component
 grep -Fq 'credential-stdin)' "$helper"
 grep -Fq 'SubState' "$helper"
 grep -Fq 'journalctl -u "$unit"' "$helper"
+grep -Fq "grep -E 'Error:|error|EACCES|ENOENT|permission|generated_runtime|runtime_token'" "$helper"
 grep -Fq 'test -x /usr/bin/unshare' "$preflight_script"
 grep -Fq 'systemd-creds setup >/dev/null' "$preflight_script"
 grep -Fq 'test -x /usr/bin/mount' "$preflight_script"
