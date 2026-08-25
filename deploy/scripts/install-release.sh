@@ -170,14 +170,26 @@ wait_for_runtime_health() {
 
 require_stable_runtime_health() {
   local admin_host="$1"
+  local health_status=""
+  local attempt=0
   for _attempt in $(seq 1 13); do
-    curl -fsS -H "Host: $admin_host" "http://127.0.0.1:${PORT:-3010}/health" >/dev/null
-    systemctl is-active --quiet kcml
-    systemctl is-active --quiet kcml-component-control-worker
-    systemctl is-active --quiet kcml-component-e2e-worker
-    systemctl is-active --quiet kcml-monitor
-    sleep 5
+    attempt="$_attempt"
+    if curl -fsS -H "Host: $admin_host" "http://127.0.0.1:${PORT:-3010}/health" >/dev/null \
+      && systemctl is-active --quiet kcml \
+      && systemctl is-active --quiet kcml-component-control-worker \
+      && systemctl is-active --quiet kcml-component-e2e-worker \
+      && systemctl is-active --quiet kcml-monitor; then
+      sleep 5
+      continue
+    fi
+    if [ "$attempt" -lt 13 ]; then sleep 5; fi
   done
+  health_status="$(curl -sS -o /dev/null -w '%{http_code}' -H "Host: $admin_host" "http://127.0.0.1:${PORT:-3010}/health" 2>/dev/null || echo curl-failed)"
+  echo "release-health:http=$health_status" >&2
+  for service in kcml kcml-component-control-worker kcml-component-e2e-worker kcml-monitor; do
+    echo "release-health:service=$service:state=$(systemctl is-active "$service" 2>/dev/null || echo unavailable)" >&2
+  done
+  return 1
 }
 
 render_nginx_config "$source_dir/deploy/nginx/kcml.conf" /etc/nginx/sites-available/kcml.conf
