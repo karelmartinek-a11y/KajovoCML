@@ -42,6 +42,12 @@ case "$action" in
     ;;
   status)
     /usr/bin/systemctl show "$unit" --property=ActiveState --property=SubState --property=Result --property=ExecMainCode --property=ExecMainStatus --property=MainPID --property=NRestarts
+    journal=$(/usr/bin/journalctl -u "$unit" -n 24 --no-pager -o cat 2>/dev/null \
+      | /usr/bin/sed -E 's/kca_[A-Za-z0-9_-]+/[REDACTED]/g; s/(authorization|token|secret|password)[[:space:]]*[:=][^,;[:space:]]*/\1=[REDACTED]/Ig' \
+      | /usr/bin/tr '\n' ' ' | /usr/bin/cut -c 1-1600)
+    if [ -n "$journal" ]; then
+      printf 'Journal=%s\n' "$journal"
+    fi
     ;;
   *)
     echo "unsupported action: $action" >&2
