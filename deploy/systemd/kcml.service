@@ -26,7 +26,10 @@ LoadCredential=mfa_encryption:/etc/kcml/credentials/web/mfa_encryption
 ExecStart=/usr/bin/node apps/server/dist/index.js
 Restart=on-failure
 RestartSec=5
-NoNewPrivileges=true
+# The web process may request the same narrowly allow-listed generated-runtime
+# lifecycle helper.  The helper validates the action and component code, and
+# sudoers grants no general shell or service control access.
+NoNewPrivileges=false
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
@@ -34,7 +37,7 @@ PrivateDevices=true
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
-RestrictSUIDSGID=true
+RestrictSUIDSGID=false
 LockPersonality=true
 ReadWritePaths=/var/lib/kcml/generation /var/lib/kcml/runtime
 

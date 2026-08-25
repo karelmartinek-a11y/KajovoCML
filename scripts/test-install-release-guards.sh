@@ -150,6 +150,15 @@ if [ "$split_config_line" -ge "$migrate_line" ] || [ "$migrate_line" -ge "$opena
 fi
 grep -Fq 'GENERATION_WORKER_ENABLED' deploy/scripts/split-service-config.sh
 grep -Fq 'ReadWritePaths=/var/lib/kcml/generation /var/lib/kcml/runtime' "$web_unit"
+# The only production sudo boundary used by the generation lifecycle helper
+# must remain explicit.  Generated component services retain NoNewPrivileges
+# and RestrictSUIDSGID; only the two orchestrators may cross this allow-list.
+grep -Fq 'NoNewPrivileges=false' "$web_unit"
+grep -Fq 'RestrictSUIDSGID=false' "$web_unit"
+grep -Fq 'NoNewPrivileges=false' "$generation_unit"
+grep -Fq 'RestrictSUIDSGID=false' "$generation_unit"
+grep -Fq 'NoNewPrivileges=true' "$component_unit"
+grep -Fq 'RestrictSUIDSGID=true' "$component_unit"
 grep -Fq 'GENERATION_WORKER_INTERVAL_MS' deploy/scripts/split-service-config.sh
 grep -Fq 'COMPONENT_WORKER_INTERVAL_MS' deploy/scripts/split-service-config.sh
 grep -Fq 'LoadCredentialEncrypted=runtime_token:' "$component_unit"

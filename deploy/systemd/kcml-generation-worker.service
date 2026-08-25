@@ -21,7 +21,10 @@ LoadCredential=egress_capability_hmac:/etc/kcml/credentials/worker/egress_capabi
 ExecStart=/usr/bin/node apps/server/dist/cli/generation-worker.js
 Restart=on-failure
 RestartSec=5
-NoNewPrivileges=true
+# The worker invokes the narrowly allow-listed kcml-generated-runtime-helper.
+# Keep the helper boundary explicit in sudoers; these two hardening flags would
+# otherwise make the approved setuid transition fail with EPERM.
+NoNewPrivileges=false
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
@@ -29,7 +32,7 @@ PrivateDevices=true
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
-RestrictSUIDSGID=true
+RestrictSUIDSGID=false
 LockPersonality=true
 ReadWritePaths=/var/lib/kcml/generation /var/lib/kcml/generated-components /var/lib/kcml/runtime
 
