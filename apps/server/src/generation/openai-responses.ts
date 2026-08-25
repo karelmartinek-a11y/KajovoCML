@@ -411,7 +411,15 @@ export async function implementGeneration(apiKey: string, model: string, input: 
           continue;
         }
         if (result.needsInput?.length) return result;
-        if (!result.elements?.length) throw new Error("generation_implementation_result_invalid");
+        if (!result.elements?.length) {
+          // A provider can finish a bounded tool turn with a syntactically
+          // valid envelope that is still not an executable implementation
+          // result. Keep the same Responses conversation alive and ask for a
+          // compact correction; the worker must not convert this recoverable
+          // provider shape into a failed generation prematurely.
+          inputPayload = "FINAL_IMPLEMENTATION_RESULT_INVALID. The response must contain at least one complete element with key, handlerPath and manifestPath. Do not return needsInput: the approved OWNER specification is complete. Continue in this same implementation conversation, create or repair the candidate artifacts, validate every pair, and return the compact final JSON envelope only after the artifacts are valid.";
+          continue;
+        }
         const validations = await Promise.all(result.elements.map(async (element) => {
           try {
             return { key: element.key, ...(await validateCandidateArtifacts(context, element.manifestPath, element.handlerPath)) };
