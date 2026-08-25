@@ -339,25 +339,30 @@ type BrowserChildInput = {
 };
 
 async function browserAcceptanceChild(): Promise<void> {
-  let raw = "";
-  for await (const chunk of process.stdin) raw += String(chunk);
-  const input = JSON.parse(raw) as BrowserChildInput;
-  const client = new ProductionHttpClient(input.baseUrl, input.host);
-  await client.login(input.username, input.password, input.totpSecret);
-  const browser = await chromium.launch({
-    headless: true,
-    executablePath: input.chromiumBinary || undefined,
-    chromiumSandbox: true
-  });
   try {
-    const context = await browser.newContext();
-    for (const [name, value] of client.cookies) {
-      await context.addCookies([{ name, value, url: input.baseUrl, httpOnly: name.includes("session"), secure: true, sameSite: "Strict" }]);
+    let raw = "";
+    for await (const chunk of process.stdin) raw += String(chunk);
+    const input = JSON.parse(raw) as BrowserChildInput;
+    const client = new ProductionHttpClient(input.baseUrl, input.host);
+    await client.login(input.username, input.password, input.totpSecret);
+    const browser = await chromium.launch({
+      headless: true,
+      executablePath: input.chromiumBinary || undefined,
+      chromiumSandbox: true
+    });
+    try {
+      const context = await browser.newContext();
+      for (const [name, value] of client.cookies) {
+        await context.addCookies([{ name, value, url: input.baseUrl, httpOnly: name.includes("session"), secure: true, sameSite: "Strict" }]);
+      }
+      process.stdout.write(JSON.stringify(await browserUiAcceptance(context, input.baseUrl)));
+      await context.close();
+    } finally {
+      await browser.close();
     }
-    process.stdout.write(JSON.stringify(await browserUiAcceptance(context, input.baseUrl)));
-    await context.close();
-  } finally {
-    await browser.close();
+  } catch (error) {
+    process.stderr.write(`browser-ui-child-error:${safeDetail(error)}\n`);
+    process.exitCode = 1;
   }
 }
 

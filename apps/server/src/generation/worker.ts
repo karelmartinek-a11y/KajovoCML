@@ -192,6 +192,17 @@ async function normalizeGeneratedManifest(
   const artifact = recordValue(parsed.artifact) ?? {};
   const runtime = recordValue(parsed.runtime) ?? {};
   parsed.schemaVersion = "2026.07.22-compliance.1";
+  // These capabilities are the platform-owned CML lifecycle contract.  They
+  // are not business behavior invented by the model, so the server restores
+  // the complete baseline when a model-produced manifest omits one of them.
+  // This keeps candidate generation deterministic and prevents a valid JSON
+  // artifact from reaching registration only to fail during activation.
+  const requiredPlatformCapabilities = [
+    "mcp.initialize", "mcp.notifications.initialized", "mcp.tools.list", "mcp.tools.call",
+    "component.control.ack", "component.state.query", "component.heartbeat", "component.audit.write"
+  ];
+  const declaredCapabilities = Array.isArray(parsed.capabilities) ? parsed.capabilities.filter((value): value is string => typeof value === "string") : [];
+  parsed.capabilities = [...new Set([...requiredPlatformCapabilities, ...declaredCapabilities])];
   parsed.registrationRevision = registrationRevisionOverride ?? (typeof parsed.registrationRevision === "string" && parsed.registrationRevision.trim() ? parsed.registrationRevision : "1.0.0");
   parsed.displayName = component.displayName;
   parsed.artifact = {
