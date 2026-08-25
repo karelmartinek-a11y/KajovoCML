@@ -498,7 +498,10 @@ async function main(): Promise<void> {
         await client.json("/api/reauth", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ password, totp: totpSecret ?? "" })
+          // A reauthentication can happen after a long generation/repair run.
+          // Never reuse the TOTP captured at initial login: six-digit codes are
+          // time-bound and may have expired by the time a 428 is received.
+          body: JSON.stringify({ password, totp: totpSecret ? authenticator.generate(totpSecret) : "" })
         });
       });
       if (!session.csrf) throw new Error("csrf_missing");

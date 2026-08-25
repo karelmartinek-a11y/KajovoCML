@@ -1048,7 +1048,10 @@ input[type="checkbox"] { width: 17px; height: 17px; min-height: 17px; padding: 0
 .spin { animation: spin 1s linear infinite; }
 
 @media (max-width: 1420px) {
-  .dashboard-workbench { grid-template-columns: 220px minmax(560px, 1fr) 260px; }
+  /* Keep the three dashboard panes inside the actual content column.  The
+     former 560px canvas minimum could force the context pane over the canvas
+     at 1366px, covering otherwise actionable node controls. */
+  .dashboard-workbench { grid-template-columns: 200px minmax(0, 1fr) 230px; }
   .dashboard-global-status { grid-template-columns: minmax(220px, 1.4fr) repeat(4, minmax(105px, 1fr)); }
 }
 
