@@ -540,8 +540,19 @@ async function implementJob(db: Db, config: AppConfig, initialJob: GenerationJob
   // separate transaction. Reload before implementation so a worker observing
   // the state transition cannot carry a pre-analysis null plan into the next
   // phase.
-  const job = initialJob.plan ? initialJob : await getGenerationJob(db, initialJob.id);
-  if (!job.plan) throw new Error("generation_plan_missing");
+  let job = initialJob.plan ? initialJob : await getGenerationJob(db, initialJob.id);
+  // IMPLEMENTING is only executable with a persisted plan. A lease takeover or
+  // an interrupted analysis transaction may leave the state advanced while the
+  // plan write is not visible to the worker that claimed the job. Reconcile the
+  // plan from the already frozen specification before touching any candidate
+  // component. This keeps implementation deterministic and avoids treating a
+  // recoverable persistence race as a terminal generation failure.
+  if (!job.plan) {
+    await appendGenerationEvent(db, job.id, "ANALYZING", "generation.plan_reconciliation_started", "Persistovaný implementation plan nebyl při převzetí jobu dostupný; obnovuje se z frozen specifikace.");
+    await analyzeJob(db, config, job, signal);
+    job = await getGenerationJob(db, job.id);
+  }
+  if (!job.plan) throw new Error("generation_plan_missing_after_reconciliation");
   const ownerAdminId = job.ownerAdminId;
   const correlationId = randomUUID();
   const reservations = await reserveGeneratedComponents(db, job.id, job.plan.elements);

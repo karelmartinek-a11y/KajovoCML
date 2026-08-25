@@ -1107,6 +1107,7 @@ input[type="checkbox"] { width: 17px; height: 17px; min-height: 17px; padding: 0
 .secret-advanced-grant .secret-grant-form { margin: 0; padding: 10px; border-top: 1px solid var(--line); }
 @media (max-width: 720px) { .secret-identity-card-list { grid-template-columns: 1fr; } }
 
+
 .dashboard-secret-detail > div { display: grid; gap: .45rem; margin-top: .55rem; }
 .dashboard-secret-detail article { display: flex; align-items: center; justify-content: space-between; gap: .75rem; padding: .55rem; border: 1px solid var(--line); border-radius: .65rem; }
 .dashboard-secret-detail article > div { display: flex; align-items: center; gap: .35rem; min-width: 0; }
@@ -1198,3 +1199,14 @@ input[type="checkbox"] { width: 17px; height: 17px; min-height: 17px; padding: 0
 .generation-browser-frame img { display: block; width: 100%; max-height: 420px; object-fit: contain; object-position: top center; border: 1px solid var(--border); border-radius: 9px; background: #101820; }
 .generation-browser-frame figcaption { color: var(--muted); font-size: 0.78rem; }
 @media (max-width: 900px) { .generation-grid { grid-template-columns: 1fr; } .generation-key-row { grid-template-columns: 1fr; } }
+
+/* Keep Dashboard-specific rules from shrinking actionable controls below the
+   mobile acceptance target after their desktop selectors are applied. */
+@media (max-width: 780px) {
+  .dashboard-connect-notice button,
+  .dashboard-node footer button,
+  .dashboard-node-secrets button {
+    min-width: 30px;
+    min-height: 30px;
+  }
+}
