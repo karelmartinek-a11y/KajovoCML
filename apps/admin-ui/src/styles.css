@@ -901,7 +901,7 @@ input[type="checkbox"] { width: 17px; height: 17px; min-height: 17px; padding: 0
 .dashboard-secret-actions { display: grid; gap: 5px; }
 .dashboard-secret-actions button, .dashboard-standard-link { min-height: 29px; padding: 0 7px; background: #fff; border-color: var(--line-strong); color: #3f4c5a; font-size: 9.5px; }
 .dashboard-secret-actions button:hover, .dashboard-standard-link:hover { background: var(--teal-soft); border-color: #9accca; color: var(--teal-dark); }
-.dashboard-canvas-shell { position: relative; display: grid; grid-template-rows: auto minmax(0, 1fr); background: #eef2f5; }
+.dashboard-canvas-shell { position: relative; display: grid; grid-template-rows: auto minmax(0, 1fr); background: #eef2f5; overflow: hidden; }
 .dashboard-canvas-toolbar { min-height: 48px; display: flex; align-items: center; gap: 9px; padding: 7px 10px; border-bottom: 1px solid var(--line); background: #fff; z-index: 6; }
 .dashboard-canvas-toolbar label { display: flex; align-items: center; gap: 6px; font-size: 10px; }
 .dashboard-canvas-toolbar select { min-height: 31px; width: 150px; }
@@ -913,7 +913,7 @@ input[type="checkbox"] { width: 17px; height: 17px; min-height: 17px; padding: 0
 .dashboard-zoom-controls span { width: 53px; text-align: center; color: var(--muted); font-size: 9.5px; }
 .dashboard-connect-notice { position: static; flex: 0 1 auto; display: flex; align-items: center; gap: 7px; max-width: min(100%, 430px); margin-left: auto; padding: 7px 9px; border: 1px solid #d7bd77; border-radius: 5px; background: #fff9e8; color: #735313; font-size: 10px; box-shadow: 0 8px 22px rgba(40, 47, 55, 0.12); }
 .dashboard-connect-notice button { min-height: 24px; padding: 0 6px; font-size: 9px; }
-.dashboard-canvas-viewport { position: relative; overflow: auto; min-height: 0; background-color: #f0f3f6; background-image: radial-gradient(#cbd3dc 0.7px, transparent 0.7px); background-size: 20px 20px; touch-action: pan-x pan-y; }
+.dashboard-canvas-viewport { position: relative; overflow: auto; min-height: 0; contain: paint; isolation: isolate; background-color: #f0f3f6; background-image: radial-gradient(#cbd3dc 0.7px, transparent 0.7px); background-size: 20px 20px; touch-action: pan-x pan-y; }
 .dashboard-canvas { position: relative; min-width: 100%; min-height: 100%; }
 .dashboard-canvas-transform { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
 .dashboard-edge-layer { position: absolute; inset: 0; overflow: visible; pointer-events: none; z-index: 1; }

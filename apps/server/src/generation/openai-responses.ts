@@ -382,7 +382,18 @@ export async function implementGeneration(apiKey: string, model: string, input: 
       const outputs = Array.isArray(response.output) ? response.output as Array<Record<string, unknown>> : [];
       const calls = outputs.filter((item) => item?.type === "function_call");
       if (!calls.length) {
-        const result = parseJson<GenerationImplementationResult>(outputText(response));
+        let result: GenerationImplementationResult;
+        try {
+          result = parseJson<GenerationImplementationResult>(outputText(response));
+        } catch (error) {
+          // A bounded provider response can end mid-JSON. Keep the same
+          // implementation turn alive and ask for a compact, complete
+          // envelope instead of treating transport truncation as a product
+          // failure or restarting from an unfrozen specification.
+          const reason = error instanceof Error ? error.message.replace(/[^A-Za-z0-9_ -]/g, " ").slice(0, 180) : "invalid_json";
+          inputPayload = `FINAL_IMPLEMENTATION_JSON_INVALID. The previous final response was not complete JSON (${reason}). Do not rewrite files unless needed. Return one compact valid JSON object only with summary, elements containing key/handlerPath/manifestPath, and integrationPlan. Do not include markdown, prose outside JSON, or large file contents.`;
+          continue;
+        }
         if (result.needsInput?.length) return result;
         if (!result.elements?.length) throw new Error("generation_implementation_result_invalid");
         const validations = await Promise.all(result.elements.map(async (element) => {

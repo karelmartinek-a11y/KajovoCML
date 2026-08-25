@@ -56,4 +56,52 @@ describe("generation implementation artifact acceptance", () => {
       await rm(workspace, { recursive: true, force: true });
     }
   });
+
+  it("recovers from a truncated final JSON envelope without restarting the job", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "kcml-implementation-json-recovery-"));
+    try {
+      await mkdir(path.join(workspace, "elements", "fixture"), { recursive: true });
+      await writeFile(path.join(workspace, "component-manifest.schema.json"), JSON.stringify({
+        type: "object",
+        required: ["valid"],
+        additionalProperties: false,
+        properties: { valid: { const: true } }
+      }));
+      await writeFile(path.join(workspace, "elements", "fixture", "manifest.kcml.json"), JSON.stringify({ valid: true }));
+      await writeFile(path.join(workspace, "elements", "fixture", "handler.mjs"), "export const tools = []\nexport async function invoke() { return {}; }\n");
+      const result = {
+        summary: "recovered",
+        elements: [{ key: "fixture", handlerPath: "elements/fixture/handler.mjs", manifestPath: "elements/fixture/manifest.kcml.json" }],
+        integrationPlan: { required: false, summary: "", steps: [] }
+      };
+      const requests: Array<Record<string, unknown>> = [];
+      vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: RequestInit) => {
+        if (typeof init?.body !== "string") throw new Error("request_body_missing");
+        const body = JSON.parse(init.body) as Record<string, unknown>;
+        requests.push(body);
+        const outputText = requests.length === 1 ? '{"summary":"truncated' : JSON.stringify(result);
+        return new Response(JSON.stringify({ id: `response-${requests.length}`, output_text: outputText, output: [] }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        });
+      }));
+
+      await expect(implementGeneration("fixture-key", "fixture-model", {
+        prompt: "fixture",
+        plan: { understoodIntent: "fixture", resultSummary: "fixture", elements: [], dependencies: [], missingInputs: [] },
+        reservations: [],
+        workspace,
+        sourceRoot: workspace,
+        chromiumBinary: "/not-used",
+        secretPresent: async () => false,
+        resolveSecret: async () => { throw new Error("not_used"); }
+      })).resolves.toEqual(result);
+
+      expect(requests).toHaveLength(2);
+      expect(requests[1]).toMatchObject({ previous_response_id: "response-1" });
+      expect(String(requests[1]?.input)).toContain("FINAL_IMPLEMENTATION_JSON_INVALID");
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
 });
