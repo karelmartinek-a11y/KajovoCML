@@ -74,7 +74,12 @@ function cookiePair(value: string): [string, string] | null {
 class ProductionHttpClient {
   readonly cookies = new Map<string, string>();
   private csrfToken = "";
+  private reauthenticator: (() => Promise<void>) | null = null;
   constructor(readonly baseUrl: string, readonly host: string) {}
+
+  setReauthenticator(callback: () => Promise<void>): void {
+    this.reauthenticator = callback;
+  }
 
   authenticatedClone(): ProductionHttpClient {
     const clone = new ProductionHttpClient(this.baseUrl, this.host);
@@ -99,7 +104,7 @@ class ProductionHttpClient {
     if (csrf) this.csrfToken = csrf;
   }
 
-  async request(path: string, init: RequestInit = {}): Promise<Response> {
+  async request(path: string, init: RequestInit = {}, allowReauth = true): Promise<Response> {
     const headers = new Headers(init.headers);
     headers.set("accept", "application/json");
     headers.set("host", this.host);
@@ -108,6 +113,10 @@ class ProductionHttpClient {
     applyMutationCsrfHeader(headers, init.method, this.csrfToken);
     const response = await fetch(new URL(path, this.baseUrl), { ...init, headers });
     this.absorb(response);
+    if (allowReauth && response.status === 428 && this.reauthenticator) {
+      await this.reauthenticator();
+      return this.request(path, init, false);
+    }
     return response;
   }
 
@@ -485,6 +494,13 @@ async function main(): Promise<void> {
     });
     await check("deployment-managed OWNER login and CSRF", async () => {
       const session = await client.login(config.ADMIN_BOOTSTRAP_USERNAME, password, totpSecret);
+      client.setReauthenticator(async () => {
+        await client.json("/api/reauth", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ password, totp: totpSecret ?? "" })
+        });
+      });
       if (!session.csrf) throw new Error("csrf_missing");
       return { username: session.username, csrfContract: true };
     });

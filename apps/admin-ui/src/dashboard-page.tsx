@@ -92,7 +92,33 @@ type RevealState = {
 
 const NODE_WIDTH = 294;
 const NODE_HEADER_HEIGHT = 92;
+const NODE_LAYOUT_HEIGHT = 430;
+const NODE_LAYOUT_GAP = 28;
 type CanvasPoint = { x: number; y: number };
+
+function collisionFreeNodes<T extends { id: string; position: CanvasPoint }>(nodes: T[]): T[] {
+  const placed: Array<{ x: number; y: number; width: number; height: number }> = [];
+  return [...nodes].sort((a, b) => a.position.y - b.position.y || a.position.x - b.position.x || a.id.localeCompare(b.id)).map((node) => {
+    const x = Math.max(24, node.position.x);
+    let y = Math.max(24, node.position.y);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const other of placed) {
+        const overlaps = x < other.x + other.width + NODE_LAYOUT_GAP
+          && x + NODE_WIDTH + NODE_LAYOUT_GAP > other.x
+          && y < other.y + other.height + NODE_LAYOUT_GAP
+          && y + NODE_LAYOUT_HEIGHT + NODE_LAYOUT_GAP > other.y;
+        if (overlaps) {
+          y = other.y + other.height + NODE_LAYOUT_GAP;
+          changed = true;
+        }
+      }
+    }
+    placed.push({ x, y, width: NODE_WIDTH, height: NODE_LAYOUT_HEIGHT });
+    return { ...node, position: { x, y } };
+  });
+}
 
 function formatDate(value: string | null): string {
   if (!value) return "není k dispozici";
@@ -366,8 +392,9 @@ export function DashboardPage({ releaseInfo, onOpenStandardPage }: {
       return matchesText && matchesStatus;
     });
   }, [topology, query, statusFilter]);
-  const visibleNodeIds = useMemo(() => new Set(nodes.map((node) => node.id)), [nodes]);
-  const nodeByComponent = useMemo(() => new Map((topology?.nodes ?? []).filter((node) => node.componentId).map((node) => [node.componentId as string, node])), [topology]);
+  const presentationNodes = useMemo(() => collisionFreeNodes(nodes), [nodes]);
+  const visibleNodeIds = useMemo(() => new Set(presentationNodes.map((node) => node.id)), [presentationNodes]);
+  const nodeByComponent = useMemo(() => new Map(presentationNodes.filter((node) => node.componentId).map((node) => [node.componentId as string, node])), [presentationNodes]);
   const portsByComponent = useMemo(() => {
     const map = new Map<string, DashboardPort[]>();
     for (const port of topology?.ports ?? []) map.set(port.componentId, [...(map.get(port.componentId) ?? []), port]);
@@ -474,8 +501,8 @@ export function DashboardPage({ releaseInfo, onOpenStandardPage }: {
   if (loading && !topology) return <div className="panel dashboard-loading"><RefreshCw className="spin" size={24} /> Načítám autoritativní topologii…</div>;
   if (!topology) return <div className="notice error"><AlertTriangle size={18} />{error || "Dashboard není dostupný."}<button onClick={() => { setLoading(true); void refresh(); }}>Zkusit znovu</button></div>;
 
-  const contentWidth = Math.max(1400, ...topology.nodes.map((node) => node.position.x + 430));
-  const contentHeight = Math.max(850, ...topology.nodes.map((node) => node.position.y + 360));
+  const contentWidth = Math.max(1400, ...presentationNodes.map((node) => node.position.x + NODE_WIDTH + 120));
+  const contentHeight = Math.max(850, ...presentationNodes.map((node) => node.position.y + NODE_LAYOUT_HEIGHT + 80));
   return (
     <div className="dashboard-page">
       <PageHeader title="Aktivní Dashboard" description="Živá operační topologie registrovaných CML prvků, PULSE oprávnění a Secret granty nad jedním autoritativním backendem.">
@@ -543,7 +570,7 @@ export function DashboardPage({ releaseInfo, onOpenStandardPage }: {
                     </g>;
                   })}
                 </svg>
-                {nodes.map((node) => {
+                {presentationNodes.map((node) => {
                   const componentPorts = node.componentId ? portsByComponent.get(node.componentId) ?? [] : [];
                   const incoming = componentPorts.filter((port) => port.direction === "INCOMING");
                   const outgoing = componentPorts.filter((port) => port.direction === "OUTGOING");
@@ -572,7 +599,7 @@ export function DashboardPage({ releaseInfo, onOpenStandardPage }: {
               </div>
             </div>
           </div>}
-          <div className="dashboard-minimap" aria-hidden="true">{nodes.map((node) => <span key={node.id} className={nodeStatusClass(node)} style={{ left: `${Math.min(94, node.position.x / contentWidth * 100)}%`, top: `${Math.min(90, node.position.y / contentHeight * 100)}%` }} />)}</div>
+          <div className="dashboard-minimap" aria-hidden="true">{presentationNodes.map((node) => <span key={node.id} className={nodeStatusClass(node)} style={{ left: `${Math.min(94, node.position.x / contentWidth * 100)}%`, top: `${Math.min(90, node.position.y / contentHeight * 100)}%` }} />)}</div>
         </section>
 
         <aside className="dashboard-context-panel" aria-label="Kontextový detail">
