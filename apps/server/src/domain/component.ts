@@ -888,7 +888,18 @@ export async function replaceDerivedComponentContracts(client: pg.PoolClient, co
       `insert into component_e2e_fixture(
         revision_id,scenario_key,variant_key,input_content,input_media_type,input_digest,expected_content,expected_media_type,expected_digest,
         invocation_kind,invocation_name,timeout_ms,cleanup_contract
-      ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb)`,
+      ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb)
+       on conflict (revision_id,scenario_key,variant_key) do update set
+         input_content=excluded.input_content,
+         input_media_type=excluded.input_media_type,
+         input_digest=excluded.input_digest,
+         expected_content=excluded.expected_content,
+         expected_media_type=excluded.expected_media_type,
+         expected_digest=excluded.expected_digest,
+         invocation_kind=excluded.invocation_kind,
+         invocation_name=excluded.invocation_name,
+         timeout_ms=excluded.timeout_ms,
+         cleanup_contract=excluded.cleanup_contract`,
       [revisionId, text(scenario.scenarioKey), text(scenario.variantKey), input.bytes, input.mediaType, input.digest,
         expected.bytes, expected.mediaType, expected.digest, text(record(scenario.invocation)?.kind), text(record(scenario.invocation)?.name),
         Number(scenario.timeoutMs), JSON.stringify(scenario.cleanup ?? { required: false })]
