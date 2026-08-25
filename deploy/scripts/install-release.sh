@@ -172,6 +172,7 @@ require_stable_runtime_health() {
   local admin_host="$1"
   local health_status=""
   local attempt=0
+  local consecutive_successes=0
   for _attempt in $(seq 1 13); do
     attempt="$_attempt"
     if curl -fsS -H "Host: $admin_host" "http://127.0.0.1:${PORT:-3010}/health" >/dev/null \
@@ -179,11 +180,14 @@ require_stable_runtime_health() {
       && systemctl is-active --quiet kcml-component-control-worker \
       && systemctl is-active --quiet kcml-component-e2e-worker \
       && systemctl is-active --quiet kcml-monitor; then
+      consecutive_successes=$((consecutive_successes + 1))
       sleep 5
       continue
     fi
+    consecutive_successes=0
     if [ "$attempt" -lt 13 ]; then sleep 5; fi
   done
+  if [ "$consecutive_successes" -eq 13 ]; then return 0; fi
   health_status="$(curl -sS -o /dev/null -w '%{http_code}' -H "Host: $admin_host" "http://127.0.0.1:${PORT:-3010}/health" 2>/dev/null || echo curl-failed)"
   echo "release-health:http=$health_status" >&2
   for service in kcml kcml-component-control-worker kcml-component-e2e-worker kcml-monitor; do
