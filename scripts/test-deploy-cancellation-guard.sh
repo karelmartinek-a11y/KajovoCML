@@ -6,7 +6,7 @@ workflow=.github/workflows/ci-deploy.yml
 # A GitHub cancellation must terminate only the deployment child session. The
 # runner's own process group contains the self-hosted listener and must never
 # be signalled as a cleanup shortcut.
-grep -Fq 'timeout-minutes: 60' "$workflow"
+grep -Fq 'timeout-minutes: 35' "$workflow"
 grep -Fq 'command -v setsid >/dev/null' "$workflow"
 grep -Fq 'setsid sudo -n --preserve-env=PASS,KCML_FACTORY_RESET_CONFIRM' "$workflow"
 grep -Fq 'stop_deploy_child() {' "$workflow"

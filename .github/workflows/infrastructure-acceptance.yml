@@ -1,0 +1,28 @@
+name: Infrastructure acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: "Exact commit SHA already deployed in production"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  wedos:
+    runs-on: [self-hosted, kcml-deploy]
+    timeout-minutes: 25
+    environment: production
+    steps:
+      - name: Run explicit WEDOS safe roundtrip
+        env:
+          PASS: ${{ secrets.PASS }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          echo "::add-mask::$PASS"
+          test -n "$PASS"
+          sudo -n --preserve-env=PASS /usr/local/sbin/kcml-wedos-infrastructure-acceptance "$EXPECTED_SHA"

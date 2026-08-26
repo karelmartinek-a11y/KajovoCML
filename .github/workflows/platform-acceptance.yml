@@ -1,0 +1,25 @@
+name: Production platform acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_release_id:
+        description: "Exact deployed release id for the platform smoke"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  webhook:
+    runs-on: [self-hosted, kcml-deploy]
+    timeout-minutes: 8
+    environment: production
+    steps:
+      - name: Run dual webhook delivery acceptance
+        env:
+          EXPECTED_RELEASE_ID: ${{ inputs.expected_release_id }}
+        run: |
+          set -euo pipefail
+          sudo -n /usr/local/sbin/kcml-webhook-infrastructure-acceptance "$EXPECTED_RELEASE_ID"

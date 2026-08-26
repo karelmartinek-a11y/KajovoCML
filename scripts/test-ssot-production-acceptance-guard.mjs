@@ -4,6 +4,8 @@ const files = {
   acceptance: "apps/server/src/cli/ssot-production-acceptance.ts",
   workflow: ".github/workflows/ci-deploy.yml",
   installer: "deploy/scripts/install-release.sh",
+  acceptanceScript: "deploy/scripts/run-production-acceptance.sh",
+  acceptanceWorkflow: ".github/workflows/production-acceptance.yml",
   releaseGuard: "scripts/test-build-release.sh",
   playwrightInstaller: "deploy/scripts/install-playwright-browser.sh"
 };
@@ -37,15 +39,17 @@ if (source.acceptance.includes("Math.min(window.innerHeight - 1, rect.top + rect
   throw new Error("ssot acceptance guard forbids viewport-edge hit testing for below-fold controls");
 }
 if (source.acceptance.includes("not-run-no-reusable-capability")) throw new Error("ssot acceptance guard forbids skipped approval reported as PASS");
-requireText("workflow", "run_full_ssot_acceptance:");
-requireText("workflow", "KCML_RUN_FULL_SSOT_ACCEPTANCE");
-requireText("workflow", "KCML_ACCEPTANCE_RECONCILE_OWNER_PASSWORD");
-requireText("workflow", "--preserve-env=PASS,KCML_FACTORY_RESET_CONFIRM,KCML_RUN_FULL_SSOT_ACCEPTANCE,KCML_ACCEPTANCE_RECONCILE_OWNER_PASSWORD");
-requireText("installer", 'if [ "${KCML_RUN_FULL_SSOT_ACCEPTANCE:-false}" = "true" ]; then');
-requireText("installer", "dist/cli/ssot-production-acceptance.js");
-requireText("installer", 'KCML_ACCEPTANCE_BASE_URL="https://${admin_host}"');
-requireText("installer", 'echo "ssot-acceptance:$acceptance_line"');
-requireText("workflow", "ssot-acceptance:");
+requireText("acceptanceScript", "ssot-production-acceptance.js");
+requireText("acceptanceScript", ".commitSha == $expected");
+requireText("acceptanceScript", ".sourceCommit");
+requireText("acceptanceScript", "manifest_build_id");
+requireText("acceptanceScript", "production-acceptance:deployedSha=");
+requireText("acceptanceWorkflow", "expected_sha:");
+requireText("acceptanceWorkflow", "kcml-production-acceptance");
+requireText("acceptanceWorkflow", "already deployed release");
+if (source.installer.includes("KCML_RUN_FULL_SSOT_ACCEPTANCE") || source.installer.includes("wapi-test-roundtrip")) {
+  throw new Error("ordinary deploy contains full acceptance or mutating WEDOS roundtrip");
+}
 requireText("releaseGuard", "dist/cli/ssot-production-acceptance.js");
 requireText("playwrightInstaller", "PLAYWRIGHT_BROWSERS_PATH");
 requireText("playwrightInstaller", "install --with-deps chromium");

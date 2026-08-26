@@ -1,0 +1,36 @@
+name: Production SSOT acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_sha:
+        description: "Exact commit SHA already deployed in production"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  acceptance:
+    runs-on: [self-hosted, kcml-deploy]
+    timeout-minutes: 45
+    concurrency:
+      group: production-ssot-acceptance
+      cancel-in-progress: false
+    environment: production
+    permissions:
+      contents: read
+    steps:
+      - name: Run acceptance against the already deployed release
+        env:
+          PASS: ${{ secrets.PASS }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          echo "::add-mask::$PASS"
+          test -n "$PASS"
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-fA-F]{40}$ ]]
+          # This path is deliberately not the deploy wrapper: it cannot build,
+          # switch releases, run migrations, mutate WEDOS or issue TLS.
+          sudo -n --preserve-env=PASS /usr/local/sbin/kcml-production-acceptance "$EXPECTED_SHA"

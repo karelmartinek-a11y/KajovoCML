@@ -16,27 +16,53 @@ The generation browser API is also job-scoped: `POST /api/generation/jobs/:id/br
 
 Browser automation definitions and revisions are immutable after creation. The current DB-backed runtime exposes owner-scoped definition/revision/auth-binding/run/history/preflight/read-only runtime-verification/activation/cancel/enable/disable/repair/artifact routes, a durable queue worker, fenced leases, idempotency and evidence artifacts. Static preflight is intentionally reported as `STATIC_VALIDATED`; it is not a runtime verification or activation PASS. Runtime verification is measured by the same interpreter and is restricted to explicit `READ_ONLY` manifests. An OWNER repair request is audit-recorded and delegates to the existing inherited-spec generation repair authority for the owning component; absent ownership or approved functional lineage is returned as a blocked repair. Full auth-state binding, human challenge, drift reconciliation and component-release activation ordering remain separate acceptance items. Cancellation and terminal updates are state-guarded; do not manually edit runtime rows or bypass the repair route. Do not place resolved secrets in event payloads, metrics, browser evidence or release logs.
 
-When the operator uses the repository's platform release workflow, its self-hosted runner service account must have narrowly scoped non-interactive (`NOPASSWD`) access to `/usr/local/sbin/kcml-deploy-wrapper` and the marker-only journal query used for failure diagnostics. `PASS` is an application credential passed to the wrapper; it must never be configured or supplied as a sudo password. Without this runner-level authorization the workflow fails before the wrapper starts, so no migration, release activation, rollback or health/readiness assertion occurs.
+When the operator uses the repository's platform release workflows, its
+self-hosted runner service account must have narrowly scoped non-interactive
+(`NOPASSWD`) access to `/usr/local/sbin/kcml-deploy-wrapper`,
+`/usr/local/sbin/kcml-production-acceptance` and
+`/usr/local/sbin/kcml-wedos-infrastructure-acceptance`, plus the marker-only
+journal query used for failure diagnostics. `PASS` is an application
+credential passed in process memory; it must never be configured or supplied
+as a sudo password. Without this runner-level authorization the corresponding
+workflow fails before its canonical operation starts.
 
 The signed release also contains the canonical full SSOT acceptance runner at
-`apps/server/dist/cli/ssot-production-acceptance.js`. It is intentionally
-opt-in: dispatch `.github/workflows/ci-deploy.yml` with the boolean input
-`run_full_ssot_acceptance=true`. The deploy step then runs the real authenticated
-OWNER HTTP/SSE and Playwright checks after stable health, using the existing
-deployment-managed `PASS` and migrator/config-vault credentials only in process
-memory. For this explicit acceptance only, if forensic deploy checks show that
-the preserved OWNER password differs from the supplied deployment `PASS`, the
-installer reconciles the existing OWNER hash to that same already-provided
-`PASS`; it never creates an account, asks for a second password or provisions a
-new secret. Ordinary deploys continue to preserve a divergent OWNER password.
-The acceptance runner reports safe identifiers, states, digests, counts and timings; it
-never prints passwords, TOTP material, secret ciphertext or provider tokens.
-The generated fixtures are read-only where possible, use correlation IDs, and
-are cleaned through the canonical database/runtime records. Ordinary push,
-pull-request and non-opt-in dispatch deployments do not execute this expensive
-production acceptance gate.
+`apps/server/dist/cli/ssot-production-acceptance.js`. It runs only through
+`.github/workflows/production-acceptance.yml` with an exact already deployed
+SHA. The runner verifies `/api/version`, health and the current release before
+executing authenticated OWNER HTTP/SSE and Playwright checks. It performs no
+build, migration, release switch, WEDOS mutation or TLS issuance, and is safe to
+repeat against the same SHA. The runner reports safe identifiers, states,
+digests, counts and timings; it never prints passwords, TOTP material, secret
+ciphertext or provider tokens. Temporary fixtures use correlation IDs and are
+cleaned through canonical database/runtime records.
 
-Canonical TLS issuance runs only after the reversible nginx ACME challenge configuration, forward migrations, WEDOS WAPI preflight and the safe WEDOS roundtrip. Before every WEDOS mutation, KCML snapshots the SOA serial of every delegated authoritative NS address; after commit it compares the same addresses and the exact TXT presence. A single unreachable address may fall back to another healthy address of that same NS hostname, but a protocol failure, a stale successful endpoint, or an unreachable whole NS fails closed. Individual DNS queries have a bounded `WEDOS_DNS_QUERY_TIMEOUT_MS`; the overall `WEDOS_DNS_PROPAGATION_TIMEOUT_MS` is KCML operational policy, not a WEDOS SLA. Its eight-minute default follows the 2026-08-23 production observation that exact WAPI cleanup was still visible after 317 seconds but absent before eight minutes; it is not a provider guarantee. Before the roundtrip, the installer runs recovery-first cleanup for active `PREFLIGHT_TEST` and `ACME` ledger rows using exact WEDOS ownership. The release keeps the previous systemd topology active until DNS-01, certificate SAN/key verification and the release checks are ready. If authoritative DNS does not publish the challenge within the bounded propagation window, the deploy is blocked externally and no new topology is activated. The DNS publisher is an external production dependency; do not replace authoritative-DNS confirmation with a timer, a non-authoritative resolver result, or a fake success.
+Ordinary deployment performs only non-mutating WEDOS preflight and recovery. The
+full safe WEDOS roundtrip is available through the explicit
+`.github/workflows/infrastructure-acceptance.yml` workflow or when a TLS
+issuance/provider change requires it. Before every WEDOS mutation, KCML snapshots
+the SOA serial of every delegated authoritative NS address; after commit it
+compares the same addresses and exact TXT presence. A single unreachable address
+may fall back to another healthy address of that same NS hostname, but a protocol
+failure, stale successful endpoint or unreachable whole NS fails closed. Individual
+DNS queries have a bounded `WEDOS_DNS_QUERY_TIMEOUT_MS`; the overall
+`WEDOS_DNS_PROPAGATION_TIMEOUT_MS` is KCML operational policy, not a WEDOS SLA.
+Before mutations, recovery-first cleanup handles active `PREFLIGHT_TEST` and
+`ACME` ledger rows using exact WEDOS ownership.
+
+The dual PRIMARY/BACKUP alert delivery smoke is not part of ordinary release
+installation. `.github/workflows/platform-acceptance.yml` invokes
+`run-webhook-infrastructure-acceptance.sh` against an already installed
+release; it waits for both HTTP 200 deliveries, verifies both sink artifacts,
+closes the test alert in a trap and records the opened/closed audit events.
+
+The mandatory Linux pre-production runtime check exercises the actual generated
+component systemd unit semantics, encrypted `LoadCredentialEncrypted` material,
+the production helper and the namespace handler sandbox. GitHub-hosted Ubuntu
+does not provide a usable systemd PID 1 for starting a persistent unit, so the
+check explicitly does not claim a systemd start; it fails closed on the real
+Linux helper, credential decryption and namespace/runtime operations instead of
+turning that limitation into a grep-only PASS.
 
 The certbot deploy hook atomically copies the resolved canonical wildcard lineage into the canonical `/etc/kcml/tls/` runtime pair. The resolver first honors an explicit lineage, then an existing lineage path, then a matching certificate fingerprint, and finally the unique lineage covering the required SANs; ambiguity fails closed. This matters on shared hosts where certbot can rename a lineage after a name collision (the production lineage is currently `kcml-wildcards-0001`, while the runtime handoff path is separate). The installer creates the default runtime directory before installing the renewal systemd unit, even when production is configured to use `/etc/letsencrypt/live/...`; this keeps systemd mount-namespace validation valid when certbot reuses a still-valid lineage and skips the deploy hook. The installer invokes that same hook after every successful certbot invocation as well. The hook test generates an ephemeral certificate and verifies the copied certificate/key bytes and modes (`0644`/`0600`).
 

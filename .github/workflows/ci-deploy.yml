@@ -20,11 +20,6 @@ on:
         required: false
         default: ""
         type: string
-      run_full_ssot_acceptance:
-        description: "Run the authenticated production SSOT acceptance harness after deployment"
-        required: false
-        default: false
-        type: boolean
 
 permissions:
   contents: read
@@ -78,6 +73,7 @@ jobs:
           bash scripts/test-deploy-cancellation-guard.sh
           bash scripts/test-split-service-config.sh
           bash scripts/test-portable-negative-pattern-guards.sh
+          bash scripts/test-release-readiness-policy.sh
           node scripts/test-single-owner-human-role.mjs
           node scripts/test-ssot-compliance-ledger.mjs
           bash scripts/test-render-nginx-config.sh
@@ -135,6 +131,10 @@ jobs:
           pnpm generation:automation-sandbox-boundary:check
           pnpm generation:automation-runtime-no-ai:check
           pnpm generation:automation-recovery:check
+      - name: Mandatory Linux production-shaped generated runtime
+        run: bash scripts/test-production-shaped-generated-runtime.sh
+      - name: Release pinning negative guard
+        run: node scripts/test-release-pin-policy.mjs
       - name: Release bundle checks
         env:
           BUILD_ID: ci-release-check
@@ -239,10 +239,7 @@ jobs:
     if: github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || github.event_name == 'push')
     needs: [ci, security, release]
     runs-on: [self-hosted, kcml-deploy]
-    # First DNS-01 issuance can include three SAN challenges, their exact
-    # cleanups, and a one-time WAPI roundtrip. This is a bounded bootstrap
-    # budget; ordinary releases reuse a valid certificate and finish sooner.
-    timeout-minutes: 60
+    timeout-minutes: 35
     concurrency:
       group: production-deploy
       cancel-in-progress: false
@@ -297,8 +294,6 @@ jobs:
         env:
           PASS: ${{ secrets.PASS }}
           KCML_FACTORY_RESET_CONFIRM: ${{ github.event_name == 'workflow_dispatch' && inputs.perform_factory_reset && inputs.factory_reset_confirmation || '' }}
-          KCML_RUN_FULL_SSOT_ACCEPTANCE: ${{ github.event_name == 'workflow_dispatch' && inputs.run_full_ssot_acceptance || false }}
-          KCML_ACCEPTANCE_RECONCILE_OWNER_PASSWORD: ${{ github.event_name == 'workflow_dispatch' && inputs.run_full_ssot_acceptance || false }}
         run: |
           set -euo pipefail
           echo "::add-mask::$PASS"
@@ -320,7 +315,7 @@ jobs:
           set +e
           # PASS is an application credential consumed by the wrapper, never a sudo password.
           # The production runner must grant its service account narrowly scoped NOPASSWD access.
-          setsid sudo -n --preserve-env=PASS,KCML_FACTORY_RESET_CONFIRM,KCML_RUN_FULL_SSOT_ACCEPTANCE,KCML_ACCEPTANCE_RECONCILE_OWNER_PASSWORD /usr/local/sbin/kcml-deploy-wrapper \
+          setsid sudo -n --preserve-env=PASS,KCML_FACTORY_RESET_CONFIRM /usr/local/sbin/kcml-deploy-wrapper \
             "${{ runner.temp }}/kcml-release/kcml-release.tar.zst" \
             "${{ github.repository }}" \
             "${{ github.sha }}" \
@@ -334,9 +329,9 @@ jobs:
           set -e
           if [ "$deploy_status" -ne 0 ]; then
             echo "::group::Safe KCML deploy diagnostics"
-          grep -E 'release-(step|failed|check|installed|health)|rollback-(ok|failed)|playwright-browser|wedos-wapi:(FAIL|preflight|roundtrip)|wedos-(dns|acme)|openai-secret|secret_unavailable|platform_worker_identity|ssot-acceptance:' "$deploy_log" || true
+            grep -E 'release-(step|failed|installed|health|readiness)|rollback-(ok|failed)|playwright-browser|wedos-wapi:(FAIL|preflight)|wedos-(dns|acme)|openai-secret|secret_unavailable|platform_worker_identity' "$deploy_log" || true
             sudo -n journalctl --since "$deploy_started_at" --no-pager \
-            | grep -E 'release-(step|failed|check|installed|health)|rollback-(ok|failed)|playwright-browser|wedos-wapi:(FAIL|preflight|roundtrip)|wedos-(dns|acme)|openai-secret|secret_unavailable|platform_worker_identity|ssot-acceptance:' || true
+            | grep -E 'release-(step|failed|installed|health|readiness)|rollback-(ok|failed)|playwright-browser|wedos-wapi:(FAIL|preflight)|wedos-(dns|acme)|openai-secret|secret_unavailable|platform_worker_identity' || true
             echo "::endgroup::"
             exit "$deploy_status"
           fi

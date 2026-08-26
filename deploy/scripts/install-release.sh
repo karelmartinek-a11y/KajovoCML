@@ -43,9 +43,23 @@ else
 fi
 switched=false
 current_step="init"
+step_started_ms=0
+step_timing_file="$(mktemp)"
+trap 'rm -f "$step_timing_file"' EXIT
+now_ms() { date +%s%3N; }
+finish_step() {
+  if [ "$step_started_ms" -gt 0 ]; then
+    elapsed_ms=$(( $(now_ms) - step_started_ms ))
+    result="${1:-PASS}"
+    echo "release-step:$current_step:elapsedMs=$elapsed_ms:result=$result"
+    printf '%s\t%s\t%s\n' "$elapsed_ms" "$current_step" "$result" >>"$step_timing_file"
+  fi
+}
 step() {
+  finish_step
   current_step="$1"
-  echo "release-step:$current_step"
+  step_started_ms="$(now_ms)"
+  echo "release-step:$current_step:started"
 }
 render_nginx_config() {
   local template="$1" target="$2"
@@ -86,6 +100,7 @@ SQL
 rollback_on_error() {
   exit_code=$?
   trap - ERR
+  finish_step FAIL
   echo "release-failed:$current_step" >&2
   if [ -n "$previous_release_id" ] && [ -d "$previous_release" ]; then
     if [ "$switched" = "true" ]; then
@@ -110,89 +125,60 @@ restart_core_services() {
   systemctl restart kcml-monitor
 }
 
-queue_webhook_smoke() {
-  test_alert_id="$(psql "$DATABASE_APP_URL" --no-psqlrc --tuples-only --no-align --quiet --set ON_ERROR_STOP=1 \
-    --set correlation="$test_correlation" --set release_id="$release_id" <<'SQL' | tail -n 1
-begin;
-update operational_alert
-   set status='CLOSED',closed_at=now(),last_seen_at=now()
- where alert_type='deployment.webhook_test' and status in ('OPEN','ACKNOWLEDGED','SUPPRESSED');
-insert into operational_alert(severity,alert_type,title,detail,correlation_id)
-values ('CRITICAL','deployment.webhook_test','KCML deployment webhook test',jsonb_build_object('buildId', :'release_id'),:'correlation'::uuid)
-returning id \gset
-insert into alert_webhook_delivery(alert_id,channel,idempotency_key)
-values (:'id','PRIMARY',gen_random_uuid()),(:'id','BACKUP',gen_random_uuid());
-select append_audit_event(
-  'deployment.webhook_test.opened','deployment',null,'operational_alert',:'id',null,
-  jsonb_build_object('buildId', :'release_id'),:'correlation'::uuid
-);
-commit;
-\echo :id
-SQL
-)"
-  [[ "$test_alert_id" =~ ^[0-9a-f-]{36}$ ]]
+runtime_services=(kcml kcml-egress-proxy kcml-secret-broker kcml-generation-worker kcml-browser-automation-worker kcml-component-control-worker kcml-component-e2e-worker kcml-monitor)
+runtime_services_active() {
+  local service
+  for service in "${runtime_services[@]}"; do systemctl is-active --quiet "$service" || return 1; done
+  test -S "${EGRESS_PROXY_SOCKET_PATH:-/var/lib/kcml/egress/proxy.sock}"
+  test -S "${SECRET_BROKER_SOCKET_PATH:-/var/lib/kcml/secret-broker/proxy.sock}"
 }
-
-wait_for_runtime_health() {
+wait_for_runtime_start() {
   local admin_host="$1"
-  local healthy=false
-  for _attempt in $(seq 1 45); do
-    if curl -fsS -H "Host: $admin_host" "http://127.0.0.1:${PORT:-3010}/health" >/dev/null \
-      && systemctl is-active --quiet kcml \
-      && systemctl is-active --quiet kcml-egress-proxy \
-      && systemctl is-active --quiet kcml-secret-broker \
-      && systemctl is-active --quiet kcml-generation-worker \
-      && systemctl is-active --quiet kcml-browser-automation-worker \
-      && systemctl is-active --quiet kcml-component-control-worker \
-      && systemctl is-active --quiet kcml-component-e2e-worker \
-      && systemctl is-active --quiet kcml-monitor \
-      && systemctl is-active --quiet kcml-alert-primary \
-      && systemctl is-active --quiet kcml-alert-backup \
-      && curl -fsS http://127.0.0.1:3011/health >/dev/null \
-      && curl -fsS http://127.0.0.1:3012/health >/dev/null \
-      && test -S "${EGRESS_PROXY_SOCKET_PATH:-/var/lib/kcml/egress/proxy.sock}" \
-      && test -S "${SECRET_BROKER_SOCKET_PATH:-/var/lib/kcml/secret-broker/proxy.sock}"; then
-      healthy=true
-      break
-    fi
-    sleep 2
-  done
-
-  if [ "$healthy" != "true" ]; then
-    systemctl status kcml kcml-egress-proxy kcml-secret-broker kcml-generation-worker kcml-browser-automation-worker kcml-component-control-worker kcml-component-e2e-worker kcml-monitor kcml-alert-primary kcml-alert-backup --no-pager -l || true
-    for service in kcml kcml-egress-proxy kcml-secret-broker kcml-generation-worker kcml-browser-automation-worker kcml-component-control-worker kcml-component-e2e-worker kcml-monitor; do
-      echo "==== journal:$service ====" >&2
-      journalctl -u "$service" --no-pager -n 80 || true
+  for _attempt in $(seq 1 30); do
+    for service in "${runtime_services[@]}"; do
+      if systemctl is-failed --quiet "$service"; then
+        echo "release-health:terminal-systemd-failure=$service" >&2
+        return 1
+      fi
     done
-    return 1
-  fi
+    if runtime_services_active; then return 0; fi
+    sleep 1
+  done
+  echo "release-health:startup-deadline=30s" >&2
+  return 1
 }
-
-require_stable_runtime_health() {
+require_deterministic_runtime_readiness() {
   local admin_host="$1"
   local health_status=""
-  local attempt=0
-  local consecutive_successes=0
-  # Require 13 consecutive healthy observations, but allow transient service
-  # activation/restart noise to settle within the bounded release window.
-  for _attempt in $(seq 1 45); do
-    attempt="$_attempt"
-    if curl -fsS -H "Host: $admin_host" "http://127.0.0.1:${PORT:-3010}/health" >/dev/null \
-      && systemctl is-active --quiet kcml \
-      && systemctl is-active --quiet kcml-component-control-worker \
-      && systemctl is-active --quiet kcml-component-e2e-worker \
-      && systemctl is-active --quiet kcml-monitor; then
-      consecutive_successes=$((consecutive_successes + 1))
-      if [ "$consecutive_successes" -eq 13 ]; then return 0; fi
-      sleep 5
-      continue
+  local expected_build_id="$release_id"
+  local expected_commit_sha="${release_id%%-*}"
+  local health_json=""
+  local version_json=""
+  local heartbeat_ok=""
+  wait_for_runtime_start "$admin_host"
+  local consecutive=0
+  # Ordinary deploy has four consecutive confirmations; long stability soaks
+  # belong to the separately dispatched acceptance workflow.
+  for _attempt in $(seq 1 4); do
+    health_json="$(curl -fsS -H "Host: $admin_host" "http://127.0.0.1:${PORT:-3010}/health")"
+    version_json="$(curl -fsS -H "Host: $admin_host" "http://127.0.0.1:${PORT:-3010}/api/version")"
+    heartbeat_ok="$(psql "$app_database_url" --no-psqlrc --tuples-only --no-align --quiet --command "select case when count(*)=4 and count(*) filter (where build_id='${release_id}' and last_error is null and last_heartbeat_at > now()-interval '2 minutes')=4 then 'true' else 'false' end from platform_worker_heartbeat where worker_kind in ('GENERATION','BROWSER_AUTOMATION','COMPONENT_CONTROL','COMPONENT_E2E')")"
+    if printf '%s' "$health_json" | jq -e '.status == "ok"' >/dev/null \
+      && printf '%s' "$version_json" | jq -e --arg build "$expected_build_id" --arg commit "$expected_commit_sha" '.buildId == $build and .commitSha == $commit' >/dev/null \
+      && runtime_services_active \
+      && [ "$heartbeat_ok" = "true" ]; then
+      consecutive=$((consecutive + 1))
+      echo "release-readiness:buildId=$expected_build_id:commitSha=$expected_commit_sha:workers=current:heartbeat=current:sample=$_attempt:consecutive=$consecutive:result=PASS"
+      if [ "$consecutive" -eq 4 ]; then return 0; fi
+    else
+      consecutive=0
+      echo "release-readiness:sample=$_attempt:consecutive=0:result=FAIL" >&2
     fi
-    consecutive_successes=0
-    if [ "$attempt" -lt 45 ]; then sleep 5; fi
+    if [ "$_attempt" -lt 4 ]; then sleep 2; fi
   done
   health_status="$(curl -sS -o /dev/null -w '%{http_code}' -H "Host: $admin_host" "http://127.0.0.1:${PORT:-3010}/health" 2>/dev/null || echo curl-failed)"
   echo "release-health:http=$health_status" >&2
-  for service in kcml kcml-component-control-worker kcml-component-e2e-worker kcml-monitor; do
+  for service in "${runtime_services[@]}"; do
     echo "release-health:service=$service:state=$(systemctl is-active "$service" 2>/dev/null || echo unavailable)" >&2
   done
   return 1
@@ -252,15 +238,6 @@ NODE_ENV=production \
 BUILD_ID="$release_id" \
   node "$source_dir/apps/server/dist/cli/wedos-wapi.js" recover-acme
 
-step wedos-wapi-roundtrip
-KCML_PROCESS_ROLE=migrate \
-DATABASE_URL_FILE=/etc/kcml/credentials/migrator/database_url \
-CONFIG_VAULT_MASTER_KEY_BASE64_FILE=/etc/kcml/credentials/config_vault_master_key \
-KCML_ACME_ZONE="$PUBLIC_BASE_DOMAIN" \
-NODE_ENV=production \
-BUILD_ID="$release_id" \
-  node "$source_dir/apps/server/dist/cli/wedos-wapi.js" wapi-test-roundtrip
-
 # DNS-01 issuance is an external dependency and can take up to fifteen minutes.
 # It runs only after the forward migration and WAPI preflight, while the
 # previous systemd topology remains active. No new unit is enabled or restarted
@@ -275,6 +252,15 @@ bash "$source_dir/deploy/scripts/ensure-canonical-tls.sh" \
   "$PUBLIC_BASE_DOMAIN" "$component_hostname_suffix" "$tls_cert_path" "$tls_key_path" "$source_dir"
 
 install -m 0755 "$source_dir/deploy/scripts/kcml-generated-runtime-helper" /usr/local/sbin/kcml-generated-runtime-helper
+install -m 0755 "$source_dir/deploy/scripts/run-production-acceptance.sh" /usr/local/sbin/kcml-production-acceptance
+install -m 0755 "$source_dir/deploy/scripts/run-wedos-infrastructure-acceptance.sh" /usr/local/sbin/kcml-wedos-infrastructure-acceptance
+install -m 0755 "$source_dir/deploy/scripts/run-webhook-infrastructure-acceptance.sh" /usr/local/sbin/kcml-webhook-infrastructure-acceptance
+cat >/etc/sudoers.d/kcml-production-workflows <<'EOF'
+Defaults:kcml !requiretty
+kcml ALL=(root) NOPASSWD: /usr/local/sbin/kcml-production-acceptance *, /usr/local/sbin/kcml-wedos-infrastructure-acceptance *, /usr/local/sbin/kcml-webhook-infrastructure-acceptance *
+EOF
+chmod 0440 /etc/sudoers.d/kcml-production-workflows
+visudo -cf /etc/sudoers.d/kcml-production-workflows
 cat >/etc/sudoers.d/kcml-generated-runtime <<'EOF'
 Defaults:kcml !requiretty
 kcml ALL=(root) NOPASSWD: /usr/local/sbin/kcml-generated-runtime-helper *
@@ -339,13 +325,6 @@ BUILD_ID="$release_id" \
 
 step sync-admin-password
 acceptance_password_rotation_confirmation="${KCML_ADMIN_PASSWORD_ROTATION_CONFIRM:-}"
-if [ "${KCML_ACCEPTANCE_RECONCILE_OWNER_PASSWORD:-false}" = "true" ]; then
-  # An explicit production acceptance dispatch authorizes reconciliation to
-  # the already supplied deployment PASS. Ordinary deploys preserve the
-  # existing OWNER password unchanged; no account or secret is created here.
-  acceptance_password_rotation_confirmation="ROTATE_KCML_OWNER_PASSWORD"
-  echo "acceptance-owner-password:reconcile-existing-pass"
-fi
 admin_sync_result="$(PASS="$PASS" \
 KCML_ADMIN_PASSWORD_ROTATION_CONFIRM="$acceptance_password_rotation_confirmation" \
 KCML_PROCESS_ROLE=admin-sync \
@@ -380,19 +359,12 @@ systemctl restart kcml-alert-backup
 nginx -t
 systemctl reload nginx
 
-test_correlation="$(cat /proc/sys/kernel/random/uuid)"
-if [ -z "${KCML_FACTORY_RESET_CONFIRM:-}" ]; then
-  step queue-webhook-smoke
-  queue_webhook_smoke
-fi
-
 restart_core_services
 
 admin_host="${ADMIN_HOST:?ADMIN_HOST is required}"
-if [ -z "${KCML_FACTORY_RESET_CONFIRM:-}" ]; then
-  step wait-runtime-health
-  wait_for_runtime_health "$admin_host"
-fi
+app_database_url="$(cat /etc/kcml/database-app.url)"
+step verify-runtime-readiness
+require_deterministic_runtime_readiness "$admin_host"
 
 if [ -n "${KCML_FACTORY_RESET_CONFIRM:-}" ]; then
   step factory-reset
@@ -416,37 +388,9 @@ if [ -n "${KCML_FACTORY_RESET_CONFIRM:-}" ]; then
   step restart-services-post-reset
   restart_core_services
 
-  step wait-runtime-health-post-reset
-  wait_for_runtime_health "$admin_host"
-
-  step queue-webhook-smoke-post-reset
-  queue_webhook_smoke
+  step verify-runtime-readiness-post-reset
+  require_deterministic_runtime_readiness "$admin_host"
 fi
-
-app_database_url="$(cat /etc/kcml/database-app.url)"
-webhook_delivered=false
-step wait-alert-webhooks
-for _attempt in $(seq 1 75); do
-  if [ "$(psql "$app_database_url" --no-psqlrc --tuples-only --no-align --quiet --command \
-    "select count(*) from alert_webhook_delivery where alert_id='$test_alert_id' and state='DELIVERED' and last_http_status=200")" = "2" ]; then
-    webhook_delivered=true
-    break
-  fi
-  sleep 2
-done
-if [ "$webhook_delivered" != "true" ]; then
-  psql "$app_database_url" --no-psqlrc --tuples-only --no-align --quiet --command \
-    "select channel,state,attempt_count,coalesce(last_http_status::text,''),coalesce(last_error,'') from alert_webhook_delivery where alert_id='$test_alert_id' order by channel" >&2 || true
-  false
-fi
-while IFS='|' read -r channel delivery_id; do
-  case "$channel" in
-    PRIMARY) test -s "/var/lib/kcml/alert-primary-sink/$delivery_id.json" ;;
-    BACKUP) test -s "/var/lib/kcml/alert-backup-sink/$delivery_id.json" ;;
-    *) exit 1 ;;
-  esac
-done < <(psql "$app_database_url" --no-psqlrc --tuples-only --no-align --quiet --command \
-  "select channel,idempotency_key from alert_webhook_delivery where alert_id='$test_alert_id' order by channel")
 
 admin_username="$(effective_admin_username)"
 export ADMIN_BOOTSTRAP_USERNAME="$admin_username"
@@ -529,21 +473,6 @@ else
   echo "reference-smoke:SKIPPED preserved_owner_credential_diverges_from_pass"
 fi
 
-step finalize-webhook-smoke
-psql "$app_database_url" --no-psqlrc --quiet --set ON_ERROR_STOP=1 \
-  --set alert_id="$test_alert_id" --set correlation="$test_correlation" --set release_id="$release_id" --set admin_username="$admin_username" <<'SQL'
-begin;
-update operational_alert set status='CLOSED',closed_at=now(),last_seen_at=now() where id=:'alert_id';
-update admin_session
-   set revoked_at=now()
- where account_id=(select id from admin_account where username=:'admin_username') and revoked_at is null;
-select append_audit_event(
-  'deployment.webhook_test.closed','deployment',null,'operational_alert',:'alert_id',null,
-  jsonb_build_object('buildId', :'release_id'),:'correlation'::uuid
-);
-commit;
-SQL
-
 step verify-final-invariants
 wait_for_sql_equals "audit_chain" "t" "select valid from verify_audit_chain()"
 wait_for_sql_equals "canonical_component_identity" "0" "select count(*) from component where deregistered_at is null and (code <> ('KCML' || lpad(kcml_number::text,4,'0')) or hostname <> (lower(code) || '.${component_hostname_suffix}'))" 1 1
@@ -593,42 +522,13 @@ wait_for_sql_equals "single_owner_role_violations" "0" "select count(*) from adm
 wait_for_sql_equals "single_owner_role_constraint" "1" "select count(*) from pg_constraint where conname='admin_account_role_check' and pg_get_constraintdef(oid) like '%role = ''OWNER''%'"
 wait_for_sql_equals "schema_migration_count" "26" "select count(*) from schema_migration"
 
-step verify-stable-runtime-health
-require_stable_runtime_health "$admin_host"
-
-if [ "${KCML_RUN_FULL_SSOT_ACCEPTANCE:-false}" = "true" ]; then
-  # This is an explicit workflow_dispatch-only gate.  The runner invokes the
-  # release CLI as root because it needs the same systemd database/vault
-  # credentials as the canonical deploy checks.  PASS remains process memory;
-  # the CLI emits only safe identifiers, state, digests, counts and timings.
-  step full-ssot-production-acceptance
-  acceptance_log="$(mktemp)"
-  cleanup_acceptance_log() {
-    rm -f "$acceptance_log"
-  }
-  trap cleanup_acceptance_log EXIT
-  acceptance_status=0
-  if PASS="$PASS" \
-    KCML_ACCEPTANCE_BROWSER_UID="$(id -u kcml)" \
-    KCML_ACCEPTANCE_BROWSER_GID="$(id -g kcml)" \
-    KCML_PROCESS_ROLE=migrate \
-    DATABASE_URL_FILE=/etc/kcml/credentials/migrator/database_url \
-    CONFIG_VAULT_MASTER_KEY_BASE64_FILE=/etc/kcml/credentials/config_vault_master_key \
-    NODE_ENV=production \
-    BUILD_ID="$release_id" \
-    KCML_ACCEPTANCE_BASE_URL="https://${admin_host}" \
-      node "$release_dir/apps/server/dist/cli/ssot-production-acceptance.js" >"$acceptance_log"; then
-    acceptance_status=0
-  else
-    acceptance_status=$?
-  fi
-  while IFS= read -r acceptance_line; do
-    echo "ssot-acceptance:$acceptance_line"
-  done <"$acceptance_log"
-  if [ "$acceptance_status" -ne 0 ]; then
-    false
-  fi
-fi
+step verify-runtime-readiness
+require_deterministic_runtime_readiness "$admin_host"
 
 trap - ERR
+finish_step
+echo "release-timing:top10-slowest-steps"
+sort -nr -k1,1 "$step_timing_file" | head -10 | while IFS=$'\t' read -r elapsed name result; do
+  echo "release-timing:step=$name:elapsedMs=$elapsed:result=$result"
+done
 echo "release-installed:$release_id"

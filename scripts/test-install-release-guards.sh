@@ -20,10 +20,22 @@ lineage_helper="deploy/scripts/certbot-lineage.sh"
 playwright_installer="deploy/scripts/install-playwright-browser.sh"
 playwright_lock_recovery="deploy/scripts/playwright-lock-recovery.mjs"
 playwright_compatibility="deploy/scripts/playwright-browser-compat.mjs"
+acceptance_script="deploy/scripts/run-production-acceptance.sh"
+infrastructure_acceptance_script="deploy/scripts/run-wedos-infrastructure-acceptance.sh"
+webhook_acceptance_script="deploy/scripts/run-webhook-infrastructure-acceptance.sh"
+production_runtime_test="scripts/test-production-shaped-generated-runtime.sh"
+readiness_policy_test="scripts/test-release-readiness-policy.sh"
+release_pin_test="scripts/test-release-pin-policy.mjs"
 
 for file in "$install_script" "$preflight_script" "$web_unit" "$generation_unit" "$component_unit" "$helper" "$tls_script" "$acme_auth_hook" "$acme_cleanup_hook" "$acme_deploy_hook" "$renewal_script" "$renewal_service" "$renewal_failure_service" "$renewal_recovered_service" "$renewal_timer" "$lineage_helper" "$playwright_installer"; do
   test -f "$file"
 done
+test -x "$acceptance_script"
+test -x "$infrastructure_acceptance_script"
+test -x "$webhook_acceptance_script"
+test -x "$production_runtime_test"
+test -x "$readiness_policy_test"
+test -f "$release_pin_test"
 test -f "$playwright_lock_recovery"
 test -f "$playwright_compatibility"
 
@@ -65,8 +77,23 @@ grep -Fq "where version='026_generation_browser_session_contract.sql'" "$install
 grep -Fq 'single_owner_role_violations' "$install_script"
 grep -Fq 'single_owner_role_constraint' "$install_script"
 grep -Fq 'step verify-wedos-runtime' "$install_script"
-grep -Fq 'for _attempt in $(seq 1 45)' "$install_script"
-grep -Fq 'consecutive healthy observations' "$install_script"
+grep -Fq 'step verify-runtime-readiness' "$install_script"
+grep -Fq 'api/version' "$install_script"
+grep -Fq 'run-production-acceptance.sh' "$install_script"
+grep -Fq 'run-wedos-infrastructure-acceptance.sh' "$install_script"
+grep -Fq 'run-webhook-infrastructure-acceptance.sh' "$install_script"
+grep -Fq 'kcml-production-workflows' "$install_script"
+grep -Fq 'visudo -cf /etc/sudoers.d/kcml-production-workflows' "$install_script"
+if grep -Fq 'wapi-test-roundtrip' "$install_script"; then
+  echo "mutating WEDOS roundtrip must not be part of ordinary deploy" >&2
+  exit 1
+fi
+if grep -E -n 'wait-alert-webhooks|finalize-webhook-smoke|queue-webhook-smoke|seq 1 75|seq 1 45' "$install_script" >/dev/null; then
+  echo "ordinary deploy retains a long webhook/readiness soak" >&2
+  exit 1
+fi
+grep -Fq 'consecutive=0' "$install_script"
+grep -Fq 'platform_worker_heartbeat' "$install_script"
 grep -Fq 'step openai-secret-preflight' "$install_script"
 grep -Fq 'dist/cli/openai-secret-preflight.js' "$install_script"
 grep -Fq 'replaceAll("-", "")' "$install_script"
@@ -92,8 +119,10 @@ grep -Fq 'step wedos-wapi-recover-preflight' "$install_script"
 grep -Fq 'dist/cli/wedos-wapi.js" recover-preflight' "$install_script"
 grep -Fq 'step wedos-wapi-recover-acme' "$install_script"
 grep -Fq 'dist/cli/wedos-wapi.js" recover-acme' "$install_script"
-grep -Fq 'step wedos-wapi-roundtrip' "$install_script"
-grep -Fq 'dist/cli/wedos-wapi.js" wapi-test-roundtrip' "$install_script"
+if grep -Fq 'KCML_RUN_FULL_SSOT_ACCEPTANCE' "$install_script"; then
+  echo "full acceptance must not be part of ordinary deploy" >&2
+  exit 1
+fi
 grep -Fq 'step install-playwright-browser' "$install_script"
 grep -Fq 'install-playwright-browser.sh' "$install_script"
 grep -Fq 'PLAYWRIGHT_BROWSERS_PATH=/opt/kcml/playwright-browsers' "$install_script"
@@ -136,7 +165,6 @@ openai_line="$(grep -n 'step openai-secret-preflight' "$install_script" | head -
 wapi_line="$(grep -n 'step wedos-wapi-preflight' "$install_script" | head -1 | cut -d: -f1)"
 recover_line="$(grep -n 'step wedos-wapi-recover-preflight' "$install_script" | head -1 | cut -d: -f1)"
 recover_acme_line="$(grep -n 'step wedos-wapi-recover-acme' "$install_script" | head -1 | cut -d: -f1)"
-roundtrip_line="$(grep -n 'step wedos-wapi-roundtrip' "$install_script" | head -1 | cut -d: -f1)"
 test -n "$tls_line"
 test -n "$unit_line"
 test -n "$split_config_line"
@@ -145,8 +173,7 @@ test -n "$openai_line"
 test -n "$wapi_line"
 test -n "$recover_line"
 test -n "$recover_acme_line"
-test -n "$roundtrip_line"
-if [ "$split_config_line" -ge "$migrate_line" ] || [ "$migrate_line" -ge "$openai_line" ] || [ "$openai_line" -ge "$wapi_line" ] || [ "$wapi_line" -ge "$recover_line" ] || [ "$recover_line" -ge "$recover_acme_line" ] || [ "$recover_acme_line" -ge "$roundtrip_line" ] || [ "$roundtrip_line" -ge "$tls_line" ] || [ "$tls_line" -ge "$unit_line" ]; then
+if [ "$split_config_line" -ge "$migrate_line" ] || [ "$migrate_line" -ge "$openai_line" ] || [ "$openai_line" -ge "$wapi_line" ] || [ "$wapi_line" -ge "$recover_line" ] || [ "$recover_line" -ge "$recover_acme_line" ] || [ "$recover_acme_line" -ge "$tls_line" ] || [ "$tls_line" -ge "$unit_line" ]; then
   echo "migration and WAPI/TLS must complete before systemd topology activation" >&2
   exit 1
 fi
@@ -176,8 +203,10 @@ grep -Fq 'test -x /usr/sbin/chroot' "$preflight_script"
 grep -Fq 'test -x /usr/bin/env' "$preflight_script"
 grep -Fq 'runuser -u kcml-runtime -- /usr/bin/setpriv --no-new-privs /usr/bin/unshare --user --map-root-user --mount --net --ipc --uts --pid --fork --kill-child=SIGKILL /bin/true' "$preflight_script"
 grep -Fq 'GENERATION_WORKER_ENABLED=true KCML_RELEASE_SOURCE="$source_dir" bash "$source_dir/deploy/scripts/preflight.sh"' "$install_script"
-grep -Fq 'acceptance-owner-password:reconcile-existing-pass' "$install_script"
-grep -Fq 'KCML_ACCEPTANCE_RECONCILE_OWNER_PASSWORD' "$install_script"
+if grep -E -n 'acceptance-owner-password|KCML_ACCEPTANCE_RECONCILE_OWNER_PASSWORD' "$install_script" >/dev/null; then
+  echo "OWNER password reconciliation is not an ordinary deploy operation" >&2
+  exit 1
+fi
 grep -Fq "where deregistered_at is null and (code <> ('KCML' || lpad(kcml_number::text,4,'0'))" "$install_script"
 
 if grep -E -n 'kcml-onboarding-worker|GHCR_TOKEN|GITHUB_TOKEN|stage_registry_auth|repository-component-deploy' \

@@ -1,5 +1,24 @@
 # Architecture — internal generation
 
+## Release versus acceptance execution
+
+The ordinary `ci-deploy.yml` path is a bounded release operation: it verifies
+the signed bundle, backs up state, applies forward migrations, reconciles
+configuration, performs non-mutating provider and Secret Manager preflight,
+installs/switches the release, activates the existing services and verifies
+health, `/api/version`, required units and current worker readiness. Each
+release step emits safe `started`, `elapsedMs` and `result` evidence. It does
+not run the full SSOT acceptance or mutate WEDOS DNS.
+
+Full authenticated acceptance is a separate repeatable
+`production-acceptance.yml` dispatch with an exact already deployed SHA. It
+checks that SHA through `/api/version` and health before running the existing
+HTTP/SSE and Playwright acceptance CLI; it does not build, migrate, switch
+releases, issue TLS or run a WEDOS roundtrip. The explicit
+`infrastructure-acceptance.yml` workflow owns the mutating WEDOS safe
+roundtrip. This separation keeps provider soak and product acceptance out of
+the ordinary deploy timing budget while preserving their real behavior.
+
 ## Human authorization invariant
 
 KajovoCML has exactly one human authorization role: `OWNER`. The active
