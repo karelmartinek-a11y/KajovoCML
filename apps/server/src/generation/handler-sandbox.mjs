@@ -17,7 +17,6 @@ COMPONENT_CODE="$5"
 mkdir -p "$SOURCE/app" "$SOURCE/lib" "$SOURCE/lib64"
 touch "$SOURCE/node" "$SOURCE/app/handler.mjs" "$SOURCE/app/handler-sandbox-worker.mjs"
 /usr/bin/mount --bind "$SOURCE" "$ROOT"
-/usr/bin/mount -o remount,bind,ro "$ROOT"
 /usr/bin/mount --bind "$NODE_BIN" "$ROOT/node"
 /usr/bin/mount -o remount,bind,ro "$ROOT/node"
 /usr/bin/mount --bind /lib "$ROOT/lib"
@@ -30,6 +29,10 @@ fi
 /usr/bin/mount -o remount,bind,ro "$ROOT/app/handler.mjs"
 /usr/bin/mount --bind "$WORKER" "$ROOT/app/handler-sandbox-worker.mjs"
 /usr/bin/mount -o remount,bind,ro "$ROOT/app/handler-sandbox-worker.mjs"
+# Mount all required files while the staged root is writable, then make the
+# complete view immutable.  Remounting the root before the nested binds makes
+# mount(8) reject the later file mounts on some production kernels.
+/usr/bin/mount -o remount,bind,ro "$ROOT"
 exec /usr/bin/env -i PATH=/usr/bin:/usr/sbin:/bin:/sbin LANG=C.UTF-8 /usr/sbin/chroot "$ROOT" /node --experimental-vm-modules /app/handler-sandbox-worker.mjs "$COMPONENT_CODE"
 `;
 
