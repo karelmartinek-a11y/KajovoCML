@@ -92,7 +92,11 @@ const entrySource = `
 import * as handler from 'kcml:handler';
 import { handlerContext, jsonParse, jsonStringify } from 'kcml:bridge';
 function ensureContract() {
-  if (!Array.isArray(handler.tools) || typeof handler.invoke !== 'function') throw new Error('generated_handler_contract_invalid');
+  if (!Array.isArray(handler.tools)) throw new Error('generated_handler_contract_invalid:tools_export_missing');
+  if (typeof handler.invoke !== 'function') throw new Error('generated_handler_contract_invalid:invoke_export_missing');
+  for (const tool of handler.tools) {
+    if (!tool || typeof tool !== 'object' || typeof tool.name !== 'string' || !tool.name) throw new Error('generated_handler_contract_invalid:tool_definition_invalid');
+  }
 }
 function toolDefinitions() {
   return handler.tools.map((tool) => ({ name: tool.name, title: tool.title, description: tool.description, inputSchema: tool.inputSchema, outputSchema: tool.outputSchema }));

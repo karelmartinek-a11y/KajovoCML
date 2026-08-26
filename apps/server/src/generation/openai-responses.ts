@@ -154,6 +154,7 @@ type CandidateArtifactValidation = {
   valid: boolean;
   manifestErrors: Array<{ path?: string; keyword?: string; message?: string }>;
   handlerSyntaxError: string | null;
+  handlerContractError: string | null;
   canonicalTemplatePath: "component-manifest.example.json";
 };
 
@@ -184,13 +185,23 @@ async function validateCandidateArtifacts(
   const syntax = await shell(`${JSON.stringify(process.execPath)} --check ${JSON.stringify(handlerPath)}`, ctx.workspace, ctx.signal)
     .then(() => null)
     .catch((error: unknown) => error instanceof Error ? error.message : "handler_syntax_failed");
+  const handlerSource = syntax ? "" : await readFile(handlerPath, "utf8");
+  // The sandbox performs the authoritative module evaluation.  This bounded
+  // preflight only prevents a known-invalid export shape from consuming an
+  // implementation turn; it does not replace runtime contract validation.
+  const contract = syntax ? null : !/\bexport\s+(?:const|let|var)\s+tools\b/.test(handlerSource)
+    ? "tools_export_missing"
+    : !/\bexport\s+(?:async\s+)?function\s+invoke\b/.test(handlerSource)
+      ? "invoke_export_missing"
+      : null;
   return {
-    valid: Boolean(valid) && !contractError && !syntax,
+    valid: Boolean(valid) && !contractError && !syntax && !contract,
     manifestErrors: valid && !contractError ? [] : [
       ...(validate.errors ?? []).slice(0, 20).map((item: { instancePath?: string; keyword?: string; message?: string }) => ({ path: item.instancePath, keyword: item.keyword, message: item.message })),
       ...(contractError ? [{ path: "/", keyword: "kcml-contract", message: contractError }] : [])
     ],
     handlerSyntaxError: syntax,
+    handlerContractError: contract,
     canonicalTemplatePath: "component-manifest.example.json"
   };
 }
@@ -424,7 +435,7 @@ export async function implementGeneration(apiKey: string, model: string, input: 
           try {
             return { key: element.key, ...(await validateCandidateArtifacts(context, element.manifestPath, element.handlerPath)) };
           } catch (error) {
-            return { key: element.key, valid: false, manifestErrors: [], handlerSyntaxError: error instanceof Error ? error.message : "candidate_validation_failed", canonicalTemplatePath: "component-manifest.example.json" as const };
+            return { key: element.key, valid: false, manifestErrors: [], handlerSyntaxError: error instanceof Error ? error.message : "candidate_validation_failed", handlerContractError: null, canonicalTemplatePath: "component-manifest.example.json" as const };
           }
         }));
         if (validations.every((item) => item.valid)) return result;
