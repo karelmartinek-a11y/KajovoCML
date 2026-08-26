@@ -19,10 +19,10 @@ touch "$SOURCE/node" "$SOURCE/app/handler.mjs" "$SOURCE/app/handler-sandbox-work
 /usr/bin/mount --bind "$SOURCE" "$ROOT"
 /usr/bin/mount --bind "$NODE_BIN" "$ROOT/node"
 /usr/bin/mount -o remount,bind,ro "$ROOT/node"
-/usr/bin/mount --bind /lib "$ROOT/lib"
+/usr/bin/mount --bind /usr/lib "$ROOT/lib"
 /usr/bin/mount -o remount,bind,ro "$ROOT/lib"
-if [ -d /lib64 ]; then
-  /usr/bin/mount --bind /lib64 "$ROOT/lib64"
+if [ -d /usr/lib64 ]; then
+  /usr/bin/mount --bind /usr/lib64 "$ROOT/lib64"
   /usr/bin/mount -o remount,bind,ro "$ROOT/lib64"
 fi
 /usr/bin/mount --bind "$HANDLER" "$ROOT/app/handler.mjs"
