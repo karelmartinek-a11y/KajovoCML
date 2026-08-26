@@ -173,7 +173,9 @@ require_stable_runtime_health() {
   local health_status=""
   local attempt=0
   local consecutive_successes=0
-  for _attempt in $(seq 1 13); do
+  # Require 13 consecutive healthy observations, but allow transient service
+  # activation/restart noise to settle within the bounded release window.
+  for _attempt in $(seq 1 45); do
     attempt="$_attempt"
     if curl -fsS -H "Host: $admin_host" "http://127.0.0.1:${PORT:-3010}/health" >/dev/null \
       && systemctl is-active --quiet kcml \
@@ -181,13 +183,13 @@ require_stable_runtime_health() {
       && systemctl is-active --quiet kcml-component-e2e-worker \
       && systemctl is-active --quiet kcml-monitor; then
       consecutive_successes=$((consecutive_successes + 1))
+      if [ "$consecutive_successes" -eq 13 ]; then return 0; fi
       sleep 5
       continue
     fi
     consecutive_successes=0
-    if [ "$attempt" -lt 13 ]; then sleep 5; fi
+    if [ "$attempt" -lt 45 ]; then sleep 5; fi
   done
-  if [ "$consecutive_successes" -eq 13 ]; then return 0; fi
   health_status="$(curl -sS -o /dev/null -w '%{http_code}' -H "Host: $admin_host" "http://127.0.0.1:${PORT:-3010}/health" 2>/dev/null || echo curl-failed)"
   echo "release-health:http=$health_status" >&2
   for service in kcml kcml-component-control-worker kcml-component-e2e-worker kcml-monitor; do

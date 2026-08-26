@@ -65,6 +65,8 @@ grep -Fq "where version='026_generation_browser_session_contract.sql'" "$install
 grep -Fq 'single_owner_role_violations' "$install_script"
 grep -Fq 'single_owner_role_constraint' "$install_script"
 grep -Fq 'step verify-wedos-runtime' "$install_script"
+grep -Fq 'for _attempt in $(seq 1 45)' "$install_script"
+grep -Fq 'consecutive healthy observations' "$install_script"
 grep -Fq 'step openai-secret-preflight' "$install_script"
 grep -Fq 'dist/cli/openai-secret-preflight.js' "$install_script"
 grep -Fq 'replaceAll("-", "")' "$install_script"
