@@ -131,6 +131,21 @@ jobs:
           pnpm generation:automation-sandbox-boundary:check
           pnpm generation:automation-runtime-no-ai:check
           pnpm generation:automation-recovery:check
+      - name: Diagnose Linux systemd runtime capabilities
+        run: |
+          set -euo pipefail
+          echo "pid1=$(ps -p 1 -o comm= | tr -d ' ')"
+          test -d /run/systemd/system && echo "run_systemd=true" || echo "run_systemd=false"
+          systemctl --version | head -n 1
+          systemctl is-system-running || true
+          systemd-run --version | head -n 1
+          systemd-creds --version | head -n 1
+          id
+          if unshare --mount --net --ipc --uts --pid --fork --kill-child=SIGKILL true; then
+            echo "mount_namespace=true"
+          else
+            echo "mount_namespace=false"
+          fi
       - name: Mandatory Linux production-shaped generated runtime
         run: bash scripts/test-production-shaped-generated-runtime.sh
       - name: Release pinning negative guard

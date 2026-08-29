@@ -30,10 +30,20 @@ release_pin_test="scripts/test-release-pin-policy.mjs"
 for file in "$install_script" "$preflight_script" "$web_unit" "$generation_unit" "$component_unit" "$helper" "$tls_script" "$acme_auth_hook" "$acme_cleanup_hook" "$acme_deploy_hook" "$renewal_script" "$renewal_service" "$renewal_failure_service" "$renewal_recovered_service" "$renewal_timer" "$lineage_helper" "$playwright_installer"; do
   test -f "$file"
 done
+for executable in "$helper" "$acceptance_script" "$infrastructure_acceptance_script" "$webhook_acceptance_script" "$production_runtime_test"; do
+  test "$(git ls-files -s -- "$executable" | awk '{print $1}')" = 100755
+done
 test -x "$acceptance_script"
 test -x "$infrastructure_acceptance_script"
 test -x "$webhook_acceptance_script"
+test -x "$helper"
 test -x "$production_runtime_test"
+grep -Fq 'systemctl start "$unit"' "$production_runtime_test"
+grep -Fq 'systemctl restart "$unit"' "$production_runtime_test"
+grep -Fq 'systemd-run' "$production_runtime_test"
+grep -Fq 'LoadCredentialEncrypted' "$production_runtime_test"
+grep -Fq 'kcml-runtime' "$production_runtime_test"
+grep -Fq 'trap cleanup EXIT' "$production_runtime_test"
 test -x "$readiness_policy_test"
 test -f "$release_pin_test"
 test -f "$playwright_lock_recovery"
@@ -94,6 +104,9 @@ if grep -E -n 'wait-alert-webhooks|finalize-webhook-smoke|queue-webhook-smoke|se
 fi
 grep -Fq 'consecutive=0' "$install_script"
 grep -Fq 'platform_worker_heartbeat' "$install_script"
+grep -Fq 'readiness_max_attempts=8' "$install_script"
+grep -Fq 'readiness_required_consecutive=4' "$install_script"
+grep -Fq 'monitoring_scheduler_heartbeat' "$install_script"
 grep -Fq 'step openai-secret-preflight' "$install_script"
 grep -Fq 'dist/cli/openai-secret-preflight.js' "$install_script"
 grep -Fq 'replaceAll("-", "")' "$install_script"
@@ -203,7 +216,7 @@ grep -Fq 'test -x /usr/sbin/chroot' "$preflight_script"
 grep -Fq 'test -x /usr/bin/env' "$preflight_script"
 grep -Fq 'runuser -u kcml-runtime -- /usr/bin/setpriv --no-new-privs /usr/bin/unshare --user --map-root-user --mount --net --ipc --uts --pid --fork --kill-child=SIGKILL /bin/true' "$preflight_script"
 grep -Fq 'GENERATION_WORKER_ENABLED=true KCML_RELEASE_SOURCE="$source_dir" bash "$source_dir/deploy/scripts/preflight.sh"' "$install_script"
-if grep -E -n 'acceptance-owner-password|KCML_ACCEPTANCE_RECONCILE_OWNER_PASSWORD' "$install_script" >/dev/null; then
+if grep -E -n 'acceptance-owner-password|KCML_ACCEPTANCE_RECONCILE_OWNER_PASSWORD|KCML_ADMIN_PASSWORD_ROTATION_CONFIRM|ROTATE_KCML_OWNER_PASSWORD' "$install_script" >/dev/null; then
   echo "OWNER password reconciliation is not an ordinary deploy operation" >&2
   exit 1
 fi

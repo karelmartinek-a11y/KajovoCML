@@ -26,7 +26,7 @@ SQL
 [[ "$alert_id" =~ ^[0-9a-f-]{36}$ ]]
 cleanup() {
   psql "$app_database_url" --no-psqlrc --quiet --set ON_ERROR_STOP=1 \
-    --set alert_id="$alert_id" --set correlation="$correlation" --set release_id="$release_id" <<'SQL' >/dev/null || true
+    --set alert_id="$alert_id" --set correlation="$correlation" --set release_id="$release_id" <<'SQL' >/dev/null
 begin;
 update operational_alert set status='CLOSED',closed_at=now(),last_seen_at=now() where id=:'alert_id';
 select append_audit_event(

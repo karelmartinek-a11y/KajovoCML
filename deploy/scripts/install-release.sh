@@ -149,6 +149,9 @@ wait_for_runtime_start() {
 }
 require_deterministic_runtime_readiness() {
   local admin_host="$1"
+  local readiness_required_consecutive=4
+  local readiness_max_attempts=8
+  local readiness_interval_seconds=2
   local health_status=""
   local expected_build_id="$release_id"
   local expected_commit_sha="${release_id%%-*}"
@@ -159,22 +162,22 @@ require_deterministic_runtime_readiness() {
   local consecutive=0
   # Ordinary deploy has four consecutive confirmations; long stability soaks
   # belong to the separately dispatched acceptance workflow.
-  for _attempt in $(seq 1 4); do
+  for _attempt in $(seq 1 "$readiness_max_attempts"); do
     health_json="$(curl -fsS -H "Host: $admin_host" "http://127.0.0.1:${PORT:-3010}/health")"
     version_json="$(curl -fsS -H "Host: $admin_host" "http://127.0.0.1:${PORT:-3010}/api/version")"
-    heartbeat_ok="$(psql "$app_database_url" --no-psqlrc --tuples-only --no-align --quiet --command "select case when count(*)=4 and count(*) filter (where build_id='${release_id}' and last_error is null and last_heartbeat_at > now()-interval '2 minutes')=4 then 'true' else 'false' end from platform_worker_heartbeat where worker_kind in ('GENERATION','BROWSER_AUTOMATION','COMPONENT_CONTROL','COMPONENT_E2E')")"
+    heartbeat_ok="$(psql "$app_database_url" --no-psqlrc --tuples-only --no-align --quiet --command "select case when (select count(*) from platform_worker_heartbeat where worker_kind in ('GENERATION','BROWSER_AUTOMATION','COMPONENT_CONTROL','COMPONENT_E2E'))=4 and (select count(*) from platform_worker_heartbeat where worker_kind in ('GENERATION','BROWSER_AUTOMATION','COMPONENT_CONTROL','COMPONENT_E2E') and build_id='${release_id}' and last_error is null and last_heartbeat_at > now()-interval '2 minutes')=4 and exists (select 1 from monitoring_scheduler_heartbeat where singleton=true and last_error is null and last_completed_at > now()-interval '3 minutes') then 'true' else 'false' end")"
     if printf '%s' "$health_json" | jq -e '.status == "ok"' >/dev/null \
       && printf '%s' "$version_json" | jq -e --arg build "$expected_build_id" --arg commit "$expected_commit_sha" '.buildId == $build and .commitSha == $commit' >/dev/null \
       && runtime_services_active \
       && [ "$heartbeat_ok" = "true" ]; then
       consecutive=$((consecutive + 1))
       echo "release-readiness:buildId=$expected_build_id:commitSha=$expected_commit_sha:workers=current:heartbeat=current:sample=$_attempt:consecutive=$consecutive:result=PASS"
-      if [ "$consecutive" -eq 4 ]; then return 0; fi
+      if [ "$consecutive" -ge "$readiness_required_consecutive" ]; then return 0; fi
     else
       consecutive=0
       echo "release-readiness:sample=$_attempt:consecutive=0:result=FAIL" >&2
     fi
-    if [ "$_attempt" -lt 4 ]; then sleep 2; fi
+    if [ "$_attempt" -lt "$readiness_max_attempts" ]; then sleep "$readiness_interval_seconds"; fi
   done
   health_status="$(curl -sS -o /dev/null -w '%{http_code}' -H "Host: $admin_host" "http://127.0.0.1:${PORT:-3010}/health" 2>/dev/null || echo curl-failed)"
   echo "release-health:http=$health_status" >&2
@@ -324,9 +327,7 @@ BUILD_ID="$release_id" \
   node "$source_dir/apps/server/dist/cli/admin-credential-forensics.js"
 
 step sync-admin-password
-acceptance_password_rotation_confirmation="${KCML_ADMIN_PASSWORD_ROTATION_CONFIRM:-}"
 admin_sync_result="$(PASS="$PASS" \
-KCML_ADMIN_PASSWORD_ROTATION_CONFIRM="$acceptance_password_rotation_confirmation" \
 KCML_PROCESS_ROLE=admin-sync \
 DATABASE_URL_FILE=/etc/kcml/credentials/admin-sync/database_url \
 CONFIG_VAULT_MASTER_KEY_BASE64_FILE=/etc/kcml/credentials/config_vault_master_key \

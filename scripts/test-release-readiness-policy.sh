@@ -14,4 +14,9 @@ if confirm_samples FAIL FAIL FAIL PASS; then
   exit 1
 fi
 confirm_samples PASS PASS PASS PASS
+if confirm_samples PASS PASS FAIL PASS PASS PASS; then
+  echo "readiness policy incorrectly accepted before four new consecutive samples" >&2
+  exit 1
+fi
+confirm_samples PASS PASS FAIL PASS PASS PASS PASS
 echo "release-readiness-policy:PASS"
