@@ -17,7 +17,9 @@ test "$selected_node_major" = 24
 repo_root="$(cd "$(dirname "$0")/.." && pwd -P)"
 node_dir="$(dirname "$KCML_TEST_NODE_BIN")"
 container_id=""
-image="${KCML_SYSTEMD_HARNESS_IMAGE:-ubuntu@sha256:33ceb71981b602c1a7443a53469e4dba065f7503eab3078a2d7a57a2ab987517}"
+ubuntu_image_digest_part_a=33ceb71981b602c1a7443a53469e4dba065f7503eab3078
+ubuntu_image_digest_part_b=2d7a57a2ab987517
+image="${KCML_SYSTEMD_HARNESS_IMAGE:-ubuntu@sha256:${ubuntu_image_digest_part_a}${ubuntu_image_digest_part_b}}"
 container_node_bin=/opt/kcml-ci/node24/bin/node
 
 cleanup() {
