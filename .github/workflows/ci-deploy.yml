@@ -147,7 +147,10 @@ jobs:
             echo "mount_namespace=false"
           fi
       - name: Mandatory Linux production-shaped generated runtime
-        run: bash scripts/test-production-shaped-generated-runtime.sh
+        run: |
+          export KCML_TEST_NODE_BIN="$(command -v node)"
+          test "$("$KCML_TEST_NODE_BIN" --version | sed -E 's/^v([0-9]+).*/\1/')" = 24
+          bash scripts/test-production-shaped-generated-runtime-container.sh
       - name: Release pinning negative guard
         run: node scripts/test-release-pin-policy.mjs
       - name: Release bundle checks

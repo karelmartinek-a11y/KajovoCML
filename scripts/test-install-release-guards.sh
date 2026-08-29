@@ -24,13 +24,14 @@ acceptance_script="deploy/scripts/run-production-acceptance.sh"
 infrastructure_acceptance_script="deploy/scripts/run-wedos-infrastructure-acceptance.sh"
 webhook_acceptance_script="deploy/scripts/run-webhook-infrastructure-acceptance.sh"
 production_runtime_test="scripts/test-production-shaped-generated-runtime.sh"
+production_runtime_container_test="scripts/test-production-shaped-generated-runtime-container.sh"
 readiness_policy_test="scripts/test-release-readiness-policy.sh"
 release_pin_test="scripts/test-release-pin-policy.mjs"
 
 for file in "$install_script" "$preflight_script" "$web_unit" "$generation_unit" "$component_unit" "$helper" "$tls_script" "$acme_auth_hook" "$acme_cleanup_hook" "$acme_deploy_hook" "$renewal_script" "$renewal_service" "$renewal_failure_service" "$renewal_recovered_service" "$renewal_timer" "$lineage_helper" "$playwright_installer"; do
   test -f "$file"
 done
-for executable in "$helper" "$acceptance_script" "$infrastructure_acceptance_script" "$webhook_acceptance_script" "$production_runtime_test"; do
+for executable in "$helper" "$acceptance_script" "$infrastructure_acceptance_script" "$webhook_acceptance_script" "$production_runtime_test" "$production_runtime_container_test"; do
   test "$(git ls-files -s -- "$executable" | awk '{print $1}')" = 100755
 done
 test -x "$acceptance_script"
@@ -38,6 +39,16 @@ test -x "$infrastructure_acceptance_script"
 test -x "$webhook_acceptance_script"
 test -x "$helper"
 test -x "$production_runtime_test"
+test -x "$production_runtime_container_test"
+grep -Fq 'docker run --detach --privileged' "$production_runtime_container_test"
+grep -Fq 'ubuntu@sha256:' "$production_runtime_container_test"
+grep -Fq 'GITHUB_SHA' "$production_runtime_container_test"
+grep -Fq 'git rev-parse HEAD' "$production_runtime_container_test"
+grep -Fq 'KCML_TEST_NODE_BIN' "$production_runtime_container_test"
+if grep -E -n 'kcml-deploy|production secrets|/etc/kcml/credentials' "$production_runtime_container_test" >/dev/null; then
+  echo "systemd harness must not use the production runner or production credentials" >&2
+  exit 1
+fi
 grep -Fq 'systemctl start "$unit"' "$production_runtime_test"
 grep -Fq 'systemctl restart "$unit"' "$production_runtime_test"
 grep -Fq 'systemd-run' "$production_runtime_test"
@@ -201,6 +212,13 @@ grep -Fq 'NoNewPrivileges=false' "$generation_unit"
 grep -Fq 'RestrictSUIDSGID=false' "$generation_unit"
 grep -Fq 'NoNewPrivileges=true' "$component_unit"
 grep -Fq 'RestrictSUIDSGID=true' "$component_unit"
+for directive in 'User=kcml-runtime' 'Group=kcml' 'LoadCredentialEncrypted=runtime_token:' 'PrivateTmp=true' 'ProtectSystem=strict' 'ProtectHome=true' 'PrivateDevices=true' 'ProtectKernelTunables=true' 'ProtectKernelModules=true' 'ProtectControlGroups=true' 'ProtectHostname=true' 'LockPersonality=true' 'RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6'; do
+  grep -Fq "$directive" "$component_unit"
+done
+if grep -E -n -- '--privileged|CAP_SYS_ADMIN|AppArmor|seccomp|KCML_SYSTEMD_HARNESS_IMAGE' "$component_unit" deploy/scripts/preflight.sh apps/server/src/generation/handler-sandbox.mjs deploy/scripts/kcml-generated-runtime-helper >/dev/null; then
+  echo "container-only harness privileges must not enter the production runtime boundary" >&2
+  exit 1
+fi
 grep -Fq 'GENERATION_WORKER_INTERVAL_MS' deploy/scripts/split-service-config.sh
 grep -Fq 'COMPONENT_WORKER_INTERVAL_MS' deploy/scripts/split-service-config.sh
 grep -Fq 'LoadCredentialEncrypted=runtime_token:' "$component_unit"

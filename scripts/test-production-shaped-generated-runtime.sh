@@ -5,10 +5,16 @@ if [ "$(uname -s)" != "Linux" ]; then
   echo "production-shaped-generated-runtime:FAIL non-Linux runner" >&2
   exit 1
 fi
+selected_node_bin="${KCML_TEST_NODE_BIN:-$(command -v node || true)}"
+test -n "$selected_node_bin" && test -x "$selected_node_bin"
+selected_node_version="$("$selected_node_bin" --version)"
+selected_node_major="${selected_node_version#v}"
+selected_node_major="${selected_node_major%%.*}"
+test "$selected_node_major" = 24
 if [ "$(id -u)" -ne 0 ]; then
-  exec sudo -n env KCML_SANDBOX_TEST_ELEVATED=1 "$0" "$@"
+  exec sudo -n env KCML_SANDBOX_TEST_ELEVATED=1 KCML_TEST_NODE_BIN="$selected_node_bin" KCML_TEST_NODE_VERSION="$selected_node_version" "$0" "$@"
 fi
-for command in systemctl systemd-run systemd-creds curl ps; do
+for command in systemctl systemd-run systemd-creds curl ps readlink; do
   command -v "$command" >/dev/null || { echo "production-shaped-generated-runtime:missing-command=$command" >&2; exit 1; }
 done
 pid1="$(ps -p 1 -o comm= | tr -d ' ')"
@@ -16,6 +22,7 @@ run_systemd=false
 [ -d /run/systemd/system ] && run_systemd=true
 systemd_state="$(systemctl is-system-running 2>&1 || true)"
 echo "production-shaped-generated-runtime:environment:pid1=$pid1:run_systemd=$run_systemd:systemd_state=$systemd_state:systemctl=$(systemctl --version | head -n 1):systemd_run=$(systemd-run --version | head -n 1):systemd_creds=$(systemd-creds --version | head -n 1):uid=$(id -u)"
+echo "production-shaped-generated-runtime:node:selected_node_path=$selected_node_bin:selected_node_version=$selected_node_version"
 if [ "$pid1" != systemd ] || [ "$run_systemd" != true ] || ! systemctl is-system-running >/dev/null 2>&1; then
   echo "production-shaped-generated-runtime:BLOCKED functional systemd manager required" >&2
   exit 2
@@ -63,8 +70,10 @@ cleanup() {
 trap cleanup EXIT
 
 cp deploy/systemd/kcml-generated-component@.service "$unit_file"
-node_bin="$(command -v node)"
+node_bin="$selected_node_bin"
 test -x "$node_bin"
+test "$("$node_bin" --version)" = "$selected_node_version"
+test "${node_bin##*/}" = node
 if [ "$node_bin" != /usr/bin/node ]; then
   mkdir -p "$dropin_dir"
   if [ -e "$dropin_file" ]; then
@@ -97,6 +106,8 @@ elif [ "$(id -gn kcml-runtime)" != kcml ]; then
   echo "production-shaped-generated-runtime:existing-user-group-mismatch" >&2
   exit 1
 fi
+runuser -u kcml-runtime -- /usr/bin/setpriv --no-new-privs /usr/bin/unshare --user --map-root-user --mount --net --ipc --uts --pid --fork --kill-child=SIGKILL /bin/true
+echo "production-shaped-generated-runtime:user_namespace_probe=PASS"
 deploy/scripts/kcml-generated-runtime-helper prepare "$component_code"
 mkdir -p "$release_root"
 cp apps/server/src/generation/runtime-host.mjs apps/server/src/generation/handler-sandbox.mjs apps/server/src/generation/handler-sandbox-worker.mjs "$release_root/"
@@ -144,12 +155,19 @@ fi
 runtime_pid="$(systemctl show "$unit" --property=MainPID --value)"
 test "$(ps -o user= -p "$runtime_pid" | tr -d ' ')" = kcml-runtime
 test "$(ps -o group= -p "$runtime_pid" | tr -d ' ')" = kcml
+runtime_process_node_path="$(readlink -f "/proc/$runtime_pid/exe")"
+test "$runtime_process_node_path" = "$(readlink -f "$node_bin")"
 request() { curl --silent --show-error --fail --unix-socket "$socket_path" -H "Authorization: Bearer $1" -H 'Content-Type: application/json' -d "$3" "http://localhost$2"; }
 printf '%s' "$(request "$runtime_token" /mcp '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}')" | jq -e '.result.tools[0].name == "echo"' >/dev/null
 printf '%s' "$(request "$runtime_token" /mcp '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"echo","arguments":{"value":"systemd"}}}')" | jq -e '.result.structuredContent.value == "systemd"' >/dev/null
 printf '%s' "$(request "$runtime_token" /mcp '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"stateStore","arguments":{"value":"persisted"}}}')" | jq -e '.result.structuredContent.stored == true' >/dev/null
 printf '%s' "$(request "$runtime_token" /v1/kcml/runtime/storage-probe '{}')" | jq -e '.persistent == true' >/dev/null
-echo "production-shaped-generated-runtime:unit=PASS:user=kcml-runtime:group=kcml:credential=LoadCredentialEncrypted:handler=sandboxed"
+systemd_exec_node_path="$node_bin"
+runtime_process_node_version="$("$runtime_process_node_path" --version)"
+runtime_process_node_major="${runtime_process_node_version#v}"
+runtime_process_node_major="${runtime_process_node_major%%.*}"
+test "$runtime_process_node_major" = 24
+echo "production-shaped-generated-runtime:unit=PASS:user=kcml-runtime:group=kcml:credential=LoadCredentialEncrypted:load_credential_encrypted_configured=true:load_credential_encrypted_manager_handoff=true:runtime_credential_consumed=true:systemd_exec_node_path=$systemd_exec_node_path:runtime_process_node_path=$runtime_process_node_path:runtime_process_node_version=$runtime_process_node_version:handler=sandboxed"
 
 systemctl restart "$unit"
 for _attempt in $(seq 1 40); do

@@ -56,13 +56,17 @@ installation. `.github/workflows/platform-acceptance.yml` invokes
 release; it waits for both HTTP 200 deliveries, verifies both sink artifacts,
 closes the test alert in a trap and records the opened/closed audit events.
 
-The mandatory Linux pre-production runtime check exercises the actual generated
-component systemd unit semantics, encrypted `LoadCredentialEncrypted` material,
-the production helper and the namespace handler sandbox. GitHub-hosted Ubuntu
-does not provide a usable systemd PID 1 for starting a persistent unit, so the
-check explicitly does not claim a systemd start; it fails closed on the real
-Linux helper, credential decryption and namespace/runtime operations instead of
-turning that limitation into a grep-only PASS.
+The mandatory Linux pre-production runtime check runs the exact generated
+component systemd unit, encrypted `LoadCredentialEncrypted` material, the
+production helper and the namespace handler sandbox inside a disposable,
+privileged Ubuntu 24.04 container with systemd PID 1. The privilege belongs only
+to that ephemeral container boundary; the service remains `User=kcml-runtime`
+with the canonical production unit restrictions. The hosted runner's direct
+systemd/user-namespace diagnostic remains informational, while the isolated
+harness is mandatory and fails closed. The harness verifies the exact checkout
+SHA and carries the setup-node Node 24 binary into the container, recording the
+selected path/version and the systemd runtime version so a PATH reset cannot
+silently select another Node major.
 
 The certbot deploy hook atomically copies the resolved canonical wildcard lineage into the canonical `/etc/kcml/tls/` runtime pair. The resolver first honors an explicit lineage, then an existing lineage path, then a matching certificate fingerprint, and finally the unique lineage covering the required SANs; ambiguity fails closed. This matters on shared hosts where certbot can rename a lineage after a name collision (the production lineage is currently `kcml-wildcards-0001`, while the runtime handoff path is separate). The installer creates the default runtime directory before installing the renewal systemd unit, even when production is configured to use `/etc/letsencrypt/live/...`; this keeps systemd mount-namespace validation valid when certbot reuses a still-valid lineage and skips the deploy hook. The installer invokes that same hook after every successful certbot invocation as well. The hook test generates an ephemeral certificate and verifies the copied certificate/key bytes and modes (`0644`/`0600`).
 
