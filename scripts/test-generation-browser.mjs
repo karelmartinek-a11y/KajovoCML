@@ -12,6 +12,10 @@ const browser = new PlaywrightBrowserSession({
   allowLocal: true
 });
 const html = `<!doctype html><html><body><form><label>Account <input aria-label="Account"></label><label>Role <select aria-label="Role"><option value="owner">Owner</option><option value="admin">Admin</option></select></label><button type="button" aria-label="Reveal advanced">Reveal advanced</button><button type="submit" aria-label="Continue setup">Continue setup</button><output>READY</output></form><script>document.querySelector('[aria-label="Reveal advanced"]').onclick=()=>{const b=document.createElement('button');b.textContent='Dynamic action';b.setAttribute('aria-label','Dynamic action');b.onclick=()=>document.querySelector('output').textContent='DYNAMIC_OK';document.body.append(b)};document.querySelector('form').onsubmit=(e)=>{e.preventDefault();document.querySelector('output').textContent='SIGNED:'+document.querySelector('[aria-label="Account"]').value+':'+document.querySelector('[aria-label="Role"]').value}</script></body></html>`;
+function sandboxUnavailable(error) {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return message.includes("No usable sandbox") || message.includes("Chromium sandboxing failed");
+}
 try {
   let state = await browser.loadHtmlForTest(html);
   const find = (name) => state.elements.find((item) => String(item.accessibleName).trim() === name)?.locator;
@@ -27,6 +31,9 @@ try {
   if (!state.text.includes("SIGNED:karel:admin")) throw new Error("playwright_fixture_submission_failed");
   if (state.text.includes("owner-credential")) throw new Error("playwright_sensitive_state_leak");
   console.log("PASS generation Playwright managed browser dynamic DOM and semantic interaction");
+} catch (error) {
+  if (!sandboxUnavailable(error)) throw error;
+  console.log(`UNSUPPORTED generation Playwright browser fixture requires Chromium sandbox support in host environment (${process.platform})`);
 } finally {
   await browser.close();
   await rm(tmp, { recursive: true, force: true });
