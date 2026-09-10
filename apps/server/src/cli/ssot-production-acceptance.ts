@@ -572,7 +572,6 @@ async function main(): Promise<void> {
       "Použij konkrétní ne-prázdná schémata: requestSchema je objekt bez povinných polí s additionalProperties=false a responseSchema je objekt s povinným celočíselným polem status; nedefinuj headers ani obecný payload skeleton a nepoužívej placeholder/example hodnoty.",
       "Rozhodnutí OWNER: testovací artefakt smí být po acceptance deaktivován; neprováděj nevratné operace.",
       "Všechny otázky pro tento deterministický fixture jsou zodpovězené; openQuestions musí být přesně prázdné pole. Nežádej OWNER o follow-up, zvol bezpečné read-only defaults a ihned navrhni specifikaci přes propose_generation_specification."
-      ,"Akceptační fixture je záměrně minimální: po schválení vytvoř přesně jeden MCP_SERVER a pouze jeho skutečný handler.mjs a manifest.kcml.json. V implementační fázi neprováděj další webový výzkum, neinstaluj balíčky, nespouštěj dlouhé testy a nečti nesouvisející zdrojové soubory; použij přiloženou kanonickou šablonu, zavolej validate_candidate_artifacts a po validaci vrať kompaktní finální JSON."
     ].join(" ");
     let jobId = "";
     let streamEvents: SseEvent[] = [];
@@ -885,6 +884,10 @@ async function main(): Promise<void> {
     });
 
     const failed = evidence.filter((item) => item.status === "FAIL");
+    const slowestChecks = [...evidence]
+      .sort((left, right) => right.elapsedMs - left.elapsedMs)
+      .slice(0, 10)
+      .map(({ id, name, elapsedMs, status }) => ({ id, name, elapsedMs, status }));
     const report = {
       schemaVersion: "kcml.ssot.production-acceptance.v1",
       productionHost: config.ADMIN_HOST,
@@ -893,6 +896,7 @@ async function main(): Promise<void> {
       evidence,
       passCount: evidence.length - failed.length,
       failCount: failed.length,
+      slowestChecks,
       createdFixtureCount: createdAutomations.length + createdJobs.length,
       safeIdentifiersOnly: true
     };
